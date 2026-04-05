@@ -209,6 +209,14 @@ class SimConfig:
             if "min_age" in rspec:
                 self.role_min_ages[rname] = rspec["min_age"]
 
+        # Gender bias pro Rolle: (n_roles, 2) – [m_bonus, f_bonus]
+        roles = list(config["roles"].keys())
+        self.role_gender_bias = torch.zeros(len(roles), 2)
+        for ri, rname in enumerate(roles):
+            gb = config["roles"][rname].get("gender_bias", {})
+            self.role_gender_bias[ri, 0] = gb.get("m", 0.0)
+            self.role_gender_bias[ri, 1] = gb.get("f", 0.0)
+
     def _build_role_scores(self, config, trait_shorts):
         """Baue Matrix (n_roles, n_traits) für Rollenzuweisung."""
         roles = list(config["roles"].keys())
@@ -296,22 +304,28 @@ class WorldState:
 # ============================================================
 
 def assign_roles(npc, layout, sim):
-    """Weise Rollen zu basierend auf Trait-Score-Matrix aus Config."""
+    """Weise Rollen zu basierend auf Trait-Score-Matrix + Gender-Bias."""
     N = npc.shape[0]
     dev = npc.device
 
     traits = npc[:, layout.trait_start():layout.trait_end()]  # (N, n_traits)
     age = npc[:, layout.col("age")]
+    sex = npc[:, layout.col("sex")]  # 0=m, 1=f
 
     # Score-Matrix: positive Gewichte = Trait direkt, negative = invertiert
     score_matrix = sim.role_score_matrix.to(dev)  # (n_roles, n_traits)
 
-    # Für invertierte Traits: score = weight * (1 - trait) statt weight * trait
     pos_mask = (score_matrix > 0).float()
     neg_mask = (score_matrix < 0).float()
 
     scores = (traits @ (score_matrix * pos_mask).T
               + (1 - traits) @ (-score_matrix * neg_mask).T)  # (N, n_roles)
+
+    # Gender bias: m_bonus für sex=0, f_bonus für sex=1
+    gb = sim.role_gender_bias.to(dev)  # (n_roles, 2)
+    gender_bonus = (1 - sex).unsqueeze(1) * gb[:, 0].unsqueeze(0) \
+                 + sex.unsqueeze(1) * gb[:, 1].unsqueeze(0)  # (N, n_roles)
+    scores = scores + gender_bonus
 
     # Kinder (< 15) bekommen keine Rolle
     child_mask = age < 15
