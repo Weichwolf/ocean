@@ -1,0 +1,189 @@
+"""
+OCEAN – Generischer NPC/World Simulator. Weltgenerierung aus Config.
+"""
+
+import torch
+import numpy as np
+from faker import Faker
+from world import (
+    DEVICE, POILayout, WorldState,
+    load_config, assign_roles, compute_social_embedding,
+)
+
+
+def init_world(config_path=None, seed=2100):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    config, layout, sim = load_config(config_path)
+    settlements = config["settlements"]
+    factions = config["factions"]
+
+    # Namen: aus Faker (locale + seed) oder statischer Liste
+    names_cfg = config.get("names", {})
+    if "locale" in names_cfg:
+        fake = Faker(names_cfg["locale"])
+        Faker.seed(seed)  # deterministisch
+        pool = names_cfg.get("pool_size", 100)
+        names_m = list({fake.first_name_male() for _ in range(pool * 3)})[:pool]
+        names_f = list({fake.first_name_female() for _ in range(pool * 3)})[:pool]
+    else:
+        names_m = names_cfg.get("m", ["John", "James", "Robert", "William"])
+        names_f = names_cfg.get("f", ["Mary", "Jane", "Alice", "Emma"])
+
+    n_poi = len(settlements)
+
+    # ── POI-Tensor ──────────────────────────────────────
+    poi = torch.zeros(n_poi, POILayout.D_POI)
+    poi_names = []
+
+    for i, s in enumerate(settlements):
+        poi[i] = torch.tensor([
+            s["x"], s["y"], s["capacity"], s["water"],
+            s["food"], s["danger"], s["shelter"]
+        ])
+        poi_names.append(s["name"])
+
+    # ── NPC-Tensor ──────────────────────────────────────
+    MAX = sim.max_npcs
+    npc = torch.zeros(MAX, layout.D_NPC)
+    assign = torch.zeros(MAX, n_poi)
+    names = [""] * MAX
+    n_created = 0
+
+    for poi_idx, s in enumerate(settlements):
+        faction_name = s["faction"]
+        faction_idx = layout.faction_names.index(faction_name)
+        faction_spec = factions[faction_name]
+
+        # Trait-Profile aus Config
+        trait_mu = torch.tensor([faction_spec["traits"][t][0] for t in layout.trait_names])
+        trait_std = torch.tensor([faction_spec["traits"][t][1] for t in layout.trait_names])
+
+        for _ in range(s["pop"]):
+            i = n_created
+            sex = np.random.choice([0.0, 1.0])
+            names[i] = np.random.choice(names_m if sex == 0 else names_f)
+
+            age = np.random.triangular(
+                sim.age_dist["min"], sim.age_dist["mode"], sim.age_dist["max"])
+
+            # Traits
+            traits = (trait_mu + trait_std * torch.randn(layout.n_traits)).clamp(0, 1)
+            npc[i, layout.trait_start():layout.trait_end()] = traits
+
+            # Vitals
+            npc[i, layout.col("health")] = 0.8 + np.random.random() * 0.2 if age < 55 else 0.6 + np.random.random() * 0.2
+            npc[i, layout.col("calories")] = 7.0 + np.random.random() * 14.0
+            npc[i, layout.col("age")] = age
+
+            # Emotions
+            npc[i, layout.col("valence")] = -0.1 + np.random.random() * 0.4
+            npc[i, layout.col("arousal")] = 0.2 + np.random.random() * 0.3
+            npc[i, layout.col("dominance")] = 0.3 + np.random.random() * 0.4
+
+            # Demographics
+            npc[i, layout.col("sex")] = sex
+            npc[i, layout.col("born_tick")] = -age * 52
+
+            # Faction one-hot
+            npc[i, layout.faction_start() + faction_idx] = 1.0
+
+            # Meta
+            npc[i, layout.col("status")] = min(age, 60) / 60.0
+            npc[i, layout.col("alive")] = 1.0
+            npc[i, layout.col("parent_a")] = -1
+            npc[i, layout.col("parent_b")] = -1
+
+            assign[i, poi_idx] = 1.0
+            n_created += 1
+
+    # Rollen
+    alive_mask = npc[:, layout.col("alive")].bool()
+    roles = assign_roles(npc, layout, sim)
+    npc[:, layout.role_start():layout.role_end()] = roles
+
+    # Social Embeddings
+    social = compute_social_embedding(npc, assign, poi, layout, sim)
+    npc[:, layout.social_start():layout.social_end()] = social
+
+    # ── Relationships ───────────────────────────────────
+    rel = torch.zeros(MAX, MAX)
+    trust = torch.zeros(MAX, MAX)
+
+    for poi_idx in range(n_poi):
+        members = assign[:, poi_idx].nonzero(as_tuple=True)[0]
+        n_m = len(members)
+        if n_m < 2:
+            continue
+        base = 0.3 if n_m < 30 else 0.15 if n_m < 60 else 0.08
+        for a in members:
+            for b in members:
+                if a < b:
+                    val = base + np.random.random() * 0.2
+                    rel[a, b] = val
+                    rel[b, a] = val
+
+    world = WorldState(
+        npc=npc, poi=poi, assign=assign,
+        rel=rel, trust=trust,
+        tick=0, max_id=n_created,
+        events=[], names=names, poi_names=poi_names,
+        layout=layout, sim=sim,
+        names_m=names_m, names_f=names_f,
+    )
+
+    return world
+
+
+def print_world_summary(world):
+    L = world.layout
+    alive = world.alive_mask
+    n = alive.sum().item()
+
+    print(f"\n{'='*60}")
+    print(f"  {world.sim.raw['meta']['name']} – TICK {world.tick}")
+    print(f"  {n} NPCs, {world.poi.shape[0]} Siedlungen")
+    print(f"  Tensor: ({world.sim.max_npcs}, {L.D_NPC}) = "
+          f"{world.sim.max_npcs * L.D_NPC} floats")
+    print(f"  Device: {DEVICE}")
+    print(f"  Traits: {L.trait_names}")
+    print(f"  Factions: {L.faction_names}")
+    print(f"  Roles: {L.role_names}")
+    print(f"{'='*60}\n")
+
+    for pi in range(world.poi.shape[0]):
+        members = (world.assign[:, pi] > 0) & alive
+        pop = members.sum().item()
+        cap = int(world.poi[pi, POILayout.CAPACITY].item())
+        avg_hp = world.npc[members, L.col("health")].mean().item() if pop > 0 else 0
+        avg_cal = world.npc[members, L.col("calories")].mean().item() if pop > 0 else 0
+        print(f"  {world.poi_names[pi]:<30s} {pop:3d}/{cap:3d}  "
+              f"HP:{avg_hp:.2f}  Cal:{avg_cal:.1f}d")
+
+    # Fraktionen
+    print(f"\n  Fraktionen:")
+    for fi, fname in enumerate(L.faction_names):
+        mask = (world.npc[:, L.faction_start() + fi] > 0) & alive
+        n_f = mask.sum().item()
+        if n_f > 0:
+            traits = world.npc[mask, L.trait_start():L.trait_end()].mean(dim=0)
+            trait_str = " ".join(f"{s}={v:.2f}" for s, v in zip(L.trait_names, traits))
+            print(f"    {fname:<15s}: {n_f:3d}  {trait_str}")
+
+    # Rollen
+    print(f"\n  Rollen:")
+    for ri, rname in enumerate(L.role_names):
+        mask = (world.npc[:, L.role_start() + ri] > 0) & alive
+        n_r = mask.sum().item()
+        if n_r > 0:
+            print(f"    {rname:<12s}: {n_r:3d}")
+
+    edges = (world.rel > 0.1).sum().item() // 2
+    print(f"\n  Beziehungen (affinity > 0.1): {edges}")
+    print()
+
+
+if __name__ == "__main__":
+    world = init_world()
+    print_world_summary(world)

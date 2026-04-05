@@ -1,0 +1,147 @@
+{
+  "meta": {
+    "name": "Outshine",
+    "description": "Post-apokalyptisches Weserbergland, 2100, +7°C",
+    "start_year": 2100,
+    "max_npcs": 2000,
+    "locale": "de"
+  },
+
+  "names": {
+    "locale": "de_DE",
+    "pool_size": 100
+  },
+
+  "traits": {
+    "openness":          { "short": "o",  "range": [0, 1], "default": 0.5 },
+    "conscientiousness": { "short": "c",  "range": [0, 1], "default": 0.5 },
+    "extraversion":      { "short": "e",  "range": [0, 1], "default": 0.5 },
+    "agreeableness":     { "short": "a",  "range": [0, 1], "default": 0.5 },
+    "neuroticism":       { "short": "n",  "range": [0, 1], "default": 0.5 }
+  },
+
+  "vitals": {
+    "health":    { "range": [0, 1], "default": 0.9 },
+    "calories":  { "range": [0, 30], "default": 10, "unit": "days" },
+    "age":       { "range": [0, 120], "default": 25 }
+  },
+
+  "emotions": {
+    "valence":   { "range": [-1, 1], "default": 0.0 },
+    "arousal":   { "range": [0, 1],  "default": 0.3 },
+    "dominance": { "range": [0, 1],  "default": 0.5 }
+  },
+
+  "demographics": {
+    "sex":       { "values": ["m", "f"] },
+    "born_tick": {}
+  },
+
+  "factions": {
+    "pragmatiker": {
+      "traits": { "o": [0.70, 0.12], "c": [0.70, 0.10], "e": [0.50, 0.15], "a": [0.30, 0.12], "n": [0.40, 0.15] },
+      "embed":  [0.7, 0.3]
+    },
+    "ludditen": {
+      "traits": { "o": [0.25, 0.10], "c": [0.70, 0.12], "e": [0.50, 0.15], "a": [0.50, 0.12], "n": [0.50, 0.18] },
+      "embed":  [-0.6, 0.4]
+    },
+    "interpreter": {
+      "traits": { "o": [0.85, 0.08], "c": [0.35, 0.15], "e": [0.50, 0.15], "a": [0.50, 0.15], "n": [0.70, 0.12] },
+      "embed":  [0.8, -0.5]
+    },
+    "nomaden": {
+      "traits": { "o": [0.50, 0.15], "c": [0.50, 0.12], "e": [0.30, 0.12], "a": [0.40, 0.15], "n": [0.30, 0.12] },
+      "embed":  [0.0, -0.7]
+    },
+    "hybride": {
+      "traits": { "o": [0.85, 0.10], "c": [0.50, 0.15], "e": [0.50, 0.15], "a": [0.30, 0.15], "n": [0.50, 0.20] },
+      "embed":  [0.9, 0.0]
+    },
+    "ungebunden": {
+      "traits": { "o": [0.50, 0.20], "c": [0.50, 0.20], "e": [0.50, 0.20], "a": [0.50, 0.20], "n": [0.50, 0.20] },
+      "embed":  [0.0, 0.0]
+    }
+  },
+
+  "roles": {
+    "farmer":    { "score": { "c": 0.4, "-o": 0.3, "a": 0.2 }, "embed": [-0.3, -0.4] },
+    "guard":     { "score": { "c": 0.4, "-n": 0.4, "-a": 0.1 }, "embed": [0.5, 0.5] },
+    "scavenger": { "score": { "o": 0.4, "-n": 0.3, "c": 0.1 }, "embed": [0.6, -0.3] },
+    "healer":    { "score": { "a": 0.4, "c": 0.3, "-n": 0.1 }, "embed": [-0.4, 0.6] },
+    "trader":    { "score": { "e": 0.4, "o": 0.2, "-n": 0.2 }, "embed": [0.2, -0.6] },
+    "crafter":   { "score": { "o": 0.4, "c": 0.3, "-e": 0.1 }, "embed": [0.7, 0.2] },
+    "elder":     { "score": {}, "min_age": 50, "embed": [-0.5, 0.3] }
+  },
+
+  "seasons": {
+    "winter":  { "weeks": [0, 13],  "food": 1.2, "water": 0.8, "uv": 0.2, "disease": 0.3 },
+    "spring":  { "weeks": [13, 26], "food": 1.0, "water": 0.9, "uv": 0.4, "disease": 0.6 },
+    "summer":  { "weeks": [26, 39], "food": 0.5, "water": 0.5, "uv": 1.0, "disease": 1.2 },
+    "autumn":  { "weeks": [39, 52], "food": 0.8, "water": 0.7, "uv": 0.4, "disease": 0.5 }
+  },
+
+  "simulation": {
+    "recovery_rate": 0.08,
+    "uv_damage_factor": 0.01,
+    "hunger_damage": { "zero": 0.05, "low": 0.02, "threshold": 3 },
+    "disease_base_rate": 0.003,
+    "accident_base_rate": 0.002,
+    "age_decay_start": 55,
+    "age_decay_rate": 0.003,
+    "fertility_rate": 0.004,
+    "fertility_min_age": 16,
+    "fertility_max_age": 42,
+    "fertility_min_health": 0.5,
+    "fertility_min_calories": 5,
+    "infant_shield_age": 3,
+    "infant_shield_factor": 0.4,
+    "migration_threshold_calories": 1,
+    "migration_threshold_health": 0.3,
+    "migration_probability": 0.03,
+    "social_update_interval": 4,
+    "affinity_sigma": 1.5,
+    "affinity_blend_rate": 0.1,
+    "trait_social_weights": { "o": 0.3, "c": 0.1, "e": 0.2, "a": 0.3, "n": 0.15 },
+    "social_embed_dim": 6,
+    "age_distribution": { "min": 0, "mode": 20, "max": 65 }
+  },
+
+  "events": [
+    {
+      "name": "flash_flood",
+      "season": "summer",
+      "probability": 0.12,
+      "affected_pois": [0, 2, 9],
+      "effect": { "calories_loss_days": 3, "severity_range": [0.3, 1.0] }
+    }
+  ],
+
+  "poi": {
+    "fields": {
+      "x": { "type": "float" },
+      "y": { "type": "float" },
+      "capacity": { "type": "int" },
+      "water": { "type": "float", "range": [0, 1] },
+      "food": { "type": "float", "unit": "kcal/week" },
+      "danger": { "type": "float", "range": [0, 1] },
+      "shelter": { "type": "float", "range": [0, 1] }
+    }
+  },
+
+  "settlements": [
+    { "name": "Hameln-Kern",           "x":  0.0, "y":  0.0, "capacity": 250, "water": 0.70, "food": 3400000, "danger": 0.3, "shelter": 0.8, "faction": "pragmatiker", "pop": 200 },
+    { "name": "Kirchohsen",            "x":  0.5, "y": -6.0, "capacity": 100, "water": 0.60, "food": 1400000, "danger": 0.2, "shelter": 0.7, "faction": "ludditen",    "pop":  80 },
+    { "name": "Oase Ohr",              "x":  1.5, "y": -3.5, "capacity":  80, "water": 0.90, "food": 1100000, "danger": 0.2, "shelter": 0.6, "faction": "pragmatiker", "pop":  60 },
+    { "name": "Tündern-Wasserstation", "x": -1.0, "y": -2.0, "capacity":  60, "water": 0.95, "food":  750000, "danger": 0.1, "shelter": 0.7, "faction": "pragmatiker", "pop":  40 },
+    { "name": "Die Eingesperrten",     "x":  1.0, "y":  0.5, "capacity":  60, "water": 0.50, "food":  850000, "danger": 0.2, "shelter": 0.9, "faction": "ungebunden",  "pop":  50 },
+    { "name": "Hohenstein",            "x": -8.0, "y":  6.0, "capacity":  60, "water": 0.40, "food":  550000, "danger": 0.4, "shelter": 0.6, "faction": "nomaden",     "pop":  30 },
+    { "name": "Hamelschenburg",        "x":  3.0, "y": -8.0, "capacity":  50, "water": 0.50, "food":  800000, "danger": 0.3, "shelter": 0.8, "faction": "interpreter", "pop":  45 },
+    { "name": "Finkenborn",            "x": -0.5, "y":  0.8, "capacity":  15, "water": 0.40, "food":  110000, "danger": 0.1, "shelter": 0.6, "faction": "ungebunden",  "pop":   5 },
+    { "name": "Hastenbeck-Farm",       "x":  2.0, "y": -1.5, "capacity":  35, "water": 0.70, "food":  500000, "danger": 0.2, "shelter": 0.4, "faction": "ungebunden",  "pop":  25 },
+    { "name": "Afferde-Brückenkopf",   "x":  1.5, "y":  0.3, "capacity":  20, "water": 0.50, "food":  260000, "danger": 0.4, "shelter": 0.5, "faction": "pragmatiker", "pop":  15 },
+    { "name": "Wehrbergen",            "x":  0.0, "y":  2.0, "capacity":  25, "water": 0.30, "food":  340000, "danger": 0.2, "shelter": 0.5, "faction": "ludditen",    "pop":  20 },
+    { "name": "Rohrsen-Gärten",        "x": -1.5, "y":  0.5, "capacity":  40, "water": 0.40, "food":  600000, "danger": 0.2, "shelter": 0.6, "faction": "ungebunden",  "pop":  35 },
+    { "name": "Sonnentempel Ohrberg",  "x":  1.0, "y": -4.5, "capacity":  15, "water": 0.30, "food":  180000, "danger": 0.2, "shelter": 0.4, "faction": "interpreter", "pop":  10 }
+  ]
+}
