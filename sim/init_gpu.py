@@ -111,6 +111,7 @@ def init_world(config_path=None, seed=2100):
     rel = torch.zeros(MAX, MAX)
     trust = torch.zeros(MAX, MAX)
 
+    # Basis: Siedlungs-Nachbarn kennen sich
     for poi_idx in range(n_poi):
         members = assign[:, poi_idx].nonzero(as_tuple=True)[0]
         n_m = len(members)
@@ -124,6 +125,71 @@ def init_world(config_path=None, seed=2100):
                     rel[a, b] = val
                     rel[b, a] = val
 
+    # ── Paare und Familien bilden ──────────────────────
+    households = []
+
+    def pair_score(m, f):
+        om = npc[m, layout.trait_start():layout.trait_end()]
+        of_ = npc[f, layout.trait_start():layout.trait_end()]
+        s = (1 - abs(om[0] - of_[0]).item()) * 0.3   # ähnliches O
+        s += (1 - abs(om[3] - of_[3]).item()) * 0.3   # ähnliches A
+        s += abs(om[2] - of_[2]).item() * 0.1          # komplementäres E
+        s -= om[4].item() * of_[4].item() * 0.2        # hohes N×N = instabil
+        age_diff = abs(npc[m, layout.col("age")].item() - npc[f, layout.col("age")].item())
+        s -= min(age_diff / 30, 0.3)
+        return s
+
+    for poi_idx in range(n_poi):
+        members = assign[:, poi_idx].nonzero(as_tuple=True)[0].tolist()
+        adults_m = [i for i in members if npc[i, layout.col("sex")].item() == 0
+                    and npc[i, layout.col("age")].item() >= 18]
+        adults_f = [i for i in members if npc[i, layout.col("sex")].item() == 1
+                    and npc[i, layout.col("age")].item() >= 18]
+        children = [i for i in members if npc[i, layout.col("age")].item() < 15]
+
+        # Greedy Matching nach Kompatibilität
+        pairs = []
+        if adults_m and adults_f:
+            scores = [(m, f, pair_score(m, f)) for m in adults_m for f in adults_f]
+            scores.sort(key=lambda x: -x[2])
+            paired_m, paired_f = set(), set()
+            for m, f, sc in scores:
+                if m in paired_m or f in paired_f:
+                    continue
+                if sc < 0:
+                    continue
+                pairs.append((m, f))
+                paired_m.add(m)
+                paired_f.add(f)
+                if len(pairs) >= int(min(len(adults_m), len(adults_f)) * 0.7):
+                    break
+
+        child_idx = 0
+        for a, b in pairs:
+            rel[a, b] = rel[b, a] = 0.8 + np.random.random() * 0.2
+            trust[a, b] = trust[b, a] = 0.4 + np.random.random() * 0.3
+
+            n_kids = min(np.random.choice([0, 1, 1, 2, 2, 3]),
+                         len(children) - child_idx)
+            kids = []
+            for _ in range(n_kids):
+                kid = children[child_idx]
+                npc[kid, layout.col("parent_a")] = float(b)  # Mutter
+                npc[kid, layout.col("parent_b")] = float(a)  # Vater
+                rel[kid, a] = rel[a, kid] = 0.7 + np.random.random() * 0.2
+                rel[kid, b] = rel[b, kid] = 0.85 + np.random.random() * 0.15
+                trust[kid, a] = trust[a, kid] = 0.3
+                trust[kid, b] = trust[b, kid] = 0.5
+                kids.append(kid)
+                child_idx += 1
+
+            for ci in range(len(kids)):
+                for cj in range(ci + 1, len(kids)):
+                    rel[kids[ci], kids[cj]] = rel[kids[cj], kids[ci]] = 0.6
+                    trust[kids[ci], kids[cj]] = trust[kids[cj], kids[ci]] = 0.2
+
+            households.append((a, b, kids))
+
     world = WorldState(
         npc=npc, poi=poi, assign=assign,
         rel=rel, trust=trust,
@@ -132,6 +198,7 @@ def init_world(config_path=None, seed=2100):
         layout=layout, sim=sim,
         names_m=names_m, names_f=names_f,
     )
+    world.households = households
 
     return world
 

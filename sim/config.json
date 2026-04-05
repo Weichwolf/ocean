@@ -4,7 +4,11 @@
     "description": "Post-apokalyptisches Weserbergland, 2100, +7°C",
     "start_year": 2100,
     "max_npcs": 2000,
-    "locale": "de"
+    "locale": "de",
+    "ref_lat": 52.1035,
+    "ref_lon": 9.3565,
+    "osm_bbox": [52.02, 9.22, 52.17, 9.42],
+    "buildings_usable_pct": 0.02
   },
 
   "names": {
