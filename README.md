@@ -221,6 +221,93 @@ Success and failure both change the world state: trust shifts, reputation change
 
 The player's reputation is distributed across NPC perspectives. There is no objective reputation – only perspectives (from DESIGN.md). The same player action produces different reactions from different NPCs based on their personality, relationship, and what they heard through the rumor system.
 
+## Why simulate before playing
+
+A randomly initialized NPC has stats but no history. After 10 years of simulation, every number is a consequence: health 0.14 because three summers of drought in Tündern, negative valence because a partner left, high trust with a neighbor because they survived the same epidemic.
+
+For the first generation (alive at tick 0), the history is thin – they have no simulated childhood. Their children, born during the simulation, have a complete biography. **The second generation is the first real one.** After 100 years, nobody alive was part of the initialization – every living NPC is a product of the system.
+
+This is what the LLM reads when it speaks as that character. It doesn't invent a backstory – it translates one.
+
+## 3D open world pipeline
+
+The simulation produces a living world with real coordinates. Turning it into a 3D game:
+
+### Terrain
+
+OSM has no elevation, but SRTM/Copernicus DEM provides 30m resolution globally. The Wesertal, the Klüt (258m), the Suntel (400m) – all available as heightmaps.
+
+```
+Heightmap (GeoTIFF) → Mesh (Vertex Grid) → Engine
+```
+
+### Buildings
+
+OSM buildings have footprints (polygons), often with `building:levels`, `height`, `roof:shape`, `building:material`. Extrude footprint × levels × 3m, add roof from tag or default. For 30k buildings: instanced rendering.
+
+### Roads
+
+OSM `highway=*` tags with LineString geometry. Ribbon mesh on terrain. Width from road type. In 2150: asphalt cracked, dunes over highways, machine tracks keeping strips passable.
+
+### Vegetation
+
+Not from OSM – procedural from the climate model:
+
+```
+water_access > 0.8  → dense subtropical jungle (gravel pit lakes)
+altitude > 200m     → dead tree trunks, erosion
+near river          → reeds, sparse willows
+else                → steppe, dust, dunes
+```
+
+### NPCs
+
+Already have real coordinates, buildings, personalities, families. Position = their OSM building. Animation parameters from OCEAN:
+
+```
+E high  → longer stride, arms wider
+N high  → head lowered, shoulders raised
+A high  → leans toward conversation partner
+C high  → upright posture, even gait
+health low → short steps, slight sway
+```
+
+IK (inverse kinematics) is solved infrastructure in engines – FABRIK converges in 2-3 iterations. The actual work is mapping tensor values to animation blend weights.
+
+### Character models
+
+~20 base meshes varied by texture/color/clothing/age cover 600 NPCs:
+
+```
+5 base bodies  (m/f × young/old/child)
+× 6 faction outfits (colors, materials)
+× 3 condition stages (healthy/sick/injured)
+× 25 role items (weapon/satchel/tools/nothing)
+= ~30 meshes + texture swaps
+```
+
+Sources: Synty Studios (low-poly packs), Quaternius (free), Mixamo (animations), or AI-generated via Meshy/Tripo3D for stylized.
+
+## Engine: Godot 4
+
+Godot is the target engine. Reasons:
+
+- **Scenes are text files** (`.tscn`) – writable from CLI like JSON, no GUI needed
+- **Headless mode** – `godot --headless --script build_world.gd`
+- **Vulkan** (Forward+), Metal via MoltenVK, OpenGL fallback for web
+- **Cross-platform** from one codebase: Windows, macOS, Linux, Web, Android, iOS, Steam Deck
+- **GDScript** is Python-like – direct mapping from our simulation code
+- **GDExtension** for C/C++/Rust bindings to our PyTorch simulation
+- **No revenue share**, open source (MIT)
+
+```bash
+# Export from CLI, no GUI
+godot --headless --export-release "Windows" build/game.exe
+godot --headless --export-release "Web" build/game.html
+```
+
+Communication between simulation and engine: SharedMemory or TCP socket. The tensor state is the single source of truth – Godot renders it.
+
 ## Included: Outshine config
 
 The repository ships with a config for **Outshine** – a post-apocalyptic setting in the Weserbergland (Hameln/Kirchohsen), ~2100, +7°C global temperature, no cloud formation. Machines have won. Humans live in the gaps.
