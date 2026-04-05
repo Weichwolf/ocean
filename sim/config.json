@@ -78,6 +78,7 @@
     "midwife":   { "score": { "a": 0.5, "e": 0.4, "c": 0.3 },   "embed": [-0.3, 0.7], "gender_bias": { "f": 0.08 } },
     "caretaker": { "score": { "e": 0.6, "a": 0.4 },              "embed": [-0.5, 0.4], "gender_bias": { "f": 0.04 } },
     "scout":     { "score": { "-n": 0.5, "-e": 0.4, "o": 0.3 }, "embed": [0.4, -0.5], "gender_bias": { "m": 0.04 } },
+    "courtesan": { "score": { "e": 0.5, "o": 0.4, "-c": 0.2 }, "embed": [0.1, 0.3],  "gender_bias": { "f": 0.06 }, "min_age": 18 },
     "elder":     { "score": {}, "min_age": 50, "embed": [-0.5, 0.3] }
   },
 

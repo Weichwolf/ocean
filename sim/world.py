@@ -331,11 +331,16 @@ def assign_roles(npc, layout, sim):
     child_mask = age < 15
     scores[child_mask] = -1
 
-    # Min-Age Overrides (z.B. Elder)
+    # Min-Age: blockiert Rolle unter Alter, Override für Elder-Typ
+    config_roles = sim.raw.get("roles", {})
     for rname, min_age in sim.role_min_ages.items():
         ri = layout.role_names.index(rname)
-        elder_mask = (age >= min_age) & npc[:, layout.col("alive")].bool()
-        scores[elder_mask, ri] = 1.0
+        too_young = age < min_age
+        scores[too_young, ri] = -1
+        # Elder-Typ: Score-Override wenn keine eigenen Trait-Scores definiert
+        if not config_roles.get(rname, {}).get("score"):
+            old_enough = (age >= min_age) & npc[:, layout.col("alive")].bool()
+            scores[old_enough, ri] = 1.0
 
     roles = torch.zeros(N, len(layout.role_names), device=dev)
     best = scores.argmax(dim=1)
