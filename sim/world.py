@@ -318,8 +318,12 @@ def assign_roles(npc, layout, sim):
     pos_mask = (score_matrix > 0).float()
     neg_mask = (score_matrix < 0).float()
 
-    scores = (traits @ (score_matrix * pos_mask).T
-              + (1 - traits) @ (-score_matrix * neg_mask).T)  # (N, n_roles)
+    raw_scores = (traits @ (score_matrix * pos_mask).T
+                  + (1 - traits) @ (-score_matrix * neg_mask).T)  # (N, n_roles)
+
+    # Normalisiere: Rollen mit mehr Termen sollen nicht automatisch höher scoren
+    weight_sums = score_matrix.abs().sum(dim=1).clamp(min=0.1)  # (n_roles,)
+    scores = raw_scores / weight_sums.unsqueeze(0)
 
     # Gender bias: m_bonus für sex=0, f_bonus für sex=1
     gb = sim.role_gender_bias.to(dev)  # (n_roles, 2)
