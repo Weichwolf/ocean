@@ -184,22 +184,45 @@ def select_usable_buildings(buildings_by_settlement, usable_pct=0.02, seed=2100)
     return result
 
 
+def _building_dict(building, occupant_index=0):
+    """Building-Dict mit ~2m Offset pro Bewohner (Kreis-Anordnung)."""
+    import math
+    lat, lon = building["lat"], building["lon"]
+    if occupant_index > 0:
+        # 2m ≈ 0.000018° lat, 0.000028° lon bei 52°N
+        angle = (occupant_index * 2.39996)  # goldener Winkel → Spirale
+        r = 0.000018 * (1 + occupant_index * 0.3)
+        lat += r * math.cos(angle)
+        lon += r * 1.55 * math.sin(angle)  # lon-Korrektur für Breitengrad
+    return {
+        "osm_id": building["osm_id"],
+        "lat": lat,
+        "lon": lon,
+        "type": building["type"],
+        "name": building.get("name"),
+        "address": building.get("address"),
+    }
+
+
 def assign_npcs_to_buildings(world, usable_buildings):
     """Weise NPCs nutzbaren Gebäuden zu. Familien zusammen.
 
-    Reihenfolge: Households (Paar + Kinder) → dann Einzelpersonen.
+    1. Households (Init-Paare + Kinder) → ein Gebäude
+    2. Übrige Erwachsene → eigenes Gebäude
+    3. Kinder ohne Household → beim Elternteil (parent_a/parent_b)
+       Falls Eltern kein Gebäude: beim nächsten Erwachsenen gleicher Siedlung
     """
+    L = world.layout
     npc_buildings = {}
     households = getattr(world, "households", [])
+    alive = world.alive_mask
 
-    # Index: welche NPCs sind in welcher Siedlung?
     for poi_idx in range(world.poi.shape[0]):
         settlement_name = world.poi_names[poi_idx]
         buildings = usable_buildings.get(settlement_name, [])
         if not buildings:
             continue
 
-        alive = world.alive_mask
         members = (world.assign[:, poi_idx] > 0) & alive
         member_set = set(members.nonzero(as_tuple=True)[0].tolist())
         if not member_set:
@@ -208,37 +231,62 @@ def assign_npcs_to_buildings(world, usable_buildings):
         assigned = set()
         b_idx = 0
 
+        # Track occupants per building for offset
+        building_occupants = {}  # osm_id → count
+
+        def _place(npc_idx, building):
+            oid = building["osm_id"]
+            occ = building_occupants.get(oid, 0)
+            npc_buildings[npc_idx] = _building_dict(building, occupant_index=occ)
+            building_occupants[oid] = occ + 1
+            assigned.add(npc_idx)
+
         # 1. Households: Familie bekommt ein Gebäude
         for a, b, kids in households:
             family = [x for x in [a, b] + kids if x in member_set]
             if not family:
                 continue
-            building = buildings[b_idx % len(buildings)]
+            bld = buildings[b_idx % len(buildings)]
             for npc_idx in family:
-                npc_buildings[npc_idx] = {
-                    "osm_id": building["osm_id"],
-                    "lat": building["lat"],
-                    "lon": building["lon"],
-                    "type": building["type"],
-                    "name": building.get("name"),
-                    "address": building.get("address"),
-                }
-                assigned.add(npc_idx)
+                _place(npc_idx, bld)
             b_idx += 1
 
-        # 2. Einzelpersonen: restliche NPCs
+        # 2. Erwachsene ohne Household → eigenes Gebäude
         remaining = member_set - assigned
-        for npc_idx in remaining:
-            building = buildings[b_idx % len(buildings)]
-            npc_buildings[npc_idx] = {
-                "osm_id": building["osm_id"],
-                "lat": building["lat"],
-                "lon": building["lon"],
-                "type": building["type"],
-                "name": building.get("name"),
-                "address": building.get("address"),
-            }
+        adults = [i for i in remaining
+                  if world.npc[i, L.col("age")].item() >= 15]
+        children = [i for i in remaining
+                    if world.npc[i, L.col("age")].item() < 15]
+
+        for npc_idx in adults:
+            _place(npc_idx, buildings[b_idx % len(buildings)])
             b_idx += 1
+
+        # 3. Kinder → bei Eltern platzieren
+        for child_idx in children:
+            placed = False
+            for parent_col in ["parent_a", "parent_b"]:
+                pid = int(world.npc[child_idx, L.col(parent_col)].item())
+                if pid >= 0 and pid in npc_buildings:
+                    # Gleiches Gebäude wie Elternteil, nächster Offset
+                    parent_osm = npc_buildings[pid]["osm_id"]
+                    parent_bld = next(
+                        (b for b in buildings if b["osm_id"] == parent_osm),
+                        buildings[0])
+                    _place(child_idx, parent_bld)
+                    placed = True
+                    break
+
+            if not placed:
+                if adults:
+                    guardian = adults[child_idx % len(adults)]
+                    g_osm = npc_buildings[guardian]["osm_id"]
+                    g_bld = next(
+                        (b for b in buildings if b["osm_id"] == g_osm),
+                        buildings[0])
+                    _place(child_idx, g_bld)
+                else:
+                    _place(child_idx, buildings[0])
 
     world.npc_buildings = npc_buildings
     return npc_buildings

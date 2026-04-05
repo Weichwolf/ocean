@@ -159,6 +159,13 @@ def tick(world: WorldState) -> dict:
         summary["births"] += 1
         summary["born_names"].append((name, int(sex), pi))
 
+        # Kind zum Household der Eltern hinzufügen
+        if hasattr(world, 'households'):
+            for hh in world.households:
+                if mom_idx in hh[:2] or dad_idx in hh[:2]:
+                    hh[2].append(ci)
+                    break
+
     # ── 5. MIGRATION ───────────────────────────────────
     desperate = alive & ((cal < S.migration_cal) | (world.npc[:, hp_col] < S.migration_hp))
     migrates = torch.bernoulli(desperate.float() * S.migration_prob)
@@ -195,6 +202,68 @@ def tick(world: WorldState) -> dict:
         world.npc[:, L.social_start():L.social_end()] = social
         base_aff = compute_affinity_matrix(world.npc, L, S)
         world.rel = (1 - S.affinity_blend) * world.rel + S.affinity_blend * base_aff
+
+    # ── 6b. PAARBILDUNG (alle 13 Wochen) ───────────────
+    if (world.tick + 1) % 13 == 0:
+        if not hasattr(world, 'households'):
+            world.households = []
+        paired_ids = set()
+        for hh in world.households:
+            paired_ids.update(hh[0:2])
+
+        for pi in range(n_poi):
+            members = (world.assign[:, pi] > 0) & alive
+            member_ids = members.nonzero(as_tuple=True)[0]
+
+            singles_m = [i.item() for i in member_ids
+                         if world.npc[i, L.col("sex")].item() < 0.5
+                         and world.npc[i, L.col("age")].item() >= 18
+                         and i.item() not in paired_ids]
+            singles_f = [i.item() for i in member_ids
+                         if world.npc[i, L.col("sex")].item() > 0.5
+                         and world.npc[i, L.col("age")].item() >= 18
+                         and i.item() not in paired_ids]
+
+            if not singles_m or not singles_f:
+                continue
+
+            # Beste Paare nach Affinität (rel-Matrix)
+            for m in singles_m:
+                if m in paired_ids:
+                    continue
+                best_f, best_aff = None, 0.3  # Mindest-Affinität
+                for f in singles_f:
+                    if f in paired_ids:
+                        continue
+                    aff = world.rel[m, f].item()
+                    if aff > best_aff:
+                        best_aff = aff
+                        best_f = f
+
+                if best_f is not None and torch.rand(1).item() < 0.1:  # 10% Chance pro Quartal
+                    # Paar bilden
+                    world.rel[m, best_f] = world.rel[best_f, m] = 0.85
+                    world.trust[m, best_f] = world.trust[best_f, m] = 0.4
+                    world.households.append((m, best_f, []))
+                    paired_ids.add(m)
+                    paired_ids.add(best_f)
+                    summary.setdefault("new_pairs", []).append(
+                        (world.names[m], world.names[best_f])
+                    )
+
+                    # Zusammenzug: Partner zieht zur anderen Person
+                    # (wer weniger Verbindungen in der Siedlung hat zieht um)
+                    m_poi = int((world.assign[m] > 0).nonzero(as_tuple=True)[0][0].item())
+                    f_poi = int((world.assign[best_f] > 0).nonzero(as_tuple=True)[0][0].item())
+                    if m_poi != f_poi:
+                        m_ties = world.rel[m][members].sum().item()
+                        f_ties = world.rel[best_f][members].sum().item()
+                        if m_ties < f_ties:
+                            world.assign[m] = 0
+                            world.assign[m, f_poi] = 1
+                        else:
+                            world.assign[best_f] = 0
+                            world.assign[best_f, m_poi] = 1
 
     # ── 7. ALTERN ──────────────────────────────────────
     world.npc[:, age_col] += alive.float() / 52.0
@@ -257,6 +326,8 @@ def print_status(world):
 
 def print_tick_summary(summary, world):
     notable = summary["deaths"] > 0 or summary["births"] > 0
+    new_pairs = summary.get("new_pairs", [])
+    notable = notable or bool(new_pairs)
     # Check for any config-driven event
     event_names = [e["name"] for e in world.sim.raw.get("events", [])]
     event_hits = {k: summary[k] for k in event_names if k in summary}
@@ -275,6 +346,8 @@ def print_tick_summary(summary, world):
             parts.append(f"{summary['migrations']} migrated")
         for ename, sev in event_hits.items():
             parts.append(f"{ename.upper()} ({sev:.1f})")
+        for p in new_pairs:
+            parts.append(f"pair: {p[0]}+{p[1]}")
         print(" | ".join(parts))
 
 
