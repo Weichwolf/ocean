@@ -102,7 +102,34 @@ def tick(world: WorldState) -> dict:
         pi = int((world.assign[idx] > 0).nonzero(as_tuple=True)[0][0].item())
         summary["dead_names"].append((
             world.names[idx], int(world.npc[idx, age_col].item()), pi))
-    summary["deaths"] = len(dead_indices)
+
+    summary["deaths"] = len(summary["dead_names"])
+
+    # Waisen: Kinder deren beide Eltern tot → adoptieren (nächster Haushalt)
+    if hasattr(world, 'households') and len(dead_indices) > 0:
+        alive_now = world.npc[:, L.col("alive")].bool()
+        pa_ids = world.npc[:, L.col("parent_a")].long().clamp(min=0)
+        pb_ids = world.npc[:, L.col("parent_b")].long().clamp(min=0)
+        is_child = alive_now & (age < 15) & (world.npc[:, L.col("parent_a")] >= 0)
+        pa_alive = alive_now[pa_ids] & (world.npc[:, L.col("parent_a")] >= 0)
+        pb_alive = alive_now[pb_ids] & (world.npc[:, L.col("parent_b")] >= 0)
+        orphans = is_child & ~pa_alive & ~pb_alive
+
+        for idx in orphans.nonzero(as_tuple=True)[0].tolist():
+            # Nächsten lebenden Haushalt in gleicher Siedlung finden
+            child_poi = (world.assign[idx] > 0).nonzero(as_tuple=True)[0]
+            if len(child_poi) == 0:
+                continue
+            pi = int(child_poi[0].item())
+            for hh in world.households:
+                a, b = hh[0], hh[1]
+                if alive_now[a] and (world.assign[a, pi] > 0):
+                    hh[2].append(idx)
+                    world.npc[idx, L.col("parent_a")] = float(a)
+                    world.npc[idx, L.col("parent_b")] = float(b) if alive_now[b] else float(a)
+                    world.rel[idx, a] = world.rel[a, idx] = 0.5
+                    world.trust[idx, a] = world.trust[a, idx] = 0.2
+                    break
 
     # ── 4. GEBURTEN ────────────────────────────────────
     fertile = (alive
@@ -203,67 +230,44 @@ def tick(world: WorldState) -> dict:
         base_aff = compute_affinity_matrix(world.npc, L, S)
         world.rel = (1 - S.affinity_blend) * world.rel + S.affinity_blend * base_aff
 
-    # ── 6b. PAARBILDUNG (alle 13 Wochen) ───────────────
-    if (world.tick + 1) % 13 == 0:
+    # ── 6b. PAARBILDUNG (alle 26 Wochen, vektorisiert) ───
+    if (world.tick + 1) % 26 == 0:
         if not hasattr(world, 'households'):
             world.households = []
-        paired_ids = set()
+
+        paired = torch.zeros(N, dtype=torch.bool, device=dev)
         for hh in world.households:
-            paired_ids.update(hh[0:2])
+            paired[hh[0]] = True
+            paired[hh[1]] = True
 
-        for pi in range(n_poi):
-            members = (world.assign[:, pi] > 0) & alive
-            member_ids = members.nonzero(as_tuple=True)[0]
+        sex = world.npc[:, L.col("sex")]
+        single_m = alive & (age >= 18) & (sex < 0.5) & ~paired
+        single_f = alive & (age >= 18) & (sex > 0.5) & ~paired
+        m_ids = single_m.nonzero(as_tuple=True)[0]
+        f_ids = single_f.nonzero(as_tuple=True)[0]
 
-            singles_m = [i.item() for i in member_ids
-                         if world.npc[i, L.col("sex")].item() < 0.5
-                         and world.npc[i, L.col("age")].item() >= 18
-                         and i.item() not in paired_ids]
-            singles_f = [i.item() for i in member_ids
-                         if world.npc[i, L.col("sex")].item() > 0.5
-                         and world.npc[i, L.col("age")].item() >= 18
-                         and i.item() not in paired_ids]
+        if len(m_ids) > 0 and len(f_ids) > 0:
+            # Affinität + gleiche Siedlung als Maske (Tensor-Ops)
+            aff_block = world.rel[m_ids][:, f_ids]                # (n_m, n_f)
+            same_poi = (world.assign[m_ids] @ world.assign[f_ids].T) > 0  # (n_m, n_f)
+            aff_block = aff_block * same_poi.float()
 
-            if not singles_m or not singles_f:
-                continue
+            best_vals, best_idx = aff_block.max(dim=1)
+            chance = torch.rand(len(m_ids), device=dev)
+            will_pair = (best_vals > 0.3) & (chance < 0.15)
 
-            # Beste Paare nach Affinität (rel-Matrix)
-            for m in singles_m:
-                if m in paired_ids:
+            f_taken = torch.zeros(len(f_ids), dtype=torch.bool, device=dev)
+            for mi in will_pair.nonzero(as_tuple=True)[0].tolist():
+                fi = best_idx[mi].item()
+                if f_taken[fi]:
                     continue
-                best_f, best_aff = None, 0.3  # Mindest-Affinität
-                for f in singles_f:
-                    if f in paired_ids:
-                        continue
-                    aff = world.rel[m, f].item()
-                    if aff > best_aff:
-                        best_aff = aff
-                        best_f = f
-
-                if best_f is not None and torch.rand(1).item() < 0.1:  # 10% Chance pro Quartal
-                    # Paar bilden
-                    world.rel[m, best_f] = world.rel[best_f, m] = 0.85
-                    world.trust[m, best_f] = world.trust[best_f, m] = 0.4
-                    world.households.append((m, best_f, []))
-                    paired_ids.add(m)
-                    paired_ids.add(best_f)
-                    summary.setdefault("new_pairs", []).append(
-                        (world.names[m], world.names[best_f])
-                    )
-
-                    # Zusammenzug: Partner zieht zur anderen Person
-                    # (wer weniger Verbindungen in der Siedlung hat zieht um)
-                    m_poi = int((world.assign[m] > 0).nonzero(as_tuple=True)[0][0].item())
-                    f_poi = int((world.assign[best_f] > 0).nonzero(as_tuple=True)[0][0].item())
-                    if m_poi != f_poi:
-                        m_ties = world.rel[m][members].sum().item()
-                        f_ties = world.rel[best_f][members].sum().item()
-                        if m_ties < f_ties:
-                            world.assign[m] = 0
-                            world.assign[m, f_poi] = 1
-                        else:
-                            world.assign[best_f] = 0
-                            world.assign[best_f, m_poi] = 1
+                f_taken[fi] = True
+                m, f = m_ids[mi].item(), f_ids[fi].item()
+                world.rel[m, f] = world.rel[f, m] = 0.85
+                world.trust[m, f] = world.trust[f, m] = 0.4
+                world.households.append((m, f, []))
+                summary.setdefault("new_pairs", []).append(
+                    (world.names[m], world.names[f]))
 
     # ── 7. ALTERN ──────────────────────────────────────
     world.npc[:, age_col] += alive.float() / 52.0

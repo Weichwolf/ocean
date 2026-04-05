@@ -184,6 +184,56 @@ def select_usable_buildings(buildings_by_settlement, usable_pct=0.02, seed=2100)
     return result
 
 
+def ensure_enough_buildings(usable_buildings, world, buildings_by_settlement):
+    """Stelle sicher, dass jede Siedlung genug Gebäude hat.
+
+    Braucht: 1 pro Household + 1 pro Single-Erwachsener.
+    Fügt bei Bedarf weitere Gebäude aus dem Gesamtpool hinzu.
+    """
+    import random
+    rng = random.Random(42)
+
+    L = world.layout
+    alive = world.alive_mask
+    households = getattr(world, "households", [])
+
+    # Wer ist gepaart?
+    paired = set()
+    hh_per_poi = {}  # poi_name → count
+    for a, b, kids in households:
+        paired.update([a, b] + kids)
+
+    for poi_idx in range(world.poi.shape[0]):
+        name = world.poi_names[poi_idx]
+        members = (world.assign[:, poi_idx] > 0) & alive
+        member_ids = members.nonzero(as_tuple=True)[0].tolist()
+
+        # Zähle Haushalte in dieser Siedlung
+        n_households = 0
+        for a, b, kids in households:
+            family = [x for x in [a, b] + kids if x in set(member_ids)]
+            if family:
+                n_households += 1
+
+        # Singles = Erwachsene die nicht gepaart sind
+        n_singles = sum(1 for i in member_ids
+                        if i not in paired
+                        and world.npc[i, L.col("age")].item() >= 15)
+
+        needed = n_households + n_singles
+        available = len(usable_buildings.get(name, []))
+
+        if needed > available:
+            all_buildings = buildings_by_settlement.get(name, [])
+            used_ids = {b["osm_id"] for b in usable_buildings.get(name, [])}
+            extra = [b for b in all_buildings if b["osm_id"] not in used_ids]
+            rng.shuffle(extra)
+            add_n = needed - available
+            usable_buildings[name] = usable_buildings.get(name, []) + extra[:add_n]
+
+    return usable_buildings
+
+
 def _building_dict(building, occupant_index=0):
     """Building-Dict mit ~2m Offset pro Bewohner (Kreis-Anordnung)."""
     import math
@@ -229,10 +279,18 @@ def assign_npcs_to_buildings(world, usable_buildings):
             continue
 
         assigned = set()
-        b_idx = 0
+        used_buildings = set()  # OSM IDs die schon belegt sind
 
         # Track occupants per building for offset
         building_occupants = {}  # osm_id → count
+
+        def _next_free_building():
+            """Nächstes freies Gebäude, kein Sharing zwischen Haushalten."""
+            for bld in buildings:
+                if bld["osm_id"] not in used_buildings:
+                    return bld
+            # Alle belegt → Gebäude recyceln (besser als crash)
+            return buildings[len(used_buildings) % len(buildings)]
 
         def _place(npc_idx, building):
             oid = building["osm_id"]
@@ -241,15 +299,15 @@ def assign_npcs_to_buildings(world, usable_buildings):
             building_occupants[oid] = occ + 1
             assigned.add(npc_idx)
 
-        # 1. Households: Familie bekommt ein Gebäude
+        # 1. Households: Familie bekommt ein exklusives Gebäude
         for a, b, kids in households:
             family = [x for x in [a, b] + kids if x in member_set]
             if not family:
                 continue
-            bld = buildings[b_idx % len(buildings)]
+            bld = _next_free_building()
+            used_buildings.add(bld["osm_id"])
             for npc_idx in family:
                 _place(npc_idx, bld)
-            b_idx += 1
 
         # 2. Erwachsene ohne Household → eigenes Gebäude
         remaining = member_set - assigned
@@ -259,8 +317,9 @@ def assign_npcs_to_buildings(world, usable_buildings):
                     if world.npc[i, L.col("age")].item() < 15]
 
         for npc_idx in adults:
-            _place(npc_idx, buildings[b_idx % len(buildings)])
-            b_idx += 1
+            bld = _next_free_building()
+            used_buildings.add(bld["osm_id"])
+            _place(npc_idx, bld)
 
         # 3. Kinder → bei Eltern platzieren
         for child_idx in children:
@@ -268,7 +327,6 @@ def assign_npcs_to_buildings(world, usable_buildings):
             for parent_col in ["parent_a", "parent_b"]:
                 pid = int(world.npc[child_idx, L.col(parent_col)].item())
                 if pid >= 0 and pid in npc_buildings:
-                    # Gleiches Gebäude wie Elternteil, nächster Offset
                     parent_osm = npc_buildings[pid]["osm_id"]
                     parent_bld = next(
                         (b for b in buildings if b["osm_id"] == parent_osm),
@@ -278,14 +336,17 @@ def assign_npcs_to_buildings(world, usable_buildings):
                     break
 
             if not placed:
-                if adults:
-                    guardian = adults[child_idx % len(adults)]
-                    g_osm = npc_buildings[guardian]["osm_id"]
-                    g_bld = next(
-                        (b for b in buildings if b["osm_id"] == g_osm),
-                        buildings[0])
-                    _place(child_idx, g_bld)
-                else:
+                # Sollte nicht vorkommen (Waisen sterben in der Sim)
+                # Fallback: beim erstbesten zugewiesenen Erwachsenen
+                for other_id, other_b in npc_buildings.items():
+                    if other_id in member_set and world.npc[other_id, L.col("age")].item() >= 15:
+                        parent_bld = next(
+                            (b for b in buildings if b["osm_id"] == other_b["osm_id"]),
+                            buildings[0])
+                        _place(child_idx, parent_bld)
+                        placed = True
+                        break
+                if not placed:
                     _place(child_idx, buildings[0])
 
     world.npc_buildings = npc_buildings

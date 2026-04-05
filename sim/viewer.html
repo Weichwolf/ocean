@@ -74,6 +74,7 @@ body { font-family: 'SF Mono', 'Fira Code', monospace; background: #1a1a2e; colo
   <div id="sidebar" class="hidden">
     <div class="panel" id="npc-header"></div>
     <div class="panel" id="npc-ocean"></div>
+    <div class="panel" id="npc-emotions"></div>
     <div class="panel" id="npc-stats"></div>
     <div class="panel" id="npc-family"></div>
     <div class="panel" id="npc-connections"></div>
@@ -221,6 +222,38 @@ function selectNpc(id) {
   }
   document.getElementById('npc-ocean').innerHTML = oceanHtml;
 
+  // Emotions (VAD)
+  const valSign = n.valence >= 0 ? '+' : '';
+  const valColor = n.valence > 0.1 ? '#2ecc71' : n.valence < -0.1 ? '#e74c3c' : '#888';
+  const arousalDesc = n.arousal > 0.6 ? 'agitated' : n.arousal > 0.3 ? 'alert' : 'calm';
+  const valenceDesc = n.valence > 0.2 ? 'content' : n.valence > -0.1 ? 'neutral' : n.valence > -0.3 ? 'uneasy' : 'distressed';
+  // Discrete emotion from VAD
+  let emotion = 'neutral';
+  if (n.valence < -0.2 && n.arousal > 0.5) emotion = n.dominance > 0.5 ? 'angry' : 'afraid';
+  else if (n.valence < -0.2 && n.arousal <= 0.5) emotion = 'sad';
+  else if (n.valence > 0.2 && n.arousal > 0.3) emotion = 'happy';
+  else if (n.valence > 0.1) emotion = 'content';
+  else if (n.arousal > 0.5) emotion = 'tense';
+
+  const emotionColors = { happy: '#2ecc71', content: '#27ae60', neutral: '#888', tense: '#f39c12', sad: '#3498db', afraid: '#9b59b6', angry: '#e74c3c' };
+  document.getElementById('npc-emotions').innerHTML = `
+    <h2>Emotions</h2>
+    <div style="font-size:18px;font-weight:bold;color:${emotionColors[emotion] || '#888'};margin-bottom:8px">${emotion.toUpperCase()}</div>
+    <div class="ocean-bar">
+      <span class="ocean-label">V</span>
+      <div class="ocean-track" style="background:linear-gradient(to right, #e74c3c, #888 50%, #2ecc71)">
+        <div style="position:absolute;left:${(n.valence+1)/2*100}%;top:-2px;width:4px;height:12px;background:#fff;border-radius:2px"></div>
+      </div>
+      <span class="ocean-val" style="color:${valColor}">${valSign}${n.valence.toFixed(2)}</span>
+    </div>
+    <div class="ocean-bar">
+      <span class="ocean-label">A</span>
+      <div class="ocean-track"><div class="ocean-fill" style="width:${n.arousal*100}%;background:#e67e22"></div></div>
+      <span class="ocean-val">${n.arousal.toFixed(2)}</span>
+    </div>
+    <div style="font-size:11px;color:#666;margin-top:4px">${valenceDesc}, ${arousalDesc}</div>
+  `;
+
   // Stats
   const hpColor = n.health > 0.7 ? '#2ecc71' : n.health > 0.4 ? '#f39c12' : '#e74c3c';
   document.getElementById('npc-stats').innerHTML = `
@@ -228,7 +261,6 @@ function selectNpc(id) {
     <div class="stat-grid">
       <div class="stat"><div class="stat-label">Health</div><div class="stat-value" style="color:${hpColor}">${(n.health * 100).toFixed(0)}%</div></div>
       <div class="stat"><div class="stat-label">Calories</div><div class="stat-value">${n.calories.toFixed(1)}d</div></div>
-      <div class="stat"><div class="stat-label">Valence</div><div class="stat-value">${n.valence >= 0 ? '+' : ''}${n.valence.toFixed(2)}</div></div>
       <div class="stat"><div class="stat-label">Status</div><div class="stat-value">${n.status.toFixed(2)}</div></div>
     </div>
   `;

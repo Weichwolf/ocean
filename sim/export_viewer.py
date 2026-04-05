@@ -182,6 +182,8 @@ if __name__ == "__main__":
         by_settlement = assign_buildings_to_settlements(buildings, settlements)
         usable = select_usable_buildings(
             by_settlement, config["meta"].get("buildings_usable_pct", 0.02))
+        from osm import ensure_enough_buildings
+        usable = ensure_enough_buildings(usable, world, by_settlement)
         assign_npcs_to_buildings(world, usable)
 
     export_viewer_data(world, config)

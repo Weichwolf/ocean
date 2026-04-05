@@ -190,6 +190,21 @@ def init_world(config_path=None, seed=2100):
 
             households.append((a, b, kids))
 
+        # Übrige Kinder auf bestehende Haushalte verteilen
+        remaining_kids = children[child_idx:]
+        poi_hh = [h for h in households
+                  if h[0] in set(members) or h[1] in set(members)]
+        for ki, kid in enumerate(remaining_kids):
+            if poi_hh:
+                target = poi_hh[ki % len(poi_hh)]
+                target[2].append(kid)
+                npc[kid, layout.col("parent_a")] = float(target[1])
+                npc[kid, layout.col("parent_b")] = float(target[0])
+                rel[kid, target[0]] = rel[target[0], kid] = 0.6
+                rel[kid, target[1]] = rel[target[1], kid] = 0.7
+                trust[kid, target[0]] = trust[target[0], kid] = 0.2
+                trust[kid, target[1]] = trust[target[1], kid] = 0.3
+
     world = WorldState(
         npc=npc, poi=poi, assign=assign,
         rel=rel, trust=trust,
