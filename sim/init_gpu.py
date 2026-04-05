@@ -205,6 +205,9 @@ def init_world(config_path=None, seed=2100):
                 trust[kid, target[0]] = trust[target[0], kid] = 0.2
                 trust[kid, target[1]] = trust[target[1], kid] = 0.3
 
+    # Event-Log Tensor: initial 10k Slots
+    event_log = torch.zeros(10000, 7)
+
     world = WorldState(
         npc=npc, poi=poi, assign=assign,
         rel=rel, trust=trust,
@@ -212,6 +215,7 @@ def init_world(config_path=None, seed=2100):
         events=[], names=names, poi_names=poi_names,
         layout=layout, sim=sim,
         names_m=names_m, names_f=names_f,
+        event_log=event_log, event_cursor=0,
     )
     world.households = households
 

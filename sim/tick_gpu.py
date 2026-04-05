@@ -69,10 +69,19 @@ def tick(world: WorldState) -> dict:
     sick = torch.bernoulli(disease_prob * alive.float())
     disease_damage = sick * (0.1 + torch.rand(N, device=dev) * 0.2)
     summary["illnesses"] = int(sick.sum().item())
+    # Log illness events (batch)
+    sick_ids = sick.nonzero(as_tuple=True)[0]
+    if len(sick_ids) > 0:
+        sick_pois = world.assign[sick_ids].argmax(dim=1)
+        world.log_events_batch(world.tick + 1, 3, sick_ids, sick_pois)
 
     accident_prob = S.accident_base * (1 - c_trait * 0.4)
     accidents = torch.bernoulli(accident_prob * alive.float())
     accident_damage = accidents * (0.1 + torch.rand(N, device=dev) * 0.3)
+    acc_ids = accidents.nonzero(as_tuple=True)[0]
+    if len(acc_ids) > 0:
+        acc_pois = world.assign[acc_ids].argmax(dim=1)
+        world.log_events_batch(world.tick + 1, 4, acc_ids, acc_pois)
 
     age_decay = torch.where(age > S.age_decay_start,
                             S.age_decay_rate * (1 + (age - S.age_decay_start) / 20),
@@ -102,6 +111,8 @@ def tick(world: WorldState) -> dict:
         pi = int((world.assign[idx] > 0).nonzero(as_tuple=True)[0][0].item())
         summary["dead_names"].append((
             world.names[idx], int(world.npc[idx, age_col].item()), pi))
+        world.log_event(world.tick + 1, 2, npc_a=idx, poi_id=pi,
+                        val1=world.npc[idx, age_col].item())
 
     summary["deaths"] = len(summary["dead_names"])
 
@@ -185,6 +196,7 @@ def tick(world: WorldState) -> dict:
         world.max_id += 1
         summary["births"] += 1
         summary["born_names"].append((name, int(sex), pi))
+        world.log_event(world.tick + 1, 1, npc_a=ci, npc_b=mom_idx, poi_id=pi)
 
         # Kind zum Household der Eltern hinzufügen
         if hasattr(world, 'households'):
@@ -220,6 +232,7 @@ def tick(world: WorldState) -> dict:
                 current_pop[cur] -= 1
                 current_pop[new] += 1
                 summary["migrations"] += 1
+                world.log_event(world.tick + 1, 5, npc_a=idx, poi_id=new, val1=cur)
 
     # ── 6. SOZIALES ────────────────────────────────────
     if (world.tick + 1) % S.social_interval == 0:
@@ -268,6 +281,8 @@ def tick(world: WorldState) -> dict:
                 world.households.append((m, f, []))
                 summary.setdefault("new_pairs", []).append(
                     (world.names[m], world.names[f]))
+                pi = int((world.assign[m] > 0).nonzero(as_tuple=True)[0][0].item())
+                world.log_event(world.tick + 1, 6, npc_a=m, npc_b=f, poi_id=pi)
 
     # ── 7. ALTERN ──────────────────────────────────────
     world.npc[:, age_col] += alive.float() / 52.0

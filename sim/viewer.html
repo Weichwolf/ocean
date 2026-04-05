@@ -77,6 +77,7 @@ body { font-family: 'SF Mono', 'Fira Code', monospace; background: #1a1a2e; colo
     <div class="panel" id="npc-emotions"></div>
     <div class="panel" id="npc-stats"></div>
     <div class="panel" id="npc-family"></div>
+    <div class="panel" id="npc-events"></div>
     <div class="panel" id="npc-connections"></div>
   </div>
 </div>
@@ -290,6 +291,37 @@ function selectNpc(id) {
     famHtml += `<div class="family" onclick="selectNpc(${n.parent_b})"><span class="family-icon">&#9650;</span> ${pb.name} (${pb.age}, father)</div>`;
   }
   document.getElementById('npc-family').innerHTML = famHtml;
+
+  // Events
+  const eventIcons = { birth: '&#9733;', death: '&#9760;', illness: '&#9763;', injury: '&#9888;', migration: '&#10132;', pair: '&#9829;', adoption: '&#9826;', climate: '&#9729;' };
+  const eventColors = { birth: '#2ecc71', death: '#e74c3c', illness: '#f39c12', injury: '#e67e22', migration: '#3498db', pair: '#e91e63', adoption: '#9b59b6', climate: '#5dade2' };
+  let evtHtml = '';
+  if (n.events && n.events.length > 0) {
+    evtHtml = `<h2>History (${n.events.length} events)</h2><div class="conn-list">`;
+    const year0 = DATA.year - Math.floor(DATA.tick / 52);
+    n.events.slice().reverse().forEach(e => {
+      const yr = year0 + Math.floor(e.tick / 52);
+      const wk = (e.tick % 52) + 1;
+      const icon = eventIcons[e.type] || '&#9679;';
+      const color = eventColors[e.type] || '#888';
+      let detail = '';
+      if (e.other !== null && nodeIndex[e.other]) detail = ` – ${nodeIndex[e.other].name}`;
+      else if (e.other !== null && e.type === 'birth') detail = ' (born)';
+      if (e.poi !== null && DATA.settlements[e.poi]) {
+        const sname = DATA.settlements[e.poi].name;
+        if (e.type === 'migration') detail = ` → ${sname}`;
+      }
+      evtHtml += `<div style="padding:4px 0;border-bottom:1px solid #222;font-size:12px">
+        <span style="color:${color}">${icon}</span>
+        <span style="color:#666">Y${yr} W${wk}</span>
+        <span style="color:${color}">${e.type}</span>${detail}
+      </div>`;
+    });
+    evtHtml += '</div>';
+  } else {
+    evtHtml = '<h2>History</h2><div style="color:#555;font-size:12px">No recorded events</div>';
+  }
+  document.getElementById('npc-events').innerHTML = evtHtml;
 
   // Connections
   const conns = DATA.edges

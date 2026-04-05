@@ -262,6 +262,13 @@ class WorldState:
     names_m: list = field(default_factory=list)
     names_f: list = field(default_factory=list)
 
+    # Event log tensor: (MAX_EVENTS, 7)
+    # Columns: [tick, type, npc_a, npc_b, poi_id, val1, val2]
+    # type: 0=none, 1=birth, 2=death, 3=illness, 4=injury, 5=migration,
+    #       6=pair, 7=adoption, 8=climate
+    event_log: torch.Tensor = None
+    event_cursor: int = 0
+
     # References to config objects
     layout: TensorLayout = None
     sim: SimConfig = None
@@ -272,7 +279,67 @@ class WorldState:
         self.assign = self.assign.to(device)
         self.rel = self.rel.to(device)
         self.trust = self.trust.to(device)
+        if self.event_log is not None:
+            self.event_log = self.event_log.to(device)
         return self
+
+    def log_event(self, tick, etype, npc_a=-1, npc_b=-1, poi_id=-1, val1=0, val2=0):
+        """Append event to tensor log. O(1)."""
+        if self.event_log is None:
+            return
+        if self.event_cursor >= self.event_log.shape[0]:
+            # Verdopple Buffer
+            new_log = torch.zeros(self.event_log.shape[0] * 2, 7,
+                                  device=self.event_log.device)
+            new_log[:self.event_log.shape[0]] = self.event_log
+            self.event_log = new_log
+        self.event_log[self.event_cursor] = torch.tensor(
+            [tick, etype, npc_a, npc_b, poi_id, val1, val2],
+            device=self.event_log.device, dtype=torch.float32)
+        self.event_cursor += 1
+
+    def log_events_batch(self, tick, etype, npc_ids, poi_ids=None, val1=0):
+        """Batch-append events for multiple NPCs. O(k)."""
+        if self.event_log is None or len(npc_ids) == 0:
+            return
+        k = len(npc_ids) if isinstance(npc_ids, list) else npc_ids.shape[0]
+        needed = self.event_cursor + k
+        if needed > self.event_log.shape[0]:
+            new_size = max(needed * 2, self.event_log.shape[0] * 2)
+            new_log = torch.zeros(new_size, 7, device=self.event_log.device)
+            new_log[:self.event_log.shape[0]] = self.event_log
+            self.event_log = new_log
+        dev = self.event_log.device
+        if isinstance(npc_ids, list):
+            npc_ids = torch.tensor(npc_ids, device=dev, dtype=torch.float32)
+        else:
+            npc_ids = npc_ids.float()
+        batch = torch.zeros(k, 7, device=dev)
+        batch[:, 0] = tick
+        batch[:, 1] = etype
+        batch[:, 2] = npc_ids
+        if poi_ids is not None:
+            if isinstance(poi_ids, (int, float)):
+                batch[:, 4] = poi_ids
+            else:
+                batch[:, 4] = poi_ids.float() if torch.is_tensor(poi_ids) else torch.tensor(poi_ids, device=dev, dtype=torch.float32)
+        batch[:, 5] = val1
+        self.event_log[self.event_cursor:self.event_cursor + k] = batch
+        self.event_cursor += k
+
+    def get_events(self, npc_id=None, tick_start=None, tick_end=None):
+        """Query events from tensor. Returns (n, 7) tensor."""
+        if self.event_log is None or self.event_cursor == 0:
+            return torch.zeros(0, 7)
+        log = self.event_log[:self.event_cursor]
+        mask = torch.ones(log.shape[0], dtype=torch.bool, device=log.device)
+        if npc_id is not None:
+            mask = mask & ((log[:, 2] == npc_id) | (log[:, 3] == npc_id))
+        if tick_start is not None:
+            mask = mask & (log[:, 0] >= tick_start)
+        if tick_end is not None:
+            mask = mask & (log[:, 0] <= tick_end)
+        return log[mask]
 
     @property
     def alive_mask(self):

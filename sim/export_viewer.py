@@ -99,6 +99,23 @@ def export_viewer_data(world, config, path="sim/viewer_data.json"):
         if pb >= 0:
             node["parent_b"] = pb
 
+        # Events für diesen NPC
+        if world.event_log is not None and world.event_cursor > 0:
+            npc_events = world.get_events(npc_id=i)
+            if npc_events.shape[0] > 0:
+                EVENT_NAMES = {1: "birth", 2: "death", 3: "illness", 4: "injury",
+                               5: "migration", 6: "pair", 7: "adoption", 8: "climate"}
+                evts = []
+                for row in npc_events.cpu().numpy():
+                    evts.append({
+                        "tick": int(row[0]),
+                        "type": EVENT_NAMES.get(int(row[1]), "unknown"),
+                        "other": int(row[3]) if row[3] >= 0 else None,
+                        "poi": int(row[4]) if row[4] >= 0 else None,
+                        "val": round(float(row[5]), 2),
+                    })
+                node["events"] = evts
+
         nodes.append(node)
 
     # ── Edges (top connections per NPC) ─────────────────
