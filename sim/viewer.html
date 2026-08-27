@@ -209,16 +209,23 @@ function selectNpc(id) {
     </div>` : ''}
   `;
 
-  // OCEAN
+  // OCEAN – Strich markiert die Konstitution bei Geburt, Balken den heutigen Wert
   let oceanHtml = '<h2>Personality (OCEAN)</h2>';
   for (const [key, val] of Object.entries(n.ocean)) {
     const pct = Math.round(val * 100);
+    const d = (n.drift && n.drift[key]) || 0;
+    const birth = Math.round((val - d) * 100);
     const color = OCEAN_COLORS[key] || '#888';
     const label = OCEAN_LABELS[key] || key;
+    const dTxt = Math.abs(d) < 0.005 ? '' :
+      `<span style="color:${d > 0 ? '#e67e22' : '#3498db'};font-size:10px"> ${d > 0 ? '+' : ''}${d.toFixed(2)}</span>`;
     oceanHtml += `<div class="ocean-bar">
-      <span class="ocean-label" title="${label}">${key.toUpperCase()}</span>
-      <div class="ocean-track"><div class="ocean-fill" style="width:${pct}%;background:${color}"></div></div>
-      <span class="ocean-val">${val.toFixed(2)}</span>
+      <span class="ocean-label" title="${label} – Strich = Wert bei Geburt">${key.toUpperCase()}</span>
+      <div class="ocean-track">
+        <div class="ocean-fill" style="width:${pct}%;background:${color}"></div>
+        <div title="bei Geburt" style="position:absolute;left:${birth}%;top:-2px;width:2px;height:12px;background:#fff;opacity:.7"></div>
+      </div>
+      <span class="ocean-val">${val.toFixed(2)}${dTxt}</span>
     </div>`;
   }
   document.getElementById('npc-ocean').innerHTML = oceanHtml;
@@ -240,6 +247,18 @@ function selectNpc(id) {
   document.getElementById('npc-emotions').innerHTML = `
     <h2>Emotions</h2>
     <div style="font-size:18px;font-weight:bold;color:${emotionColors[emotion] || '#888'};margin-bottom:8px">${emotion.toUpperCase()}</div>
+    <div class="ocean-bar">
+      <span class="ocean-label" title="Grundstimmung – verschiebt sich durch Verluste und bleibt Jahre">SET</span>
+      <div class="ocean-track" style="background:linear-gradient(to right, #e74c3c, #888 50%, #2ecc71)">
+        <div style="position:absolute;left:${((n.valence_base||0)+1)/2*100}%;top:-2px;width:4px;height:12px;background:#fff;border-radius:2px"></div>
+      </div>
+      <span class="ocean-val">${(n.valence_base||0) >= 0 ? '+' : ''}${(n.valence_base||0).toFixed(2)}</span>
+    </div>
+    <div class="ocean-bar">
+      <span class="ocean-label" title="Allostatische Last">STR</span>
+      <div class="ocean-track"><div class="ocean-fill" style="width:${(n.stress||0)*100}%;background:#c0392b"></div></div>
+      <span class="ocean-val">${(n.stress||0).toFixed(2)}</span>
+    </div>
     <div class="ocean-bar">
       <span class="ocean-label">V</span>
       <div class="ocean-track" style="background:linear-gradient(to right, #e74c3c, #888 50%, #2ecc71)">
@@ -293,8 +312,8 @@ function selectNpc(id) {
   document.getElementById('npc-family').innerHTML = famHtml;
 
   // Events
-  const eventIcons = { birth: '&#9733;', death: '&#9760;', illness: '&#9763;', injury: '&#9888;', migration: '&#10132;', pair: '&#9829;', adoption: '&#9826;', climate: '&#9729;' };
-  const eventColors = { birth: '#2ecc71', death: '#e74c3c', illness: '#f39c12', injury: '#e67e22', migration: '#3498db', pair: '#e91e63', adoption: '#9b59b6', climate: '#5dade2' };
+  const eventIcons = { birth: '&#9733;', death: '&#9760;', illness: '&#9763;', injury: '&#9888;', migration: '&#10132;', pair: '&#9829;', adoption: '&#9826;', climate: '&#9729;', bereavement: '&#10013;' };
+  const eventColors = { birth: '#2ecc71', death: '#e74c3c', illness: '#f39c12', injury: '#e67e22', migration: '#3498db', pair: '#e91e63', adoption: '#9b59b6', climate: '#5dade2', bereavement: '#8e44ad' };
   let evtHtml = '';
   if (n.events && n.events.length > 0) {
     evtHtml = `<h2>History (${n.events.length} events)</h2><div class="conn-list">`;
@@ -307,9 +326,13 @@ function selectNpc(id) {
       let detail = '';
       if (e.other !== null && nodeIndex[e.other]) detail = ` – ${nodeIndex[e.other].name}`;
       else if (e.other !== null && e.type === 'birth') detail = ' (born)';
+      if (e.type === 'bereavement') detail = detail ? ` um${detail.slice(2)}` : ' (Verlust)';
       if (e.poi !== null && DATA.settlements[e.poi]) {
         const sname = DATA.settlements[e.poi].name;
-        if (e.type === 'migration') detail = ` → ${sname}`;
+        if (e.type === 'migration') {
+          const from = (e.from !== null && DATA.settlements[e.from]) ? DATA.settlements[e.from].name + ' ' : '';
+          detail = ` ${from}→ ${sname}`;
+        }
       }
       evtHtml += `<div style="padding:4px 0;border-bottom:1px solid #222;font-size:12px">
         <span style="color:${color}">${icon}</span>
@@ -333,19 +356,17 @@ function selectNpc(id) {
       return { ...e, other, otherId };
     })
     .filter(Boolean)
-    .sort((a, b) => b.affinity - a.affinity)
+    .sort((a, b) => b.bond - a.bond)
     .slice(0, 20);
 
   let connHtml = `<h2>Connections (${conns.length})</h2><div class="conn-list">`;
   conns.forEach(c => {
-    const trustColor = c.trust > 0 ? '#2ecc71' : c.trust < 0 ? '#e74c3c' : '#555';
     connHtml += `<div class="conn" onclick="selectNpc(${c.otherId})">
       <div class="conn-dot" style="background:${c.other.color}"></div>
       <div class="conn-name">${c.other.name}<br><span class="conn-meta">${c.other.role}, ${c.other.age}</span></div>
       <div style="text-align:right">
-        <div class="conn-meta">aff ${c.affinity.toFixed(2)}</div>
-        <div class="conn-bar"><div class="conn-bar-fill" style="width:${c.affinity*100}%;background:${c.other.color}"></div></div>
-        <div class="conn-meta" style="color:${trustColor}">trust ${c.trust >= 0 ? '+' : ''}${c.trust.toFixed(2)}</div>
+        <div class="conn-meta">bond ${c.bond.toFixed(2)}</div>
+        <div class="conn-bar"><div class="conn-bar-fill" style="width:${c.bond*100}%;background:${c.other.color}"></div></div>
       </div>
     </div>`;
   });
@@ -357,7 +378,7 @@ function selectNpc(id) {
   if (showConnections) {
     conns.forEach(c => {
       const line = L.polyline([[n.lat, n.lon], [c.other.lat, c.other.lon]], {
-        color: c.other.color, weight: Math.max(1, c.affinity * 4), opacity: 0.4,
+        color: c.other.color, weight: Math.max(1, c.bond * 4), opacity: 0.4,
       }).addTo(map);
       lines.push(line);
       // Highlight connected markers

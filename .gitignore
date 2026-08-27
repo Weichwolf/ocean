@@ -4,3 +4,5 @@ __pycache__/
 *.db
 *.egg-info/
 sim/osm_*.json
+sim/viewer_data.json
+sim/.bench_config.json

@@ -2,7 +2,7 @@
 OCEAN Simulator – Viewer Server.
 
 Exportiert Viewer-Daten und startet HTTP-Server.
-Usage: python3 sim/serve.py [--port 8080] [--skip-export]
+Usage: python3 sim/serve.py [--port 8080] [--years 10] [--skip-export]
 """
 
 import http.server
@@ -11,6 +11,7 @@ import sys
 import webbrowser
 
 PORT = 8080
+YEARS = 10
 SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 
 if __name__ == "__main__":
@@ -19,12 +20,16 @@ if __name__ == "__main__":
     for i, a in enumerate(args):
         if a == "--port" and i + 1 < len(args):
             PORT = int(args[i + 1])
+        if a == "--years" and i + 1 < len(args):
+            YEARS = int(args[i + 1])
 
     if "--skip-export" not in args:
         sys.path.insert(0, SIM_DIR)
+        import time
         from export_viewer import export_viewer_data
         from init_gpu import init_world
-        from world import load_config
+        from tick_gpu import run
+        from world import DEVICE, load_config
         from osm import (
             fetch_buildings, parse_buildings, settlements_with_coords,
             assign_buildings_to_settlements, select_usable_buildings,
@@ -32,7 +37,14 @@ if __name__ == "__main__":
         )
 
         config, layout, sim = load_config()
-        world = init_world()
+        world = init_world().to(DEVICE)
+
+        print(f"  Simuliere {YEARS} Jahre auf {DEVICE} ...")
+        t0 = time.time()
+        run(world, 52 * YEARS)
+        world = world.to("cpu")
+        print(f"  {52 * YEARS} Ticks in {time.time() - t0:.1f}s, "
+              f"{world.n_alive} NPCs, {world.event_cursor} Ereignisse")
 
         bbox = config["meta"].get("osm_bbox")
         if bbox:

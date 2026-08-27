@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS npc_state (
     arousal DOUBLE DEFAULT 0.3,
     dominance DOUBLE DEFAULT 0.5,
     status DOUBLE DEFAULT 0.0,
+    stress DOUBLE DEFAULT 0.0,
+    valence_base DOUBLE DEFAULT 0.0,
     social_vec DOUBLE[],
     PRIMARY KEY (npc_id, tick)
 );
@@ -47,8 +49,7 @@ CREATE TABLE IF NOT EXISTS edges (
     tick INTEGER NOT NULL,
     npc_a INTEGER NOT NULL,
     npc_b INTEGER NOT NULL,
-    affinity DOUBLE NOT NULL,
-    trust DOUBLE DEFAULT 0.0,
+    bond DOUBLE NOT NULL,
     PRIMARY KEY (tick, npc_a, npc_b)
 );
 

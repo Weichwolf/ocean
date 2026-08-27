@@ -77,10 +77,18 @@ def export_viewer_data(world, config, path="sim/viewer_data.json"):
                 t: round(world.npc[i, L.col(t)].item(), 2)
                 for t in L.trait_names
             },
+            "drift": {
+                t: round(world.npc[i, L.trait_start() + k].item()
+                         - world.npc[i, L.base_start() + k].item(), 3)
+                for k, t in enumerate(L.trait_names)
+            },
             "health": round(world.npc[i, L.col("health")].item(), 2),
             "calories": round(world.npc[i, L.col("calories")].item(), 1),
             "valence": round(world.npc[i, L.col("valence")].item(), 2),
             "arousal": round(world.npc[i, L.col("arousal")].item(), 2),
+            "dominance": round(world.npc[i, L.col("dominance")].item(), 2),
+            "valence_base": round(world.npc[i, L.col("valence_base")].item(), 2),
+            "stress": round(world.npc[i, L.col("stress")].item(), 2),
             "status": round(world.npc[i, L.col("status")].item(), 2),
         }
 
@@ -94,17 +102,21 @@ def export_viewer_data(world, config, path="sim/viewer_data.json"):
         # Eltern
         pa = int(world.npc[i, L.col("parent_a")].item())
         pb = int(world.npc[i, L.col("parent_b")].item())
+        pt = int(world.npc[i, L.col("partner")].item())
         if pa >= 0:
             node["parent_a"] = pa
         if pb >= 0:
             node["parent_b"] = pb
+        if pt >= 0:
+            node["partner"] = pt
 
         # Events für diesen NPC
         if world.event_log is not None and world.event_cursor > 0:
             npc_events = world.get_events(npc_id=i)
             if npc_events.shape[0] > 0:
                 EVENT_NAMES = {1: "birth", 2: "death", 3: "illness", 4: "injury",
-                               5: "migration", 6: "pair", 7: "adoption", 8: "climate"}
+                               5: "migration", 6: "pair", 7: "adoption", 8: "climate",
+                               9: "bereavement"}
                 evts = []
                 for row in npc_events.cpu().numpy():
                     evts.append({
@@ -113,43 +125,45 @@ def export_viewer_data(world, config, path="sim/viewer_data.json"):
                         "other": int(row[3]) if row[3] >= 0 else None,
                         "poi": int(row[4]) if row[4] >= 0 else None,
                         "val": round(float(row[5]), 2),
+                        "from": (int(row[5]) if int(row[1]) == 5 else None),
                     })
                 node["events"] = evts
 
         nodes.append(node)
 
-    # ── Edges (top connections per NPC) ─────────────────
+    # ── Kanten aus der Bindungsliste ────────────────────
     edges = []
-    rel_np = world.rel.cpu().numpy() if world.rel.device.type != "cpu" else world.rel.numpy()
-    trust_np = world.trust.cpu().numpy() if world.trust.device.type != "cpu" else world.trust.numpy()
+    bond_idx = world.bond_idx.cpu().numpy()
+    bond_val = world.bond_val.cpu().numpy()
     alive_set = set(alive_ids)
+    seen = set()
 
     for i in alive_ids:
-        # Top 8 connections
-        row = rel_np[i]
-        top_indices = np.argsort(-row)[:20]
-        for j in top_indices:
-            j = int(j)
-            if j not in alive_set or j <= i:
+        for k in range(bond_idx.shape[1]):
+            j = int(bond_idx[i, k])
+            v = float(bond_val[i, k])
+            if j < 0 or j not in alive_set or v < 0.1:
                 continue
-            aff = float(row[j])
-            tr = float(trust_np[i, j])
-            if aff > 0.15 or abs(tr) > 0.1:
-                edges.append({
-                    "source": i,
-                    "target": j,
-                    "affinity": round(aff, 3),
-                    "trust": round(tr, 3),
-                })
+            key = (min(i, j), max(i, j))
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({"source": key[0], "target": key[1], "bond": round(v, 3)})
 
     # ── Households ──────────────────────────────────────
     households = []
-    for a, b, kids in getattr(world, "households", []):
-        if a in alive_set and b in alive_set:
-            households.append({
-                "partners": [a, b],
-                "children": [k for k in kids if k in alive_set],
-            })
+    children_of = {}
+    for i in alive_ids:
+        for col in ("parent_a", "parent_b"):
+            p = int(world.npc[i, L.col(col)].item())
+            if p >= 0:
+                children_of.setdefault(p, set()).add(i)
+    for a in alive_ids:
+        b = int(world.npc[a, L.col("partner")].item())
+        if b <= a or b not in alive_set:
+            continue
+        kids = sorted(children_of.get(a, set()) | children_of.get(b, set()))
+        households.append({"partners": [a, b], "children": kids})
 
     # ── Settlements ─────────────────────────────────────
     sett_list = []

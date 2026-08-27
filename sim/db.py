@@ -67,8 +67,8 @@ def snapshot(world: WorldState, db=None):
     npc_np = _to_np(world.npc)
     poi_np = _to_np(world.poi)
     assign_np = _to_np(world.assign)
-    rel_np = _to_np(world.rel)
-    trust_np = _to_np(world.trust)
+    bond_idx = _to_np(world.bond_idx).astype(int)
+    bond_val = _to_np(world.bond_val)
     alive = npc_np[:, L.col("alive")] > 0.5
 
     alive_ids = np.where(alive)[0]
@@ -94,7 +94,7 @@ def snapshot(world: WorldState, db=None):
     role_names = L.role_names
     trait_names = L.trait_names
 
-    for i in range(world.max_id):
+    for i in range(world.n_created):
         poi_idx = int(assign_np[i].argmax())
         fs, fe = L.faction_start(), L.faction_end()
         rs, re = L.role_start(), L.role_end()
@@ -153,30 +153,37 @@ def snapshot(world: WorldState, db=None):
             float(npc_np[i, L.col("arousal")]),
             float(npc_np[i, L.col("dominance")]),
             float(npc_np[i, L.col("status")]),
+            float(npc_np[i, L.col("stress")]),
+            float(npc_np[i, L.col("valence_base")]),
             social,
         ))
     if state_rows:
         db.executemany("""
             INSERT INTO npc_state (npc_id, tick, poi_id, health, calories_stored,
-                                   valence, arousal, dominance, status, social_vec)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   valence, arousal, dominance, status, stress,
+                                   valence_base, social_vec)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, state_rows)
 
-    # ── Edges (nur signifikante) ────────────────────────
+    # ── Kanten aus der Bindungsliste: O(N·K) statt O(N²) ─
+    live = set(int(x) for x in alive_ids)
+    seen = set()
     edge_rows = []
-    for i_pos, i in enumerate(alive_ids):
-        for j_pos, j in enumerate(alive_ids):
-            if j <= i:
+    for i in alive_ids:
+        for k in range(bond_idx.shape[1]):
+            j, v = int(bond_idx[i, k]), float(bond_val[i, k])
+            if j < 0 or j not in live or v <= EDGE_THRESHOLD:
                 continue
-            aff = float(rel_np[i, j])
-            tr = float(trust_np[i, j])
-            if aff > EDGE_THRESHOLD or abs(tr) > TRUST_THRESHOLD:
-                edge_rows.append((tick, int(i), int(j), round(aff, 4), round(tr, 4)))
+            key = (min(int(i), j), max(int(i), j))
+            if key in seen:
+                continue
+            seen.add(key)
+            edge_rows.append((tick, key[0], key[1], round(v, 4)))
 
     if edge_rows:
         db.executemany("""
-            INSERT INTO edges (tick, npc_a, npc_b, affinity, trust)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO edges (tick, npc_a, npc_b, bond)
+            VALUES (?, ?, ?, ?)
         """, edge_rows)
 
     # ── Gruppen (HDBSCAN) ──────────────────────────────
@@ -269,14 +276,14 @@ def query_neighbors(db, npc_id, tick=None, limit=10):
         tick = db.execute("SELECT MAX(tick) FROM edges").fetchone()[0]
     return db.execute("""
         SELECT CASE WHEN e.npc_a = ? THEN e.npc_b ELSE e.npc_a END as other_id,
-               n.name, e.affinity, e.trust,
+               n.name, e.bond,
                ns.health, p.name as poi_name
         FROM edges e
         JOIN npcs n ON n.id = CASE WHEN e.npc_a = ? THEN e.npc_b ELSE e.npc_a END
         LEFT JOIN npc_state ns ON ns.npc_id = n.id AND ns.tick = ?
         LEFT JOIN pois p ON p.id = ns.poi_id
         WHERE e.tick = ? AND (e.npc_a = ? OR e.npc_b = ?)
-        ORDER BY e.affinity DESC
+        ORDER BY e.bond DESC
         LIMIT ?
     """, [npc_id, npc_id, tick, tick, npc_id, npc_id, limit]).fetchall()
 

@@ -5,9 +5,11 @@ OCEAN – Generischer NPC/World Simulator. Weltgenerierung aus Config.
 import torch
 import numpy as np
 from faker import Faker
+import social
 from world import (
-    DEVICE, POILayout, WorldState,
+    DEVICE, NameTable, POILayout, WorldState,
     load_config, assign_roles, compute_social_embedding,
+    compute_provision, group_first_mask, role_demand, smooth_provision,
 )
 
 
@@ -18,12 +20,12 @@ def init_world(config_path=None, seed=2100):
     config, layout, sim = load_config(config_path)
     settlements = config["settlements"]
     factions = config["factions"]
+    L = layout
 
-    # Namen: aus Faker (locale + seed) oder statischer Liste
     names_cfg = config.get("names", {})
     if "locale" in names_cfg:
         fake = Faker(names_cfg["locale"])
-        Faker.seed(seed)  # deterministisch
+        Faker.seed(seed)
         pool = names_cfg.get("pool_size", 100)
         names_m = list({fake.first_name_male() for _ in range(pool * 3)})[:pool]
         names_f = list({fake.first_name_female() for _ in range(pool * 3)})[:pool]
@@ -32,193 +34,151 @@ def init_world(config_path=None, seed=2100):
         names_f = names_cfg.get("f", ["Mary", "Jane", "Alice", "Emma"])
 
     n_poi = len(settlements)
+    poi = torch.tensor([[s["x"], s["y"], s["capacity"], s["water"],
+                         s["food"], s["danger"], s["shelter"]] for s in settlements])
+    poi_names = [s["name"] for s in settlements]
 
-    # ── POI-Tensor ──────────────────────────────────────
-    poi = torch.zeros(n_poi, POILayout.D_POI)
-    poi_names = []
-
-    for i, s in enumerate(settlements):
-        poi[i] = torch.tensor([
-            s["x"], s["y"], s["capacity"], s["water"],
-            s["food"], s["danger"], s["shelter"]
-        ])
-        poi_names.append(s["name"])
-
-    # ── NPC-Tensor ──────────────────────────────────────
+    # Papierkorbzeile am Ende: Schreibvorgänge nicht ausgewählter Elemente laufen
+    # dorthin, damit der Tick ohne Verzweigung auskommt.
     MAX = sim.max_npcs
-    npc = torch.zeros(MAX, layout.D_NPC)
-    assign = torch.zeros(MAX, n_poi)
-    names = [""] * MAX
-    n_created = 0
+    npc = torch.zeros(MAX + 1, L.D_NPC)
+    assign = torch.zeros(MAX + 1, n_poi)
 
-    for poi_idx, s in enumerate(settlements):
-        faction_name = s["faction"]
-        faction_idx = layout.faction_names.index(faction_name)
-        faction_spec = factions[faction_name]
+    pops = torch.tensor([s["pop"] for s in settlements])
+    n = int(pops.sum())
+    if n > MAX:
+        raise ValueError(f"Bevölkerung {n} > max_npcs {MAX}")
+    who = torch.arange(n)
+    poi_of = torch.repeat_interleave(torch.arange(n_poi), pops)
 
-        # Trait-Profile aus Config
-        trait_mu = torch.tensor([faction_spec["traits"][t][0] for t in layout.trait_names])
-        trait_std = torch.tensor([faction_spec["traits"][t][1] for t in layout.trait_names])
+    f_idx = torch.tensor([L.faction_names.index(s["faction"]) for s in settlements])
+    mu = torch.tensor([[factions[s["faction"]]["traits"][t][0] for t in L.trait_names]
+                       for s in settlements])
+    sd = torch.tensor([[factions[s["faction"]]["traits"][t][1] for t in L.trait_names]
+                       for s in settlements])
 
-        for _ in range(s["pop"]):
-            i = n_created
-            sex = np.random.choice([0.0, 1.0])
-            names[i] = np.random.choice(names_m if sex == 0 else names_f)
+    traits = (mu[poi_of] + sd[poi_of] * torch.randn(n, L.n_traits)).clamp(0, 1)
+    ages = torch.from_numpy(np.random.triangular(
+        sim.age_dist["min"], sim.age_dist["mode"], sim.age_dist["max"], n)).float()
+    sex = torch.randint(2, (n,)).float()
+    u = torch.rand(n)
 
-            age = np.random.triangular(
-                sim.age_dist["min"], sim.age_dist["mode"], sim.age_dist["max"])
+    npc[who, None] = 0
+    npc[:n, L.trait_start():L.trait_end()] = traits
+    npc[:n, L.base_start():L.base_end()] = traits
+    npc[:n, L.col("health")] = torch.where(ages < 55, 0.8 + u * 0.2, 0.6 + u * 0.2)
+    npc[:n, L.col("calories")] = 7.0 + torch.rand(n) * 14.0
+    npc[:n, L.col("age")] = ages
+    npc[:n, L.col("valence")] = -0.1 + torch.rand(n) * 0.4
+    npc[:n, L.col("arousal")] = 0.2 + torch.rand(n) * 0.3
+    npc[:n, L.col("dominance")] = 0.3 + torch.rand(n) * 0.4
+    npc[:n, L.col("sex")] = sex
+    npc[:n, L.col("born_tick")] = -ages * 52
+    npc[:n, L.col("name_idx")] = torch.randint(1 << 20, (n,)).float()
+    npc[who, L.faction_start() + f_idx[poi_of]] = 1.0
+    npc[:n, L.col("alive")] = 1.0
+    npc[:n, L.col("parent_a")] = -1
+    npc[:n, L.col("parent_b")] = -1
+    npc[:n, L.col("partner")] = -1
+    assign[who, poi_of] = 1.0
 
-            # Traits
-            traits = (trait_mu + trait_std * torch.randn(layout.n_traits)).clamp(0, 1)
-            npc[i, layout.trait_start():layout.trait_end()] = traits
+    A = config["affect"]
+    n_idx = L.trait_start() + L.trait_names.index("n")
+    alive = npc[:, L.col("alive")]
+    npc[:, L.col("valence_base")] = (
+        A["temperament_base"] - A["temperament_n_weight"] * (npc[:, n_idx] - 0.5)) * alive
+    npc[:, L.col("stress")] = ((0.10 + 0.25 * npc[:, n_idx]
+                                + 0.004 * npc[:, L.col("age")]) * alive).clamp(0, 1)
 
-            # Vitals
-            npc[i, layout.col("health")] = 0.8 + np.random.random() * 0.2 if age < 55 else 0.6 + np.random.random() * 0.2
-            npc[i, layout.col("calories")] = 7.0 + np.random.random() * 14.0
-            npc[i, layout.col("age")] = age
+    # Rollen: erst Eignung, dann Bedarf – Trägheit verhindert das Schwingen
+    npc[:, L.role_start():L.role_end()] = assign_roles(npc, L, sim)
+    box = type("Box", (), {"prov_ema": None})()
+    for _ in range(24):
+        per_capita, _ = compute_provision(npc, assign, L, sim, alive > 0)
+        npc[:, L.role_start():L.role_end()] = assign_roles(
+            npc, L, sim,
+            demand=assign @ role_demand(smooth_provision(box, per_capita, sim), sim))
 
-            # Emotions
-            npc[i, layout.col("valence")] = -0.1 + np.random.random() * 0.4
-            npc[i, layout.col("arousal")] = 0.2 + np.random.random() * 0.3
-            npc[i, layout.col("dominance")] = 0.3 + np.random.random() * 0.4
+    standing = npc[:, L.role_start():L.role_end()] @ sim.role_standing
+    npc[:, L.col("status")] = ((sim.status_role_weight * standing
+                                + 0.30 * (npc[:, L.col("age")] / 60).clamp(max=1)
+                                + (0.70 - sim.status_role_weight) * 0.5) * alive).clamp(0, 1)
+    npc[:, L.social_start():L.social_end()] = compute_social_embedding(
+        npc, assign, poi, L, sim)
 
-            # Demographics
-            npc[i, layout.col("sex")] = sex
-            npc[i, layout.col("born_tick")] = -age * 52
+    # ── Bindungen, Paare, Familien – alles über Stichproben, kein N² ──
+    K = sim.bond_slots
+    bond_idx = torch.full((MAX + 1, K), -1, dtype=torch.long)
+    bond_val = torch.zeros(MAX + 1, K)
+    ids = torch.arange(MAX + 1)
+    feats = social.social_features(npc, L, sim)
+    poi_all = assign.argmax(dim=1)
+    roster = social.build_roster(poi_all, n_poi, alive)
+    M = sim.bond_peer_samples
 
-            # Faction one-hot
-            npc[i, layout.faction_start() + faction_idx] = 1.0
+    def best_match(pool_mask):
+        peers = social.sample_peers(poi_all, *roster, M)
+        aff = (social.affinity(feats, ids.unsqueeze(1).expand(-1, M), peers,
+                               sim.affinity_sigma)
+               * (peers != ids.unsqueeze(1)).float() * pool_mask[peers])
+        best, j = aff.max(dim=1)
+        return peers.gather(1, j.unsqueeze(1)).squeeze(1), best
 
-            # Meta
-            npc[i, layout.col("status")] = min(age, 60) / 60.0
-            npc[i, layout.col("alive")] = 1.0
-            npc[i, layout.col("parent_a")] = -1
-            npc[i, layout.col("parent_b")] = -1
+    for _ in range(4):
+        target, best = best_match(alive)
+        social.bond_strengthen(bond_idx, bond_val, target, best,
+                               alive * (best > sim.bond_min).float())
 
-            assign[i, poi_idx] = 1.0
-            n_created += 1
+    adult = alive * (npc[:, L.col("age")] >= 18).float()
+    free_m = adult * (npc[:, L.col("sex")] < 0.5).float()
+    free_f = adult * (npc[:, L.col("sex")] > 0.5).float()
+    mate, score = best_match(free_f)
+    pair = free_m * (score > 0.3).float() * (torch.rand(MAX + 1) < 0.7).float()
+    pair = pair * group_first_mask(mate, torch.where(pair > 0, score,
+                                                     torch.full_like(score, -1e9))).float()
+    npc[:, L.col("partner")] = torch.where(pair > 0, mate.float(),
+                                           npc[:, L.col("partner")])
+    m_dest = torch.where(pair > 0, mate, torch.full_like(mate, MAX))
+    npc[:, L.col("partner")].scatter_(0, m_dest, ids.float())
+    social.bond_strengthen(bond_idx, bond_val, mate,
+                           torch.full_like(pair, 0.9), pair)
+    social.bond_strengthen(bond_idx, bond_val, ids,
+                           torch.zeros(MAX + 1).scatter_(0, m_dest, pair * 0.9),
+                           torch.zeros(MAX + 1).scatter_(0, m_dest, pair))
 
-    # Rollen
-    alive_mask = npc[:, layout.col("alive")].bool()
-    roles = assign_roles(npc, layout, sim)
-    npc[:, layout.role_start():layout.role_end()] = roles
+    # Kinder an vorhandene Haushalte: Väter als Stichprobenmenge
+    father_pool = pair
+    kid = alive * (npc[:, L.col("age")] < 15).float()
+    dads, _ = best_match(father_pool)
+    has_dad = father_pool[dads]
+    take = kid * has_dad
+    npc[:, L.col("parent_b")] = torch.where(take > 0, dads.float(),
+                                            npc[:, L.col("parent_b")])
+    npc[:, L.col("parent_a")] = torch.where(take > 0, npc[dads, L.col("partner")],
+                                            npc[:, L.col("parent_a")])
+    social.bond_strengthen(bond_idx, bond_val, dads, torch.full_like(take, 0.8), take)
+    social.bond_strengthen(bond_idx, bond_val, npc[:, L.col("parent_a")].long().clamp(min=0),
+                           torch.full_like(take, 0.9), take)
 
-    # Social Embeddings
-    social = compute_social_embedding(npc, assign, poi, layout, sim)
-    npc[:, layout.social_start():layout.social_end()] = social
-
-    # ── Relationships ───────────────────────────────────
-    rel = torch.zeros(MAX, MAX)
-    trust = torch.zeros(MAX, MAX)
-
-    # Basis: Siedlungs-Nachbarn kennen sich
-    for poi_idx in range(n_poi):
-        members = assign[:, poi_idx].nonzero(as_tuple=True)[0]
-        n_m = len(members)
-        if n_m < 2:
-            continue
-        base = 0.3 if n_m < 30 else 0.15 if n_m < 60 else 0.08
-        for a in members:
-            for b in members:
-                if a < b:
-                    val = base + np.random.random() * 0.2
-                    rel[a, b] = val
-                    rel[b, a] = val
-
-    # ── Paare und Familien bilden ──────────────────────
-    households = []
-
-    def pair_score(m, f):
-        om = npc[m, layout.trait_start():layout.trait_end()]
-        of_ = npc[f, layout.trait_start():layout.trait_end()]
-        s = (1 - abs(om[0] - of_[0]).item()) * 0.3   # ähnliches O
-        s += (1 - abs(om[3] - of_[3]).item()) * 0.3   # ähnliches A
-        s += abs(om[2] - of_[2]).item() * 0.1          # komplementäres E
-        s -= om[4].item() * of_[4].item() * 0.2        # hohes N×N = instabil
-        age_diff = abs(npc[m, layout.col("age")].item() - npc[f, layout.col("age")].item())
-        s -= min(age_diff / 30, 0.3)
-        return s
-
-    for poi_idx in range(n_poi):
-        members = assign[:, poi_idx].nonzero(as_tuple=True)[0].tolist()
-        adults_m = [i for i in members if npc[i, layout.col("sex")].item() == 0
-                    and npc[i, layout.col("age")].item() >= 18]
-        adults_f = [i for i in members if npc[i, layout.col("sex")].item() == 1
-                    and npc[i, layout.col("age")].item() >= 18]
-        children = [i for i in members if npc[i, layout.col("age")].item() < 15]
-
-        # Greedy Matching nach Kompatibilität
-        pairs = []
-        if adults_m and adults_f:
-            scores = [(m, f, pair_score(m, f)) for m in adults_m for f in adults_f]
-            scores.sort(key=lambda x: -x[2])
-            paired_m, paired_f = set(), set()
-            for m, f, sc in scores:
-                if m in paired_m or f in paired_f:
-                    continue
-                if sc < 0:
-                    continue
-                pairs.append((m, f))
-                paired_m.add(m)
-                paired_f.add(f)
-                if len(pairs) >= int(min(len(adults_m), len(adults_f)) * 0.7):
-                    break
-
-        child_idx = 0
-        for a, b in pairs:
-            rel[a, b] = rel[b, a] = 0.8 + np.random.random() * 0.2
-            trust[a, b] = trust[b, a] = 0.4 + np.random.random() * 0.3
-
-            n_kids = min(np.random.choice([0, 1, 1, 2, 2, 3]),
-                         len(children) - child_idx)
-            kids = []
-            for _ in range(n_kids):
-                kid = children[child_idx]
-                npc[kid, layout.col("parent_a")] = float(b)  # Mutter
-                npc[kid, layout.col("parent_b")] = float(a)  # Vater
-                rel[kid, a] = rel[a, kid] = 0.7 + np.random.random() * 0.2
-                rel[kid, b] = rel[b, kid] = 0.85 + np.random.random() * 0.15
-                trust[kid, a] = trust[a, kid] = 0.3
-                trust[kid, b] = trust[b, kid] = 0.5
-                kids.append(kid)
-                child_idx += 1
-
-            for ci in range(len(kids)):
-                for cj in range(ci + 1, len(kids)):
-                    rel[kids[ci], kids[cj]] = rel[kids[cj], kids[ci]] = 0.6
-                    trust[kids[ci], kids[cj]] = trust[kids[cj], kids[ci]] = 0.2
-
-            households.append((a, b, kids))
-
-        # Übrige Kinder auf bestehende Haushalte verteilen
-        remaining_kids = children[child_idx:]
-        poi_hh = [h for h in households
-                  if h[0] in set(members) or h[1] in set(members)]
-        for ki, kid in enumerate(remaining_kids):
-            if poi_hh:
-                target = poi_hh[ki % len(poi_hh)]
-                target[2].append(kid)
-                npc[kid, layout.col("parent_a")] = float(target[1])
-                npc[kid, layout.col("parent_b")] = float(target[0])
-                rel[kid, target[0]] = rel[target[0], kid] = 0.6
-                rel[kid, target[1]] = rel[target[1], kid] = 0.7
-                trust[kid, target[0]] = trust[target[0], kid] = 0.2
-                trust[kid, target[1]] = trust[target[1], kid] = 0.3
-
-    # Event-Log Tensor: initial 10k Slots
-    event_log = torch.zeros(10000, 7)
+    npc[MAX] = 0
+    assign[MAX] = 0
+    bond_idx[MAX] = -1
+    bond_val[MAX] = 0
 
     world = WorldState(
         npc=npc, poi=poi, assign=assign,
-        rel=rel, trust=trust,
-        tick=0, max_id=n_created,
-        events=[], names=names, poi_names=poi_names,
-        layout=layout, sim=sim,
+        bond_idx=bond_idx, bond_val=bond_val,
+        tick=0, max_id=torch.tensor(float(n)),
+        events=[], names=NameTable(npc, L, names_m, names_f),
+        poi_names=poi_names, layout=L, sim=sim,
         names_m=names_m, names_f=names_f,
-        event_log=event_log, event_cursor=0,
+        event_log=torch.zeros(max(65537, 8 * n + 1), 7),
+        cursor=torch.tensor(0.0), dropped=torch.tensor(0.0),
     )
-    world.households = households
-
+    world.rng = np.random.default_rng(seed)
+    world.prov_ema = box.prov_ema
+    world.ties = social.ties(bond_val, 0.3)
+    world.social_pull = social.bond_to_poi(bond_idx, bond_val, assign)
     return world
 
 
@@ -265,8 +225,9 @@ def print_world_summary(world):
         if n_r > 0:
             print(f"    {rname:<12s}: {n_r:3d}")
 
-    edges = (world.rel > 0.1).sum().item() // 2
-    print(f"\n  Beziehungen (affinity > 0.1): {edges}")
+    edges = int((world.bond_val > 0.1).sum())
+    print(f"\n  Bindungen (> 0.1): {edges}  "
+          f"(Ø {edges / max(n, 1):.1f} je NPC, K={world.sim.bond_slots})")
     print()
 
 
