@@ -13,13 +13,15 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type settings struct {
 	config.Server
-	Region *regionConfig `json:"region"`
+	Region   *regionConfig    `json:"region"`
+	Identity *identity.Config `json:"identity"`
 }
 
 type regionConfig struct {
@@ -46,20 +48,46 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if err := cfg.Server.Validate(); err != nil {
 		return config.Server{}, service.Hooks{}, err
 	}
-	if cfg.Region == nil {
-		return cfg.Server, service.Hooks{}, nil
+	var hooks service.Hooks
+	var compatibility *identity.Compatibility
+	if cfg.Identity != nil {
+		if cfg.Identity.Onboarding != nil && cfg.Region == nil {
+			return config.Server{}, service.Hooks{}, errors.New("tenant onboarding requires a regional store")
+		}
+		compatibility, err = cfg.Identity.OpenCompatibility()
+		if err != nil {
+			return config.Server{}, service.Hooks{}, err
+		}
 	}
-	region, err := openRegion(*cfg.Region)
-	if err != nil {
-		return config.Server{}, service.Hooks{}, err
+	if cfg.Region != nil {
+		region, err := openRegion(*cfg.Region)
+		if err != nil {
+			return config.Server{}, service.Hooks{}, err
+		}
+		hooks.Startup = region.bootstrap
+		hooks.Readiness = region.ready
+		hooks.Close = region.client.Close
+		if compatibility != nil {
+			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
+			if cfg.Identity.Onboarding != nil {
+				if err := compatibility.EnableOnboarding(*cfg.Identity.Onboarding, region); err != nil {
+					_ = region.client.Close()
+					return config.Server{}, service.Hooks{}, err
+				}
+			}
+		}
 	}
-	return cfg.Server, service.Hooks{Startup: region.bootstrap, Readiness: region.ready, Close: region.client.Close}, nil
+	if compatibility != nil {
+		hooks.Handler = compatibility.Handler()
+	}
+	return cfg.Server, hooks, nil
 }
 
 // Region owns the initial metadata for one region. Resource providers use their
 // own key prefixes for operations and reservations under the same region root.
 type Region struct {
 	client *clientv3.Client
+	root   string
 	keys   [2]string
 	values [2]string
 }
@@ -72,16 +100,16 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys, values := initialRecords(cfg.Name, cfg.InitialCell)
+	root := "/ocean/v1/regions/" + cfg.Name
+	keys, values := initialRecords(root, cfg.Name, cfg.InitialCell)
 	client, err := clientv3.New(connection)
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
-	return &Region{client: client, keys: keys, values: values}, nil
+	return &Region{client: client, root: root, keys: keys, values: values}, nil
 }
 
-func initialRecords(name, cell string) ([2]string, [2]string) {
-	root := "/ocean/v1/regions/" + name
+func initialRecords(root, name, cell string) ([2]string, [2]string) {
 	region := struct {
 		Name        string `json:"name"`
 		InitialCell string `json:"initialCell"`

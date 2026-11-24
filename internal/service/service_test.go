@@ -15,7 +15,7 @@ import (
 func TestHealthHandler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	handler := healthHandler(ctx, nil)
+	handler := serviceHandler(ctx, Hooks{})
 
 	assertStatus := func(method, path string, want int) {
 		t.Helper()
@@ -50,7 +50,7 @@ func TestServeFailsStartupCheck(t *testing.T) {
 
 func TestReadinessTracksDependencyWithoutChangingLiveness(t *testing.T) {
 	available := false
-	handler := healthHandler(context.Background(), func(ctx context.Context) error {
+	handler := serviceHandler(context.Background(), Hooks{Readiness: func(ctx context.Context) error {
 		if _, ok := ctx.Deadline(); !ok {
 			t.Error("readiness probe has no deadline")
 		}
@@ -58,7 +58,7 @@ func TestReadinessTracksDependencyWithoutChangingLiveness(t *testing.T) {
 			return errors.New("quorum unavailable")
 		}
 		return nil
-	})
+	}})
 	for _, test := range []struct {
 		path      string
 		available bool

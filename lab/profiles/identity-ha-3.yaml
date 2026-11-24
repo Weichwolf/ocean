@@ -1,0 +1,10 @@
+farms: 1
+nodesPerFarm: 3
+defaults:
+  memoryMiB: 2048
+  vcpus: 2
+overrides:
+  farm-1-node-01:
+    memoryMiB: 3072
+  farm-1-node-02:
+    memoryMiB: 3072
