@@ -117,7 +117,7 @@ func (r *Region) hasSubscriptionGrant(ctx context.Context, subscription identity
 
 func (r *Region) GetAssignment(ctx context.Context, scope arm.SubscriptionScope, reader, group, id string) (*arm.RoleAssignment, error) {
 	key := r.assignmentPrefix(scope, group) + id
-	result, err := r.readAssignmentKeys(ctx, scope, reader, group, clientv3.OpGet(key))
+	result, err := r.readForGroup(ctx, scope, reader, group, clientv3.OpGet(key))
 	if err != nil || len(result.Kvs) == 0 {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func (r *Region) ListAssignments(ctx context.Context, scope arm.SubscriptionScop
 		start += after + "\x00"
 	}
 	list := clientv3.OpGet(start, clientv3.WithRange(clientv3.GetPrefixRangeEnd(prefix)), clientv3.WithLimit(int64(limit)))
-	result, err := r.readAssignmentKeys(ctx, scope, reader, group, list)
+	result, err := r.readForGroup(ctx, scope, reader, group, list)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (r *Region) ListAssignments(ctx context.Context, scope arm.SubscriptionScop
 	return assignments, nil
 }
 
-func (r *Region) readAssignmentKeys(ctx context.Context, scope arm.SubscriptionScope, reader, group string, request clientv3.Op) (*clientv3.GetResponse, error) {
+func (r *Region) readForGroup(ctx context.Context, scope arm.SubscriptionScope, reader, group string, request clientv3.Op) (*clientv3.GetResponse, error) {
 	if reader == "" {
 		result, err := r.client.Do(ctx, request)
 		if err != nil {
@@ -162,7 +162,9 @@ func (r *Region) readAssignmentKeys(ctx context.Context, scope arm.SubscriptionS
 	if !result.Succeeded {
 		return nil, arm.ErrRoleDenied
 	}
-	return (*clientv3.GetResponse)(result.Responses[0].GetResponseRange()), nil
+	response := (*clientv3.GetResponse)(result.Responses[0].GetResponseRange())
+	response.Header = result.Header
+	return response, nil
 }
 
 func (r *Region) PutAssignment(ctx context.Context, scope arm.SubscriptionScope, assignment arm.RoleAssignment) (arm.RoleAssignment, bool, error) {

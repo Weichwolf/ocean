@@ -20,9 +20,9 @@ def load_matrix(path, case_id="CONTRACT-02"):
         return {row["command_id"]: row for row in csv.DictReader(stream, delimiter="\t") if row["case_id"] == case_id}
 
 
-def command_args(row, version, **bindings):
-    extensions = ",".join(f"{name}={release}" for name, release in sorted(version["extensions"].items())) or "none"
-    if (row["azure_cli"], row["extensions"]) != (version["azure-cli"], extensions):
+def command_args(row, cli_version, **bindings):
+    extensions = ",".join(f"{name}={release}" for name, release in sorted(cli_version["extensions"].items())) or "none"
+    if (row["azure_cli"], row["extensions"]) != (cli_version["azure-cli"], extensions):
         raise RuntimeError("the CLI installation differs from the compatibility matrix")
     return [value.format(**bindings) for value in shlex.split(row["command"])]
 
@@ -177,7 +177,8 @@ def verify(config, matrix):
         if primary.command("group-list") or foreign.command("group-list"):
             raise RuntimeError("cleanup left resource groups behind")
     return {"azureCLI": primary.version["azure-cli"], "extensions": primary.version["extensions"], "apiVersion": primary.api,
-            "commands": sorted(matrix), "concurrentRequests": len(races), "groupsEnumerated": len(expected), "pages": 2,
+            "commands": sorted(key for key in matrix if not key.startswith("inventory-")),
+            "concurrentRequests": len(races), "groupsEnumerated": len(expected), "pages": 2,
             "crossTenantRequestDenied": True, "unsupportedRequestsRejected": True, "providerDiscoveryVerified": True,
             "discardedUpdateResponseRecovered": True,
             "cleanupVerified": True}

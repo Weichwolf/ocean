@@ -5,6 +5,9 @@ CONTRACT-02	group-show	2.93.0	none	2024-11-01	group show --name {group} -o json
 CONTRACT-02	group-list	2.93.0	none	2024-11-01	group list -o json
 CONTRACT-02	group-exists	2.93.0	none	2024-11-01	group exists --name {group} -o json
 CONTRACT-02	group-delete	2.93.0	none	2024-11-01	group delete --name {group} --yes -o none
+CONTRACT-02	inventory-list	2.93.0	none	2024-11-01	resource list -o json
+CONTRACT-02	inventory-filtered-list	2.93.0	none	2024-11-01	resource list --resource-group {group} --resource-type {type} -o json
+CONTRACT-02	inventory-show	2.93.0	none	provider	resource show --ids {id} --api-version {version} -o json
 IDENTITY-04	role-create	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment create --scope {scope} --role Reader --name {name} --assignee-object-id {principal} --assignee-principal-type {kind} -o json
 IDENTITY-04	role-list	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment list --scope {scope} --fill-principal-name false -o json
 IDENTITY-04	role-delete	2.93.0	none	2022-04-01	role assignment delete --ids {id} -o none

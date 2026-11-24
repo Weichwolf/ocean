@@ -23,6 +23,7 @@ type Server struct {
 	Groups          GroupStore
 	Roles           RoleStore
 	Operations      OperationStore
+	Inventory       InventoryStore
 	PrincipalExists func(context.Context, string, string, string) (bool, error)
 }
 
@@ -38,6 +39,9 @@ func parseRoute(segments []string) armRoute {
 	}
 	if len(segments) == 4 && strings.EqualFold(segments[2], "providers") {
 		return armRoute{collection: "providers", name: segments[3]}
+	}
+	if len(segments) == 3 && strings.EqualFold(segments[2], "resources") {
+		return armRoute{collection: "inventory"}
 	}
 	if len(segments) == 6 && strings.EqualFold(segments[2], "providers") && strings.EqualFold(segments[3], "Microsoft.Resources") {
 		collection := strings.ToLower(segments[4])
@@ -58,10 +62,16 @@ func parseRoute(segments []string) armRoute {
 		if len(segments) == 4 {
 			return armRoute{collection: "groups", group: group}
 		}
+		if len(segments) == 5 && strings.EqualFold(segments[4], "resources") {
+			return armRoute{collection: "inventory", group: group}
+		}
 		start = 4
 	}
 	if (len(segments) != start+3 && len(segments) != start+4) || !strings.EqualFold(segments[start], "providers") ||
 		!strings.EqualFold(segments[start+1], "Microsoft.Authorization") {
+		if group != "" && len(segments) >= 8 && strings.EqualFold(segments[4], "providers") {
+			return armRoute{collection: "resource", group: group, name: strings.Join(segments[5:], "/")}
+		}
 		return armRoute{}
 	}
 	collection := strings.ToLower(segments[start+2])
@@ -113,6 +123,10 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.roleAssignments(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "operationstatuses", "operationresults":
 			s.operation(ctx, w, r, scope, route.collection, route.name)
+		case "inventory":
+			s.listResources(ctx, w, r, scope, reader, route.group)
+		case "resource":
+			s.showResource(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
 		case "invalidGroup":
 			writeError(w, http.StatusBadRequest, "InvalidResourceGroup", "The resource group name is invalid.")
 		case "invalidRoleID":
@@ -123,7 +137,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
-	if read && (route.collection == "groups" || route.collection == "roleassignments" && route.group != "") {
+	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" ||
+		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}
 	if read && route.collection != "operationstatuses" && route.collection != "operationresults" {
