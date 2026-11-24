@@ -12,17 +12,20 @@ from region import ARM, DEST as REGION, GRAPH, IDENTITY, OAUTH, OPERATOR, ROOT, 
 from verify_identity import CLIENT
 
 
-def verify(state, directory_users=False, directory_apps=False):
+def prepare_operator_client(state, scripts):
     config = {
         "ca": f"{REGION}/pki/ingress-ca.pem", "arm": f"https://{ARM}", "graph": f"https://{GRAPH}",
         "provider": f"https://{OAUTH}", "authority": f"https://{IDENTITY}", "tenant": OPERATOR_TENANT,
         "app": OPERATOR_APP, "secret": (state / "identity-pki/operator.secret").read_text(),
     }
-    upload(state, OPERATOR, {
-        "operator.secret": json.dumps(config).encode(),
-        "identity_cli.py": (ROOT / "tests/e2e/identity_cli.py").read_bytes(),
-        "onboarding_cli.py": (ROOT / "tests/e2e/onboarding_cli.py").read_bytes(),
-    }, CLIENT)
+    files = {"operator.secret": json.dumps(config).encode()}
+    files.update({Path(name).name: (ROOT / "tests/e2e" / name).read_bytes()
+                  for name in ("identity_cli.py", "onboarding_cli.py", *scripts)})
+    upload(state, OPERATOR, files, CLIENT)
+
+
+def verify(state, directory_users=False, directory_apps=False):
+    prepare_operator_client(state, ())
     options = " --directory-users" if directory_users else ""
     if directory_apps:
         options += " --directory-apps"

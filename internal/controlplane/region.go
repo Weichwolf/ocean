@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/config"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
@@ -25,9 +26,10 @@ type settings struct {
 }
 
 type regionConfig struct {
-	Name        string     `json:"name"`
-	InitialCell string     `json:"initialCell"`
-	Etcd        etcdConfig `json:"etcd"`
+	Name                string     `json:"name"`
+	InitialCell         string     `json:"initialCell"`
+	OperationController *bool      `json:"operationController"`
+	Etcd                etcdConfig `json:"etcd"`
 }
 
 type etcdConfig struct {
@@ -67,6 +69,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Startup = region.bootstrap
 		hooks.Readiness = region.ready
 		hooks.Close = region.client.Close
+		if cfg.Region.OperationController == nil || *cfg.Region.OperationController {
+			hooks.Reconcile = region.reconcileOperations
+		}
 		if compatibility != nil {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
 			if cfg.Identity.Onboarding != nil {
@@ -75,9 +80,16 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					return config.Server{}, service.Hooks{}, err
 				}
 			}
+			if cfg.Identity.Cloud != nil {
+				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
+				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
+					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region,
+					PrincipalExists: compatibility.RolePrincipalExists}
+				hooks.Handler = resources.Handler(compatibility.Handler())
+			}
 		}
 	}
-	if compatibility != nil {
+	if hooks.Handler == nil && compatibility != nil {
 		hooks.Handler = compatibility.Handler()
 	}
 	return cfg.Server, hooks, nil

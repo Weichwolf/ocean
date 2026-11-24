@@ -146,3 +146,35 @@ Use `az ad app create --display-name <name>` to register a single-tenant applica
 Use `az ad app credential reset --id <app-id> --append` to add a password credential. Each password has its own identifier and validity interval. The add operation returns the secret once. Directory reads expose credential metadata. The regional store keeps a keyed verifier for each secret and uses conditional updates for concurrent credential changes. To remove a password, use `az ad app credential delete --id <app-id> --key-id <key-id>`. Removed and expired passwords are denied at the next authentication. The supported validity limit is two years, with at most 64 password credentials per app. [Graph addPassword](https://learn.microsoft.com/en-us/graph/api/application-addpassword?view=graph-rest-1.0)
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users --directory-apps` to exercise these commands. The run verifies separate ARM and Graph tokens from fresh CLI caches, rejects cross-tenant reads, signs in with both secrets after append, and checks that the remaining secret works after revocation. Inspect `evidence/graph-applications.json` for the object IDs and assertions.
+
+## ARM resource groups
+
+Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.
+
+Resource groups use ARM API version `2024-11-01`. The supported create request accepts the regional location and up to 50 string tags. Names are case-insensitive and reads preserve the casing from creation. Tag values are returned as supplied. A create at an existing name updates its tags and preserves the location. List has continuations on the configured ARM origin.
+
+`az provider show --namespace Microsoft.Resources` reports the implemented resource group type, its API version, and the available regional location. Unsupported namespaces return `InvalidResourceNamespace`.
+
+## Scoped ARM roles
+
+The tenant administrator can assign the built-in Reader role at an existing resource group scope. Assignees are tenant users or service principals identified by their directory object IDs. The supported CLI commands and parameters are in the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv). Azure CLI 2.93.0 uses `2022-04-01` for role assignments and `2022-05-01-preview` for role definitions. Provider discovery for `Microsoft.Authorization` publishes these versions. [Role assignment API](https://learn.microsoft.com/en-us/rest/api/authorization/role-assignments/create?view=rest-authorization-2022-04-01) · [Reader role](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/general#reader)
+
+Readers discover the parent subscription and see groups and assignments within their grants. The API consults the current grant state for each request, including requests carrying tokens issued before revocation. An assignment and its access index commit or delete together. Group deletion removes its scoped grants and assignments in the same transaction. Group mutations, role assignment mutations, and denied privileged actions persist actor, action, target, result, and time in the tenant's audit keyspace. etcd supplies the commit revision.
+
+Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE" --rbac` to exercise grant creation, listing, deletion, and continued use of a token issued before revocation. It verifies cross-tenant and out-of-scope denials, rejects altered and wrong-audience tokens, and checks the audit revisions in etcd. The run writes `evidence/arm-rbac.json` under the lab state.
+
+## Durable ARM operations
+
+Resource group deletion returns HTTP 202 with `Azure-AsyncOperation`, `Location`, and `Retry-After`. The response URLs use the configured ARM origin. The operation status endpoint reports `InProgress`, `Succeeded`, or `Failed`. The independent result endpoint returns HTTP 202 while waiting and HTTP 204 on success. The group reports `Deleting` while its operation is pending, and changes to its configuration return `ResourceGroupBeingDeleted`. [ARM asynchronous operations](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations)
+
+The group marker, operation record, retry reference, and pending queue entry commit together in the regional quorum. A repeated delete returns the same polling URLs until the group is recreated. A fresh group with the same name has independent state. Completion removes the group and its scoped role grants, records the audit event, and publishes the terminal outcome in one transaction. The initiating subscription administrator can poll the operation.
+
+Every regional API replica reconciles pending operations by default. A replica configured with `region.operationController: false` serves the API while other replicas reconcile operations. Run `python3 lab/verify_operations.py --state "$OCEAN_LAB_STATE"` on the dedicated lab to exercise a controller outage, concurrent retries after a discarded response, an API process crash, and recovery on another controller. Inspect `evidence/arm-operations.json` for the operation ID, etcd revisions, and observed state transitions.
+
+## ARM resource inventory
+
+The subscription and resource-group inventory endpoints use `2024-11-01`. The CLI can combine exact group, type, name, and location filters. The supported expansions are `createdTime`, `changedTime`, and `provisioningState`. Pagination links contain the last visible record and keep the selected filter and expansion. Resource lookup uses the provider's API version and the case-insensitive ARM resource ID. [ARM resource listing](https://learn.microsoft.com/en-us/rest/api/resources/resources/list) · [ARM resource lookup](https://learn.microsoft.com/en-us/rest/api/resources/resources/get-by-id)
+
+Provider implementations publish their public resource projections to the regional store. Inventory reads and the scope grants used to authorize them share an etcd revision. A resource group delete removes its inventory entries and role grants with the terminal operation state. Provider-specific controllers own data-plane cleanup and capacity release.
+
+Run `python3 lab/verify_inventory.py --state "$OCEAN_LAB_STATE"` to exercise the selected CLI inventory commands. The lab publishes tagged test projections through the internal resource store and reads a real role assignment by its ARM ID. It checks paging, nested IDs, unsupported API requests, Reader scope, revocation, and group cleanup. The result is stored in `evidence/arm-inventory.json`. Provider acceptance runs exercise inventory against live workloads and reservations as those providers are enabled.
