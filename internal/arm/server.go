@@ -28,6 +28,7 @@ type Server struct {
 	Deployments        NetworkDeploymentStore
 	GatewayDeployments ApplicationGatewayDeploymentStore
 	SiteConnections    SiteConnectionStore
+	Containers         ContainerGroupStore
 	PrincipalExists    func(context.Context, string, string, string) (bool, error)
 }
 
@@ -48,6 +49,9 @@ func parseRoute(segments []string) armRoute {
 		return armRoute{collection: "inventory"}
 	}
 	if len(segments) == 5 && strings.EqualFold(segments[2], "providers") {
+		if route, ok := containerRoute("", segments[3:]); ok {
+			return route
+		}
 		if route, ok := networkRoute("", segments[3:]); ok {
 			return route
 		}
@@ -75,6 +79,9 @@ func parseRoute(segments []string) armRoute {
 			return armRoute{collection: "inventory", group: group}
 		}
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
+			if route, ok := containerRoute(group, segments[5:]); ok {
+				return route
+			}
 			if route, ok := networkRoute(group, segments[5:]); ok {
 				return route
 			}
@@ -180,6 +187,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "applicationGateway":
 			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "containerGroup":
+			s.containerGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "siteConnection":
 			s.siteConnection(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "securityGroup":
@@ -201,7 +210,7 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
 	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress"
-	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource ||
+	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}

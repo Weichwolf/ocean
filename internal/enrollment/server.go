@@ -87,6 +87,13 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("POST /ocean/hosts/{host}/enrollment", a.enroll)
 	mux.HandleFunc("POST /ocean/hosts/{host}/heartbeat", a.heartbeat)
 	mux.HandleFunc("GET /ocean/hosts/{host}/placements", a.placements)
+	mux.HandleFunc("GET /ocean/hosts/{host}/container-tasks", func(w http.ResponseWriter, r *http.Request) {
+		a.containerTasks(w, r, false)
+	})
+	mux.HandleFunc("GET /ocean/hosts/{host}/container-network", func(w http.ResponseWriter, r *http.Request) {
+		a.containerTasks(w, r, true)
+	})
+	mux.HandleFunc("POST /ocean/hosts/{host}/container-tasks/status", a.containerStatus)
 	mux.HandleFunc("GET /ocean/hosts/{host}/https-assignments", func(w http.ResponseWriter, r *http.Request) {
 		a.gatewayAssignments(w, r, false)
 	})

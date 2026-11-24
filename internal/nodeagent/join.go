@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -60,7 +61,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		}
 		hooks.Startup = client.start
 		hooks.Readiness = client.ready
-		hooks.Reconcile = client.reportCapacity
+		hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
+			go client.reportCapacity(ctx, logger)
+			client.reconcileContainers(ctx, logger)
+		}
 	}
 	return settings.Server, hooks, nil
 }

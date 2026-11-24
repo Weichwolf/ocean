@@ -12,7 +12,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-func (r *Region) gatewayHostAuthorized(id string, certificate []byte, snapshot *clientv3.TxnResponse) error {
+func (r *Region) authorizeHostRole(id string, certificate []byte, role string, snapshot *clientv3.TxnResponse) error {
 	registered := snapshot.Responses[0].GetResponseRange().Kvs
 	available := snapshot.Responses[1].GetResponseRange().Kvs
 	if len(registered) != 1 || len(available) != 1 || available[0].Lease == 0 {
@@ -22,10 +22,10 @@ func (r *Region) gatewayHostAuthorized(id string, certificate []byte, snapshot *
 	var live enrollment.Availability
 	if json.Unmarshal(registered[0].Value, &host) != nil || json.Unmarshal(available[0].Value, &live) != nil ||
 		host.HostID != id || live.HostID != id || host.Cell != live.Cell || host.Pool != live.Pool {
-		return errors.New("invalid gateway host registration or availability")
+		return errors.New("invalid host registration or availability")
 	}
 	if host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) ||
-		!slices.Contains(host.Roles, "gateway") || !slices.Contains(live.Roles, "gateway") {
+		!slices.Contains(host.Roles, role) || !slices.Contains(live.Roles, role) {
 		return enrollment.ErrHostDenied
 	}
 	return nil
@@ -41,7 +41,7 @@ func (r *Region) gatewayAssignments(ctx context.Context, id string, certificate 
 	if err != nil {
 		return nil, err
 	}
-	if err := r.gatewayHostAuthorized(id, certificate, snapshot); err != nil {
+	if err := r.authorizeHostRole(id, certificate, "gateway", snapshot); err != nil {
 		return nil, err
 	}
 	items := snapshot.Responses[2].GetResponseRange().Kvs

@@ -18,6 +18,7 @@ install -D -m 0755 "$source_dir/https-ready" "$staging/usr/libexec/ocean/https-r
 install -D -m 0644 "$source_dir/ocean-agent.service" "$staging/usr/lib/systemd/user/ocean-agent.service"
 install -D -m 0644 "$source_dir/ocean-network-agent.service" "$staging/usr/lib/systemd/system/ocean-network-agent.service"
 install -D -m 0644 "$source_dir/ocean-https-agent.service" "$staging/usr/lib/systemd/system/ocean-https-agent.service"
+install -D -m 0644 "$source_dir/ocean-container-network.service" "$staging/usr/lib/systemd/system/ocean-container-network.service"
 install -D -m 0644 "$source_dir/ocean-wireguard-agent.service" "$staging/usr/lib/systemd/system/ocean-wireguard-agent.service"
 install -D -m 0644 "$source_dir/agent.json" "$staging/etc/ocean-agent/config.json"
 install -d -m 0755 "$staging/DEBIAN"

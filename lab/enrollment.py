@@ -45,7 +45,7 @@ def deploy(state, node, public_ips=None):
     publish(state, public_ips)
 
 
-def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None):
+def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
@@ -60,6 +60,9 @@ def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wiregu
             extra["pki/application-gateway.key"] = gateway_key.read_bytes()
         if wireguard is not None:
             config["region"]["wireGuard"] = wireguard
+        if workloads is not None:
+            config["region"]["workloads"] = {**workloads, "secretsKeyFile": f"{DEST}/pki/workload-secrets.key"}
+            extra["pki/workload-secrets.key"] = workload_key.read_bytes()
         if public_ips is not None:
             config["region"]["publicIPv4Addresses"] = public_ips
         config["tls"]["clientCAFile"] = f"{DEST}/pki/host-enrollment.pem"

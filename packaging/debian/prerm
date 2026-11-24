@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$1" = remove ] && getent passwd ocean-agent >/dev/null; then
-    for unit in ocean-network-agent.service ocean-https-agent.service ocean-wireguard-agent.service; do
+    for unit in ocean-container-network.service ocean-network-agent.service ocean-https-agent.service ocean-wireguard-agent.service; do
         if [ -d /run/systemd/system ] && systemctl is-active --quiet "$unit"; then
             systemctl stop "$unit"
         fi

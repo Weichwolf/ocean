@@ -210,9 +210,13 @@ func (r *Region) networkPlacementGuards(ctx context.Context, scope arm.Subscript
 		if err := json.Unmarshal(next.Properties, &updated); err != nil {
 			return nil, err
 		}
+		if !slices.Equal(prior.AddressSpace.Prefixes, updated.AddressSpace.Prefixes) {
+			prefixes = append(prefixes, r.vnetNetworkPlacements(scope, previous.Address))
+		}
 		for _, child := range prior.Subnets {
 			index := updated.SubnetIndex(child.Name)
-			if index < 0 || !sameSubnetPrefixes(child.Properties, updated.Subnets[index].Properties) {
+			if index < 0 || !sameSubnetPrefixes(child.Properties, updated.Subnets[index].Properties) ||
+				child.Properties.AllowsContainerGroups() && !updated.Subnets[index].Properties.AllowsContainerGroups() {
 				prefixes = append(prefixes, r.subnetNetworkPlacements(scope, previous.Address, child.Name))
 			}
 		}

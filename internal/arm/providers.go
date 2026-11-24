@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Weichwolf/ocean/internal/network"
+	"github.com/Weichwolf/ocean/internal/workload"
 )
 
 type providerResourceType struct {
@@ -41,12 +42,19 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		namespace = "Microsoft.Network"
 		types = []providerResourceType{
 			{ResourceType: "virtualNetworks", Locations: []string{s.Location}, APIVersions: []string{network.VNetAPIVersion}},
-			{ResourceType: "virtualNetworks/subnets", Locations: []string{s.Location}, APIVersions: []string{network.SubnetAPIVersion}},
+			{ResourceType: "virtualNetworks/subnets", Locations: []string{s.Location}, APIVersions: []string{network.SubnetAPIVersion, network.ContainerSubnetAPIVersion}},
 			{ResourceType: "networkSecurityGroups", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
 			{ResourceType: "networkSecurityGroups/securityRules", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
 			{ResourceType: "publicIPAddresses", Locations: []string{s.Location}, APIVersions: []string{network.PublicIPAPIVersion}},
 			{ResourceType: "natGateways", Locations: []string{s.Location}, APIVersions: []string{network.NATAPIVersion}},
 		}
+	case "microsoft.containerinstance":
+		if s.Containers == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = "Microsoft.ContainerInstance"
+		types = []providerResourceType{{ResourceType: "containerGroups", Locations: []string{s.Location}, APIVersions: []string{workload.ContainerGroupAPIVersion}}}
 	case "microsoft.authorization":
 		namespace = "Microsoft.Authorization"
 		types = []providerResourceType{
