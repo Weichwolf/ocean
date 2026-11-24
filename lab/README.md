@@ -42,3 +42,18 @@ overrides:
 ```
 
 The launcher checks requested memory for new guests against host `MemAvailable` and retains the memory headroom specified by `-reserve-mib`. The default is 2048 MiB. Record measured host headroom, CPU allocation, and disk use for acceptance runs. The lab provisions the guests, addresses, and network segments used by the protocol. Product readiness, quorum, join, and workload results come from the corresponding acceptance checks on a deployed ocean build.
+
+## Regional management stack
+
+Build the binaries and start a fresh `single-farm-3` lab as shown above. Obtain the [etcd v3.6.17 Linux AMD64 archive](https://github.com/etcd-io/etcd/releases/tag/v3.6.17). The deploy script checks its SHA-256 before installing the binaries. Run the deploy and fault checks locally on the Debian host.
+
+```sh
+python3 lab/region.py --state "$OCEAN_LAB_STATE" --etcd-archive /path/to/etcd-v3.6.17-linux-amd64.tar.gz
+python3 lab/verify_region.py --state "$OCEAN_LAB_STATE"
+```
+
+The stack uses three mutually authenticated etcd voters, three HTTPS API replicas, and two gateway nodes. HAProxy checks readiness over TLS and passes the client TLS connection to a healthy replica. Keepalived transfers the management address after a gateway failure. Both gateways serve authoritative names for management and identity. The isolated operator client resolves those names through both DNS servers and verifies the management certificate.
+
+The deploy script installs HAProxy, Keepalived, and dnsmasq inside the gateway guests. The generated lab CA keys stay in the operator's private state directory. Peer, store client, and ingress certificates use separate CAs. Lab client credentials are for the disposable deployment. Use operator-managed certificates and a dedicated production deployment when qualifying physical hosts.
+
+Regional bootstrap creates the region record and its initial cell record in one etcd transaction. Incompatible bootstrap settings prevent a replica from starting. Provider operations use keys under `/ocean/v1/regions/<region>/operations` and cell reservations use keys under `/ocean/v1/regions/<region>/cells/<cell>/reservations`. The local fault check exercises authoritative DNS, gateway and API loss, leader replacement, and the absence of a committed mutation while quorum is unavailable. A timed-out raw etcd request has an unknown outcome after recovery. Providers must reconcile such requests using the existing operation ID. The check restores affected services and removes its own test keys. Run it on a dedicated lab because it stops services and powers off a guest.

@@ -15,7 +15,7 @@ import (
 func TestHealthHandler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	handler := healthHandler(ctx)
+	handler := healthHandler(ctx, nil)
 
 	assertStatus := func(method, path string, want int) {
 		t.Helper()
@@ -37,13 +37,42 @@ func TestHealthHandler(t *testing.T) {
 func TestServeFailsStartupCheck(t *testing.T) {
 	startupError := errors.New("dependency unavailable")
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	err := serve(context.Background(), config.Server{ListenAddress: "127.0.0.1:0"}, func(ctx context.Context) error {
+	err := serve(context.Background(), config.Server{ListenAddress: "127.0.0.1:0"}, Hooks{Startup: func(ctx context.Context) error {
 		if _, ok := ctx.Deadline(); !ok {
 			t.Error("startup check has no deadline")
 		}
 		return startupError
-	}, logger)
+	}}, logger)
 	if !errors.Is(err, startupError) {
 		t.Fatalf("serve error = %v, want %v", err, startupError)
+	}
+}
+
+func TestReadinessTracksDependencyWithoutChangingLiveness(t *testing.T) {
+	available := false
+	handler := healthHandler(context.Background(), func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("readiness probe has no deadline")
+		}
+		if !available {
+			return errors.New("quorum unavailable")
+		}
+		return nil
+	})
+	for _, test := range []struct {
+		path      string
+		available bool
+		want      int
+	}{
+		{"/livez", false, http.StatusNoContent},
+		{"/readyz", false, http.StatusServiceUnavailable},
+		{"/readyz", true, http.StatusNoContent},
+	} {
+		available = test.available
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if response.Code != test.want {
+			t.Errorf("%s returned %d with dependency available=%t, want %d", test.path, response.Code, available, test.want)
+		}
 	}
 }
