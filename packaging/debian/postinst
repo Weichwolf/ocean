@@ -24,4 +24,8 @@ if [ -d /run/systemd/system ] && [ "${OCEAN_AGENT_DEFER_START:-0}" != 1 ]; then
     systemctl start "user@$uid.service"
     runuser -u "$agent" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload
     runuser -u "$agent" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user restart ocean-agent.service
+    systemctl daemon-reload
+    if [ ! -x /usr/sbin/policy-rc.d ] || /usr/sbin/policy-rc.d ocean-network-agent restart; then
+        systemctl try-restart ocean-network-agent.service
+    fi
 fi

@@ -224,9 +224,31 @@ The verifier installs the compiled `ocean-gateway` role command and a lab Keepal
 
 A compute placement can name a subnet in its own subscription. The region reserves a private IPv4 address, tenant and host capacity, and one placement generation in the same transaction. Address selection skips the first four and last address of each IPv4 prefix. A repeated placement request returns its original address and generation. Release requires the current generation and comes after the caller has stopped the workload. Subnet address changes and deletion are blocked while the subnet has placements. Resource group deletion observes the same guard. [Azure IPv4 address allocation](https://learn.microsoft.com/en-us/azure/virtual-network/private-ip-addresses)
 
-The enrolled host reads its network policy over the existing mTLS assignments endpoint. The assignment, owning generation, VNet address space, subnet gateway, current security rules, and optional NAT address share one regional read revision. If an assignment loses ownership of its address, the endpoint returns its assignment with `networkUnavailable` and omits its network policy. This contract feeds host-side reconciliation for attached workloads.
+The enrolled host reads its network policy over the existing mTLS assignments endpoint. The assignment, owning generation, VNet address space, subnet gateway, current security rules, and optional NAT address share one regional read revision. If an assignment loses ownership of its address, the endpoint returns its assignment with `networkUnavailable` and omits its network policy.
+
+The Debian package provides a system service, `ocean-network-agent.service`, for router-side firewall reconciliation. The operator provides a root-owned `/etc/ocean-agent/network.json` with no group or other write permissions and starts the service. Each endpoint entry names a routing namespace and veth plus the tenant, subscription, placement ID, and placement generation. The routing setup must give each workload a point-to-point link and keep forwarding disabled until the service has installed the link's policy. The service uses the enrolled host certificate to read assignments. Podman continues to run under the unprivileged `ocean-agent` account.
+
+```json
+{
+  "protectedPrefixes": ["10.231.1.0/24"],
+  "endpoints": [
+    {
+      "namespace": "tenant-router",
+      "interface": "work0",
+      "tenantId": "<tenant-id>",
+      "subscriptionId": "<subscription-id>",
+      "id": "<placement-id>",
+      "generation": "<placement-generation>"
+    }
+  ]
+}
+```
+
+The service applies policy in an atomic nftables transaction and renews an eight-second kernel deadline from valid assignments. A missing or revoked assignment replaces the endpoint's rules with a drop policy. The kernel also blocks forwarded traffic in both directions if the process stalls and the deadline expires. Operators can set `internetPrefixes` for reachable external destinations when a placement has an assigned NAT gateway. Remove an endpoint from the registry and retire its workload link before reusing that endpoint for another placement. [nftables element timeouts](https://wiki.nftables.org/wiki-nftables/index.php/Element_timeouts)
 
 Run `python3 lab/verify_network_placement.py --state "$OCEAN_LAB_STATE" --pool 198.51.100.20 198.51.100.21` in the dedicated regional lab with two enrolled compute guests and the test public IP pool. The verifier checks concurrent assignment to a /29, exhaustion without quota loss, protected deletion and prefix changes, certificate scope, network rule refresh, and release with generation checks. It also withholds policy from a fixture assignment whose ownership record has been invalidated. Results appear in `evidence/network-placement.json`.
+
+Add `--packets` after installing the current Debian agent package on the first compute guest. The verifier attaches a pinned BusyBox fixture running in rootless Podman with nice +10. It checks real HTTP ingress after ownership is revoked and restored, after an NSG edit, after the policy process is paused and resumed, and after a replacement generation reuses the private IP address. It records the observed kernel expiry time and removes the disposable links and registry.
 
 ## Resource group network deployments
 

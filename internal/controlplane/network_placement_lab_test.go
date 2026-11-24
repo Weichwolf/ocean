@@ -139,6 +139,8 @@ func TestNetworkPlacementFixture(t *testing.T) {
 		}
 	case "policy-change":
 		storeRule("Deny")
+	case "policy-allow":
+		storeRule("Allow")
 	case "invalidate-owner", "restore-owner":
 		saved, exists := read("one")
 		if !exists {

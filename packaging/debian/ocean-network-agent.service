@@ -1,0 +1,15 @@
+[Unit]
+Description=ocean workload network policy
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ocean-agent/network.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent
+Restart=on-failure
+RestartSec=2s
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

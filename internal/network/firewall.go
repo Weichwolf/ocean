@@ -11,9 +11,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var linkName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`)
+
+// ValidRoutingLink reports whether a local namespace or interface name is supported.
+func ValidRoutingLink(name string) bool {
+	return linkName.MatchString(name)
+}
 
 // WorkloadFirewall describes the policy on the router side of one workload
 // link. Prefixes other than the VNet and security rules are operator policy.
@@ -24,6 +30,7 @@ type WorkloadFirewall struct {
 	ProtectedPrefixes []netip.Prefix
 	InternetPrefixes  []netip.Prefix
 	Rules             []SecurityRule
+	Lease             time.Duration
 }
 
 // Apply installs a complete policy in an existing isolated routing namespace.
@@ -34,6 +41,44 @@ func (f WorkloadFirewall) Apply(ctx context.Context, namespace string) error {
 		return err
 	}
 	return applyNftRules(ctx, namespace, ruleset)
+}
+
+// Refresh renews an installed firewall's kernel deadline.
+func (f WorkloadFirewall) Refresh(ctx context.Context, namespace string) error {
+	if !linkName.MatchString(f.Interface) || !f.Address.Is4() || !validFirewallLease(f.Lease) || f.Lease == 0 {
+		return errors.New("invalid leased firewall")
+	}
+	policy := nftPolicy{table: firewallTable(f.Interface)}
+	policy.command("flush set inet %s live_address", policy.table)
+	policy.command("add element inet %s live_address { %s }", policy.table, f.Address)
+	return applyNftRules(ctx, namespace, policy.script.String())
+}
+
+// BlockWorkload replaces an endpoint's policy with a persistent drop.
+func BlockWorkload(ctx context.Context, namespace, iface string) error {
+	if !linkName.MatchString(iface) {
+		return errors.New("invalid workload interface")
+	}
+	policy := nftPolicy{table: firewallTable(iface)}
+	policy.command("destroy table inet %s", policy.table)
+	policy.command("add table inet %s", policy.table)
+	policy.baseChain("local_in", "input", "filter")
+	policy.baseChain("local_out", "output", "filter")
+	policy.baseChain("forwarded", "forward", "filter")
+	name := strconv.Quote(iface)
+	policy.rule("local_in", "iifname "+name+" counter drop")
+	policy.rule("local_out", "oifname "+name+" counter drop")
+	policy.rule("forwarded", "iifname "+name+" counter drop")
+	policy.rule("forwarded", "oifname "+name+" counter drop")
+	return applyNftRules(ctx, namespace, policy.script.String())
+}
+
+func firewallTable(iface string) string {
+	return "ocean_" + hex.EncodeToString([]byte(iface))
+}
+
+func validFirewallLease(duration time.Duration) bool {
+	return duration >= 0 && duration <= 15*time.Second && duration%time.Second == 0
 }
 
 func applyNftRules(ctx context.Context, namespace, ruleset string) error {
@@ -55,6 +100,9 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 	if len(f.VNetPrefixes) == 0 || len(f.ProtectedPrefixes) == 0 {
 		return "", errors.New("VNet and protected network prefixes are required")
 	}
+	if !validFirewallLease(f.Lease) {
+		return "", errors.New("invalid firewall lease duration")
+	}
 	for _, prefixes := range [][]netip.Prefix{f.VNetPrefixes, f.ProtectedPrefixes, f.InternetPrefixes} {
 		for _, prefix := range prefixes {
 			if !prefix.Addr().Is4() || prefix != prefix.Masked() {
@@ -68,7 +116,7 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 	}
 	group := slices.Clone(f.Rules)
 	slices.SortFunc(group, func(a, b SecurityRule) int { return a.Properties.Priority - b.Properties.Priority })
-	policy := nftPolicy{table: "ocean_" + hex.EncodeToString([]byte(f.Interface))}
+	policy := nftPolicy{table: firewallTable(f.Interface)}
 	policy.command("destroy table inet %s", policy.table)
 	policy.command("add table inet %s", policy.table)
 	policy.baseChain("guard", "prerouting", "raw")
@@ -84,6 +132,12 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 	policy.rule("local_out", "oifname "+iface+" counter drop")
 	policy.rule("forwarded", "oifname "+iface+" meta nfproto != ipv4 counter drop")
 	policy.rule("forwarded", fmt.Sprintf("oifname %s ip daddr != %s counter drop", iface, f.Address))
+	if f.Lease != 0 {
+		policy.command("add set inet %s live_address { type ipv4_addr; flags timeout; timeout %ds; elements = { %s }; }",
+			policy.table, f.Lease/time.Second, f.Address)
+		policy.rule("forwarded", "iifname "+iface+" ip saddr != @live_address counter drop")
+		policy.rule("forwarded", "oifname "+iface+" ip daddr != @live_address counter drop")
+	}
 	policy.rule("forwarded", "iifname "+iface+" jump egress")
 	policy.rule("forwarded", "oifname "+iface+" jump ingress")
 
