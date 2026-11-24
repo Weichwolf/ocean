@@ -49,7 +49,7 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def verify(state):
+def verify(state, after_promotion=None):
     leader = primary(state, next(iter(NODES)))
     observer = next(node for node in NODES if node != leader)
     table = "ocean_fence_" + uuid.uuid4().hex
@@ -90,6 +90,8 @@ def verify(state):
         print(f"Watchdog reset {leader} after {evidence['reset'] - start:.2f}s. "
               f"{new} became the only observed primary after {promotion - start:.2f}s.", flush=True)
 
+        if after_promotion is not None:
+            after_promotion(leader, new, start)
         eventually(lambda: ssh(state, leader, f"sudo systemctl enable --now --no-block {SERVICE}"), 45)
         eventually(lambda: cluster_health(state, observer, leader, "replica"), 70)
         require(ssh(state, leader, "cat /proc/sys/kernel/random/boot_id").strip() != boot_id,

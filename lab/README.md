@@ -73,6 +73,17 @@ Patroni requires a watchdog before promoting a writer. The KVM control-plane gue
 
 ## Azure CLI identity compatibility
 
+After starting the regional stack and the replicated database, deploy two Keycloak instances and run the sign-in fault check. The verification uses the isolated operator VM and the unmodified Microsoft Debian AMD64 package for Azure CLI 2.93.0. Use the package argument to install it if it is absent. The deploy and verification scripts check the SHA-256 of the supplied artifacts. [Keycloak 26.8.2](https://github.com/keycloak/keycloak/releases/tag/26.8.2) · [Microsoft Azure CLI packages](https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/)
+
+```sh
+python3 lab/keycloak.py --state "$OCEAN_LAB_STATE" --keycloak-archive /path/to/keycloak-26.8.2.tar.gz
+python3 lab/verify_identity.py --state "$OCEAN_LAB_STATE" --azure-cli-package /path/to/azure-cli_2.93.0-1~bookworm_amd64.deb
+```
+
+Both Keycloak replicas use verified TLS to PostgreSQL and connect to the current primary. The gateways forward OAuth traffic using TLS on both connections. They allow the browser and OAuth endpoints and keep the Keycloak admin and health paths private. Keycloak uses its database-backed cluster discovery with encrypted peer traffic. [Keycloak proxy configuration](https://www.keycloak.org/server/reverseproxy) · [Keycloak distributed caches](https://www.keycloak.org/server/caching)
+
+The check creates an empty CLI cache for each sign-in, selects the assigned subscription, lists its locations, and checks both token audiences and the rejection of invalid or disabled credentials. It stops one Keycloak instance and then restores it. In a separate fault, it waits for PostgreSQL promotion and signs in before the previous database writer rejoins. The respective lab limits are 75 and 120 seconds for the full sign-in and credential checks. The run saves its observations under `evidence/identity-failover.json` in the lab state. This uses a disposable pre-provisioned tenant and subscription. The operator onboarding, directory operation, and role assignment cases exercise separate API paths.
+
 Configure the control plane with the public ocean authority, the public Keycloak origin, and an optional PEM CA for the Keycloak connection. If cloud endpoint discovery is enabled, configure distinct public ARM and Graph origins.
 
 ```json
@@ -100,4 +111,4 @@ Configure the public client's access token mapper to give its native grant the s
 
 The CLI device flow starts with the ARM scope. The compatibility endpoint obtains a native Keycloak grant and asks Keycloak to exchange the native access token for the requested resource. On refresh it can request ARM or Graph using the same Keycloak session. The response keeps the user's native session and includes the exchanged access token. The endpoint requires the same issuer and subject and exactly one resource audience. Keycloak handles user consent, token lifetimes, and signing. [Keycloak standard token exchange](https://www.keycloak.org/securing-apps/token-exchange)
 
-Local probes with disposable realms passed cloud discovery, end-user device login, service-principal login, and token acquisition for both audiences from each login. The probes skipped subscription discovery. Identity acceptance still requires tests for subscription discovery, audience validation at the API boundary, tenant onboarding, and identity failover.
+ARM subscription discovery uses API version `2022-12-01`. It verifies the access token's signature, tenant issuer, expiry, and ARM audience. It reads the tenant's subscription membership from the regional quorum and returns the assigned region for the locations request. The lab seeds a subscription for the two fixture subjects after authenticating them, so the fault runs exercise the subscription API.
