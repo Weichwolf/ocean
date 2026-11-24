@@ -15,7 +15,7 @@ OCEAN_LAB_IMAGE="$HOME/.cache/ocean/images/debian-13-generic-amd64.qcow2"
 ./bin/ocean-lab ssh -state "$OCEAN_LAB_STATE" farm-1-node-01 -- 'cloud-init status --wait'
 ```
 
-`status` reports the QEMU process state. Use the guest's cloud-init status for boot readiness. The launcher generates an SSH key for the lab and supplies it through a private NoCloud seed. SSH forwarding is bound to the host loopback address. Use `down` to stop QEMU and the VDE switches while retaining the state and guest disks.
+`status` reports the QEMU process state. Use the guest's cloud-init status for boot readiness. The launcher generates an SSH key for the lab and supplies it through a private NoCloud seed. SSH forwarding is bound to the host loopback address. Use `stop` with an inventoried guest name to simulate sudden loss of one guest. Use `down` to stop QEMU and the VDE switches while retaining the state and guest disks. [QEMU monitor command](https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html#qapidoc-89)
 
 ```sh
 ./bin/ocean-lab down -state "$OCEAN_LAB_STATE"
@@ -207,6 +207,18 @@ python3 lab/verify_egress.py --state "$OCEAN_LAB_STATE" --pool 198.51.100.20 198
 ```
 
 Use a dedicated lab with an empty two-address pool for this verifier. The optional packet stage needs nftables and Keepalived alongside the node agent, curl, Python, and the pinned BusyBox fixture. It runs two gateway namespaces on one disposable KVM guest, with separate tenant and external links. The external HTTP observer reports the source address of a fresh TCP connection before and after the active gateway loses its uplink. The test gives the standby eight seconds to recover and records the measured time. The verifier writes `evidence/public-ip-nat-arm.json` and `evidence/fixed-egress-packet.log`. Gateway fencing, automatic workload attachment, and the Functions egress case need their deployment-level runs.
+
+The `egress-ha` profile adds a separate external VDE segment. Two gateway guests and the source observer are attached to it. The third node hosts the pinned rootless Podman workload. Prepare both gateway guests with Debian's `nftables` and `keepalived` packages. Install the packaged ocean agent on the worker and use the same pinned fixture and host Python dependencies as the single-guest verifier.
+
+```sh
+OCEAN_EGRESS_STATE=$(mktemp -d /tmp/ocean-egress-ha.XXXXXX)
+./bin/ocean-lab up -state "$OCEAN_EGRESS_STATE" -profile lab/profiles/egress-ha.yaml -image "$OCEAN_LAB_IMAGE"
+# Prepare the gateway and worker packages in the new guests before the test.
+python3 lab/verify_egress_hosts.py --state "$OCEAN_EGRESS_STATE" \
+  --reservation "$OCEAN_LAB_STATE/evidence/public-ip-nat-arm.json"
+```
+
+The verifier installs the compiled `ocean-gateway` role command and a lab Keepalived service. Each gateway begins with a closed nftables forwarding set. The Keepalived owner activates forwarding after the external address is installed. The test checks the standby's NAT counter during a probe routed directly to it, confirms that tenant traffic cannot reach a live management-only fixture, and powers off the active KVM guest. It then checks the source address and counts attempts against the eight-second recovery budget. The original gateway reboots and rejoins as standby. This run covers sudden guest loss on a shared lab virtual switch. Network-partition fencing and Function App egress are separate acceptance scenarios. Evidence is written to `evidence/fixed-egress-hosts.json`. Use `--reset` to restart the test guests before repeating this verifier in the same disposable profile.
 
 ## Resource group network deployments
 

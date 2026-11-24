@@ -259,6 +259,31 @@ func (lab *Lab) running(name string) (bool, error) {
 	return err == nil, err
 }
 
+// Stop terminates one inventoried guest through QMP to exercise abrupt node loss.
+func (lab *Lab) Stop(name string) error {
+	lock, err := lab.lock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	current, err := lab.load()
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(current.Machines, func(machine Machine) bool { return machine.Guest.Name == name }) {
+		return fmt.Errorf("unknown guest %q", name)
+	}
+	return lab.stopGuest(name)
+}
+
+func (lab *Lab) stopGuest(name string) error {
+	running, err := lab.running(name)
+	if err != nil || !running {
+		return err
+	}
+	return qmp(filepath.Join(lab.node(name), "qmp"), "ocean-"+name, "quit")
+}
+
 // Down stops the lab guests and switches while preserving disks and inventory.
 func (lab *Lab) Down() error {
 	lock, err := lab.lock()
@@ -273,11 +298,7 @@ func (lab *Lab) Down() error {
 	var failures error
 	for _, machine := range current.Machines {
 		name := machine.Guest.Name
-		running, err := lab.running(name)
-		if err == nil && running {
-			err = qmp(filepath.Join(lab.node(name), "qmp"), "ocean-"+name, "quit")
-		}
-		if err != nil {
+		if err := lab.stopGuest(name); err != nil {
 			failures = errors.Join(failures, fmt.Errorf("stop %s: %w", name, err))
 		}
 	}
