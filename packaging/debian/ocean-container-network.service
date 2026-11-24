@@ -1,0 +1,16 @@
+[Unit]
+Description=ocean container network reconciler
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ocean-agent/workload-network.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode containers
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=12s
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

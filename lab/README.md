@@ -385,3 +385,22 @@ An enrolled agent reports its current host capabilities every four seconds over 
 Workload providers reserve CPU and memory against a subscription policy containing the allowed operator pools and quota. Reservations account for cell, host, and tenant capacity in one quorum transaction. The retry ID is unique within the subscription. A stale cleanup cannot release a newer allocation with a different generation. Hosts receive only their leased, certificate-authorized assignment list at `GET /ocean/hosts/{host-id}/placements`. Draining blocks new placements and keeps existing reservations available for orderly teardown. Lease expiry removes the host from new placement decisions. Workload controllers release old reservations as part of their fenced cleanup.
 
 Run `python3 lab/verify_placement.py --state "$OCEAN_LAB_STATE" --small farm-1-node-05 --large farm-1-node-06` in the dedicated regional lab with two enrolled hosts and the test subscription from the identity profile. The check exercises capacity, pool policy, concurrent quotas, retry identity, drain, and expiry of a stopped agent's lease. Evidence is written to `evidence/host-placement.json`.
+
+### Linux container groups
+
+Enable the regional `workloads` section with an owner-only 32-byte `secretsKeyFile` and an explicit `defaultPlacement` policy. The operator supplies the same key and policy to all API replicas. A subscription-specific placement policy overrides the default. The compute worker publishes its container network readiness with its host lease. Placement reserves CPU, RAM, and an endpoint together with the resource and operation records.
+
+Azure CLI 2.93.0 uses `Microsoft.ContainerInstance/containerGroups` API version `2024-05-01-preview`. Private create uses API version `2022-01-01` to inspect the existing subnet and apply the Container Instance delegation. The pinned commands in `tests/e2e/testdata/arm-contract.tsv` exercise a single Linux container, a TCP endpoint, public OCI images pinned by SHA-256 digest, environment variables, resource requests, and `Always`, `Never`, or `OnFailure` restart policies. CPU requests use whole millicores. Memory is rounded up to a mebibyte for cgroups and reservations. The API returns ordinary environment values and the names of secure variables. Secure values are sealed in etcd and delivered over mTLS to the assigned host. Bounded API log tails remove literal occurrences of secure values. The local Podman log file belongs to the dedicated runtime account.
+
+The rootless Debian user service runs at nice +10. A separate system service adds per-container routing on the operator-provided public and private fabrics. Its kernel leases bound stale forwarding when the supervisor or regional API becomes unavailable. Public endpoints accept the configured TCP port. Private endpoints use the scope's subnet security policy. Active private VNet prefixes are exclusive on the shared regional fabric. Delete the container group to release capacity and its address after the worker has removed the process and network link.
+
+After deploying an enrolled region, enable the workload provider on its healthy compute guests and run the end-to-end contract locally.
+
+```sh
+make deb-agent
+python3 lab/prepare_container_groups.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev8_amd64.deb
+python3 lab/verify_container_groups.py --state "$LAB_STATE" --observer farm-1-node-06
+```
+
+The observer uses an isolated network namespace in a separate KVM guest. The test checks HTTP and socket closure, rootless Podman, the guest process priority and cgroup limits, endpoint reuse, quota release, and redacted inventory, logs, and audit data. Its evidence is written to `evidence/container-groups.json` in the lab state directory.

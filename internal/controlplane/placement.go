@@ -27,11 +27,12 @@ type PlacementPolicy struct {
 }
 
 type PlacementRequest struct {
-	ID        string              `json:"id"`
-	Cell      string              `json:"cell"`
-	Role      string              `json:"role"`
-	Resources enrollment.Capacity `json:"resources"`
-	SubnetID  string              `json:"subnetId,omitempty"`
+	ID                    string              `json:"id"`
+	Cell                  string              `json:"cell"`
+	Role                  string              `json:"role"`
+	Resources             enrollment.Capacity `json:"resources"`
+	SubnetID              string              `json:"subnetId,omitempty"`
+	NeedsContainerNetwork bool                `json:"needsContainerNetwork,omitempty"`
 }
 
 type Reservation struct {
@@ -186,7 +187,13 @@ func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionS
 
 // ReservePlacement commits one reservation together with tenant and host
 // accounting. A lost response can be retried with the same placement request.
+type placementMutation func(context.Context, Reservation) ([]clientv3.Cmp, []clientv3.Op, error)
+
 func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest) (Reservation, error) {
+	return r.reservePlacement(ctx, scope, wanted, nil)
+}
+
+func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest, extra placementMutation) (Reservation, error) {
 	if !validScope(scope) || !identifier.MatchString(wanted.ID) || !identifier.MatchString(wanted.Cell) ||
 		!slices.Contains([]string{"compute", "storage", "gateway"}, wanted.Role) || !validCapacity(wanted.Resources) {
 		return Reservation{}, ErrReservationChanged
@@ -208,7 +215,15 @@ func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionSco
 			return Reservation{}, err
 		}
 		var policy PlacementPolicy
-		if len(policies.Kvs) != 1 || json.Unmarshal(policies.Kvs[0].Value, &policy) != nil {
+		var policyRevision int64
+		if len(policies.Kvs) == 1 {
+			if json.Unmarshal(policies.Kvs[0].Value, &policy) != nil {
+				return Reservation{}, ErrPlacementPolicy
+			}
+			policyRevision = policies.Kvs[0].ModRevision
+		} else if extra != nil && r.workloads != nil {
+			policy = r.workloads.defaultPlacement
+		} else {
 			return Reservation{}, ErrPlacementPolicy
 		}
 		tenant, err := r.counter(ctx, base+"placement-usage")
@@ -232,7 +247,7 @@ func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionSco
 		}
 		expected := append(candidate.guards, tenant.compare(), clientv3.Compare(clientv3.Version(key), "=", 0),
 			clientv3.Compare(clientv3.Version(cellKey), "=", 0),
-			clientv3.Compare(clientv3.ModRevision(policyKey), "=", policies.Kvs[0].ModRevision))
+			clientv3.Compare(clientv3.ModRevision(policyKey), "=", policyRevision))
 		reservation := Reservation{PlacementRequest: wanted, Generation: operationID(), HostID: candidate.host.HostID, Pool: candidate.host.Pool}
 		hostKey := r.hostReservationKey(scope, reservation.HostID, reservation.ID)
 		expected = append(expected, clientv3.Compare(clientv3.Version(hostKey), "=", 0))
@@ -260,6 +275,17 @@ func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionSco
 		writes := append(bindings, clientv3.OpPut(key, string(data)), clientv3.OpPut(cellKey, string(data)),
 			clientv3.OpPut(hostKey, string(assignment)),
 			tenant.write(wanted.Resources), candidate.usage.write(wanted.Resources))
+		if extra != nil {
+			checks, additional, err := extra(ctx, reservation)
+			if err != nil {
+				if saved, found, retryErr := r.placementRetry(ctx, key, wanted); found || retryErr != nil {
+					return saved, retryErr
+				}
+				return Reservation{}, err
+			}
+			expected = append(expected, checks...)
+			writes = append(writes, additional...)
+		}
 		result, err := r.client.Txn(ctx).If(expected...).Then(writes...).Commit()
 		if err != nil || result.Succeeded {
 			return reservation, err
@@ -296,7 +322,8 @@ func (r *Region) chooseHost(ctx context.Context, wanted PlacementRequest, pools 
 		if json.Unmarshal(item.Value, &host) != nil || !identifier.MatchString(host.HostID) || string(item.Key) != r.hostKey("live", host.HostID) || item.Lease == 0 {
 			return placementHost{}, errors.New("invalid available host record")
 		}
-		if host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) {
+		if host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) ||
+			wanted.NeedsContainerNetwork && !host.ContainerNetwork {
 			continue
 		}
 		drainKey := r.hostKey("drain", host.HostID)
@@ -321,6 +348,10 @@ func (r *Region) chooseHost(ctx context.Context, wanted PlacementRequest, pools 
 
 // ReleasePlacement returns capacity after the caller has stopped the placement.
 func (r *Region) ReleasePlacement(ctx context.Context, scope arm.SubscriptionScope, cell, id, generation string) error {
+	return r.releasePlacement(ctx, scope, cell, id, generation, nil)
+}
+
+func (r *Region) releasePlacement(ctx context.Context, scope arm.SubscriptionScope, cell, id, generation string, extra placementMutation) error {
 	if !validScope(scope) || !identifier.MatchString(cell) || !identifier.MatchString(id) || !identifier.MatchString(generation) {
 		return ErrReservationChanged
 	}
@@ -368,6 +399,14 @@ func (r *Region) ReleasePlacement(ctx context.Context, scope arm.SubscriptionSco
 			allocation := r.subnetNetworkPlacements(scope, parent, name) + saved.PrivateIPv4.String()
 			guards = append(guards, clientv3.Compare(clientv3.Value(allocation), "=", generation))
 			writes = append(writes, clientv3.OpDelete(allocation))
+		}
+		if extra != nil {
+			checks, additional, err := extra(ctx, saved)
+			if err != nil {
+				return err
+			}
+			guards = append(guards, checks...)
+			writes = append(writes, additional...)
 		}
 		result, err := r.client.Txn(ctx).If(guards...).Then(writes...).Commit()
 		if err != nil || result.Succeeded {

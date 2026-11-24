@@ -39,7 +39,7 @@ func (r *Region) reportGatewayStatus(ctx context.Context, id string, certificate
 	if err != nil {
 		return err
 	}
-	if err := r.gatewayHostAuthorized(id, certificate, snapshot); err != nil {
+	if err := r.authorizeHostRole(id, certificate, "gateway", snapshot); err != nil {
 		return err
 	}
 	task := snapshot.Responses[2].GetResponseRange().Kvs

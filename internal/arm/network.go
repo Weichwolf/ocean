@@ -76,7 +76,12 @@ func (s Server) network(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return
 	}
 	collection := path.VNet == "" || path.Child && path.Subnet == ""
-	query, ok := readQuery(w, r, path.version(), func(key, value string) bool {
+	version := path.version()
+	if path.Child && path.Subnet != "" && r.URL.Query().Get("api-version") == network.ContainerSubnetAPIVersion &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPut) {
+		version = network.ContainerSubnetAPIVersion
+	}
+	query, ok := readQuery(w, r, version, func(key, value string) bool {
 		return key == "$skiptoken" && value != "" && path.VNet == "" && r.Method == http.MethodGet
 	})
 	if !ok {
@@ -253,6 +258,9 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 						current := properties.Subnets[index].Properties
 						if subnet.Properties.NetworkSecurityGroup == nil {
 							subnet.Properties.NetworkSecurityGroup = current.NetworkSecurityGroup
+						}
+						if subnet.Properties.Delegations == nil {
+							subnet.Properties.Delegations = current.Delegations
 						}
 						if subnet.Properties.NATGateway == nil {
 							subnet.Properties.NATGateway = current.NATGateway

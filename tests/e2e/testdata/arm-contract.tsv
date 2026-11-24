@@ -48,3 +48,13 @@ NETWORK-03	subnet-nat	2.93.0	none	2024-07-01	network vnet subnet update --resour
 NETWORK-04	deployment-preview	2.93.0	none	2025-04-01	deployment group what-if --resource-group {group} --name {deployment} --template-file {template} --parameters namePrefix={prefix} subnetPrefix={subnet_prefix} --no-pretty-print -o json
 NETWORK-04	deployment-create	2.93.0	none	2025-04-01	deployment group create --resource-group {group} --name {deployment} --template-file {template} --parameters namePrefix={prefix} subnetPrefix={subnet_prefix} -o json
 NETWORK-04	deployment-show	2.93.0	none	2025-04-01	deployment group show --resource-group {group} --name {deployment} -o json
+CONTAINER-01	container-public-create	2.93.0	none	2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Public --ports {port} --protocol TCP --os-type Linux --cpu 0.25 --memory 0.0625 --restart-policy Always -o json
+CONTAINER-01	container-show	2.93.0	none	2024-05-01-preview	container show --resource-group {group} --name {name} -o json
+CONTAINER-01	container-list	2.93.0	none	2024-05-01-preview	container list --resource-group {group} -o json
+CONTAINER-01	container-list-subscription	2.93.0	none	2024-05-01-preview	container list -o json
+CONTAINER-01	container-start	2.93.0	none	2024-05-01-preview	container start --resource-group {group} --name {name} -o none
+CONTAINER-01	container-stop	2.93.0	none	2024-05-01-preview	container stop --resource-group {group} --name {name} -o none
+CONTAINER-01	container-restart	2.93.0	none	2024-05-01-preview	container restart --resource-group {group} --name {name} -o none
+CONTAINER-01	container-logs	2.93.0	none	2024-05-01-preview	container logs --resource-group {group} --name {name} --container-name {name}
+CONTAINER-01	container-delete	2.93.0	none	2024-05-01-preview	container delete --resource-group {group} --name {name} --yes -o none
+CONTAINER-02	container-private-create	2.93.0	none	2022-01-01+2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Private --subnet {subnet_id} --ports {port} --protocol TCP --os-type Linux --cpu 0.25 --memory 0.0625 --restart-policy Never --command-line {command} --environment-variables STANDARD=configured --secure-environment-variables SECRET={secret} -o json

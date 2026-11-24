@@ -26,6 +26,7 @@ func ValidRoutingLink(name string) bool {
 type WorkloadFirewall struct {
 	Interface         string
 	Address           netip.Addr
+	PublicPort        int
 	VNetPrefixes      []netip.Prefix
 	ProtectedPrefixes []netip.Prefix
 	InternetPrefixes  []netip.Prefix
@@ -94,10 +95,12 @@ func applyNftRules(ctx context.Context, namespace, ruleset string) error {
 }
 
 func (f WorkloadFirewall) ruleset() (string, error) {
-	if !linkName.MatchString(f.Interface) || !f.Address.Is4() || !f.Address.IsPrivate() {
+	public := f.PublicPort != 0
+	if !linkName.MatchString(f.Interface) || !f.Address.Is4() || !f.Address.IsGlobalUnicast() ||
+		public && (f.PublicPort < 1 || f.PublicPort > 65535) || !public && !f.Address.IsPrivate() {
 		return "", errors.New("invalid workload interface or IPv4 address")
 	}
-	if len(f.VNetPrefixes) == 0 || len(f.ProtectedPrefixes) == 0 {
+	if !public && len(f.VNetPrefixes) == 0 || len(f.ProtectedPrefixes) == 0 {
 		return "", errors.New("VNet and protected network prefixes are required")
 	}
 	if !validFirewallLease(f.Lease) {
@@ -110,7 +113,7 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 			}
 		}
 	}
-	if !slices.ContainsFunc(f.VNetPrefixes, func(p netip.Prefix) bool { return p.Contains(f.Address) }) ||
+	if !public && !slices.ContainsFunc(f.VNetPrefixes, func(p netip.Prefix) bool { return p.Contains(f.Address) }) ||
 		slices.ContainsFunc(f.ProtectedPrefixes, func(p netip.Prefix) bool { return p.Contains(f.Address) }) {
 		return "", errors.New("workload address must belong to its VNet and be outside the protected prefixes")
 	}
@@ -142,7 +145,9 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 	policy.rule("forwarded", "oifname "+iface+" jump ingress")
 
 	policy.prefixSet("protected_networks", f.ProtectedPrefixes)
-	policy.prefixSet("virtual_network", f.VNetPrefixes)
+	if !public {
+		policy.prefixSet("virtual_network", f.VNetPrefixes)
+	}
 	for _, chain := range []string{"ingress", "egress"} {
 		policy.rule(chain, "ip saddr @protected_networks counter drop")
 		policy.rule(chain, "ip daddr @protected_networks counter drop")
@@ -167,8 +172,12 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 		priorities[key] = true
 		policy.securityRule(chain, key, properties)
 	}
-	for _, chain := range []string{"ingress", "egress"} {
-		policy.rule(chain, "ip saddr @virtual_network ip daddr @virtual_network counter return")
+	if public {
+		policy.rule("ingress", fmt.Sprintf("tcp dport %d ct state new counter return", f.PublicPort))
+	} else {
+		for _, chain := range []string{"ingress", "egress"} {
+			policy.rule(chain, "ip saddr @virtual_network ip daddr @virtual_network counter return")
+		}
 	}
 	if len(f.InternetPrefixes) != 0 {
 		policy.prefixSet("internet_routes", f.InternetPrefixes)

@@ -73,11 +73,12 @@ func (a Approval) Available(r Report) (Capacity, bool) {
 }
 
 type Availability struct {
-	HostID   string   `json:"hostId"`
-	Cell     string   `json:"cell"`
-	Pool     string   `json:"pool"`
-	Roles    []string `json:"roles"`
-	Capacity Capacity `json:"capacity"`
+	HostID           string   `json:"hostId"`
+	Cell             string   `json:"cell"`
+	Pool             string   `json:"pool"`
+	Roles            []string `json:"roles"`
+	Capacity         Capacity `json:"capacity"`
+	ContainerNetwork bool     `json:"containerNetwork,omitempty"`
 }
 
 type Assignment struct {
@@ -100,14 +101,15 @@ type AssignmentPage struct {
 }
 
 type Report struct {
-	MAC            string `json:"mac"`
-	Address        string `json:"address"`
-	OS             string `json:"os"`
-	OSVersion      string `json:"osVersion"`
-	CPU            int    `json:"cpu"`
-	MemoryMiB      int    `json:"memoryMiB"`
-	RootlessPodman bool   `json:"rootlessPodman"`
-	KVM            bool   `json:"kvm"`
+	MAC              string `json:"mac"`
+	Address          string `json:"address"`
+	OS               string `json:"os"`
+	OSVersion        string `json:"osVersion"`
+	CPU              int    `json:"cpu"`
+	MemoryMiB        int    `json:"memoryMiB"`
+	RootlessPodman   bool   `json:"rootlessPodman"`
+	KVM              bool   `json:"kvm"`
+	ContainerNetwork bool   `json:"containerNetwork,omitempty"`
 }
 
 func (a Approval) Qualifies(r Report) bool {

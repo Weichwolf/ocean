@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/enrollment"
@@ -25,6 +27,9 @@ func (j *joinClient) heartbeat(ctx context.Context) error {
 	report, err := probeHost(j.config.Interface)
 	if err != nil {
 		return err
+	}
+	if status, err := os.Stat(filepath.Join(workloadRuntimeDirectory, ".available")); err == nil {
+		report.ContainerNetwork = time.Since(status.ModTime()) < policyLease
 	}
 	body, _ := json.Marshal(report)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, j.url()+"/heartbeat", bytes.NewReader(body))

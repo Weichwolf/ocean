@@ -45,7 +45,7 @@ func openGatewayControl(config *applicationGatewayConfig) (*gatewayControl, erro
 	if err != nil {
 		return nil, err
 	}
-	key, err := readGatewayCertificateKey(config.CertificateKeyFile)
+	key, err := readSealingKey(config.CertificateKeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func configuredGatewaySlots(configured []gatewaySlot) ([]gatewaySlot, error) {
 	return slots, nil
 }
 
-func readGatewayCertificateKey(path string) ([]byte, error) {
+func readSealingKey(path string) ([]byte, error) {
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
@@ -98,14 +98,14 @@ func readGatewayCertificateKey(path string) ([]byte, error) {
 	}
 	owner := info.Sys().(*syscall.Stat_t).Uid
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || (owner != 0 && owner != uint32(os.Geteuid())) || info.Size() != 32 {
-		return nil, errors.New("the Application Gateway key must be a private 32-byte file")
+		return nil, errors.New("the encryption key must be a private 32-byte file")
 	}
 	key, err := io.ReadAll(io.LimitReader(file, 33))
 	if err != nil {
 		return nil, err
 	}
 	if len(key) != 32 || !slices.ContainsFunc(key, func(value byte) bool { return value != 0 }) {
-		return nil, errors.New("invalid Application Gateway encryption key")
+		return nil, errors.New("invalid encryption key")
 	}
 	return key, nil
 }

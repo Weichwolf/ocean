@@ -42,7 +42,7 @@ func (r *Region) PublishHostCapacity(ctx context.Context, id string, certificate
 			}
 			return enrollment.ErrHostUnqualified
 		}
-		available, _ := json.Marshal(enrollment.Availability{HostID: id, Cell: policy.Cell, Pool: policy.Pool, Roles: policy.Roles, Capacity: capacity})
+		available, _ := json.Marshal(enrollment.Availability{HostID: id, Cell: policy.Cell, Pool: policy.Pool, Roles: policy.Roles, Capacity: capacity, ContainerNetwork: report.ContainerNetwork})
 		var revision int64
 		var lease clientv3.LeaseID
 		if len(previous) == 1 {

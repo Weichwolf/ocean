@@ -7,6 +7,7 @@ ExecStart=/usr/bin/ocean-agent -config /etc/ocean-agent/config.json
 Restart=on-failure
 RestartSec=3s
 Delegate=yes
+Nice=10
 
 [Install]
 WantedBy=default.target

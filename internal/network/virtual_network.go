@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	VNetAPIVersion   = "2025-07-01"
-	SubnetAPIVersion = "2024-07-01"
-	SubnetType       = "Microsoft.Network/virtualNetworks/subnets"
+	VNetAPIVersion             = "2025-07-01"
+	SubnetAPIVersion           = "2024-07-01"
+	ContainerSubnetAPIVersion  = "2022-01-01"
+	ContainerDelegationService = "Microsoft.ContainerInstance/containerGroups"
+	SubnetType                 = "Microsoft.Network/virtualNetworks/subnets"
 )
 
 var resourceName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9_])?$`)
@@ -42,6 +44,25 @@ type ResourceReference struct {
 	ID string `json:"id"`
 }
 
+type SubnetDelegation struct {
+	ID         string                     `json:"id,omitempty"`
+	Name       string                     `json:"name"`
+	Type       string                     `json:"type,omitempty"`
+	Properties SubnetDelegationProperties `json:"properties"`
+}
+
+type SubnetDelegationProperties struct {
+	ServiceName       string   `json:"serviceName"`
+	Actions           []string `json:"actions,omitempty"`
+	ProvisioningState string   `json:"provisioningState,omitempty"`
+}
+
+const subnetDelegationAction = "Microsoft.Network/virtualNetworks/subnets/action"
+
+func (s SubnetProperties) AllowsContainerGroups() bool {
+	return len(s.Delegations) == 1 && s.Delegations[0].Properties.ServiceName == ContainerDelegationService
+}
+
 type SubnetProperties struct {
 	AddressPrefix                     string             `json:"addressPrefix,omitempty"`
 	AddressPrefixes                   []string           `json:"addressPrefixes,omitempty"`
@@ -51,6 +72,7 @@ type SubnetProperties struct {
 	NetworkSecurityGroup              *ResourceReference `json:"networkSecurityGroup,omitempty"`
 	NATGateway                        *ResourceReference `json:"natGateway,omitempty"`
 	ProvisioningState                 string             `json:"provisioningState,omitempty"`
+	Delegations                       []SubnetDelegation `json:"delegations,omitempty"`
 }
 
 func (s SubnetProperties) Prefixes() ([]netip.Prefix, error) {
@@ -61,6 +83,15 @@ func (s SubnetProperties) Prefixes() ([]netip.Prefix, error) {
 		s.PrivateLinkServiceNetworkPolicies != "" && s.PrivateLinkServiceNetworkPolicies != "Enabled" ||
 		s.DefaultOutboundAccess != nil && *s.DefaultOutboundAccess {
 		return nil, errors.New("the requested subnet policy is unsupported")
+	}
+	if len(s.Delegations) != 0 {
+		typeName := SubnetType + "/delegations"
+		delegation := s.Delegations[0]
+		if !s.AllowsContainerGroups() || delegation.Name != ContainerDelegationService && !ValidName(delegation.Name) ||
+			delegation.Type != "" && delegation.Type != typeName || len(delegation.Properties.Actions) != 0 &&
+			!slices.Equal(delegation.Properties.Actions, []string{subnetDelegationAction}) {
+			return nil, errors.New("only the Container Instance subnet delegation is supported")
+		}
 	}
 	prefixes := s.AddressPrefixes
 	if s.AddressPrefix != "" {
@@ -127,7 +158,15 @@ func NewSubnet(parentID, name string, properties SubnetProperties) Subnet {
 		value := false
 		properties.DefaultOutboundAccess = &value
 	}
-	return Subnet{ID: parentID + "/subnets/" + name, Name: name, Type: SubnetType, Properties: properties}
+	id := parentID + "/subnets/" + name
+	for index := range properties.Delegations {
+		service := &properties.Delegations[index]
+		service.ID = id + "/delegations/" + service.Name
+		service.Type = SubnetType + "/delegations"
+		service.Properties.Actions = []string{subnetDelegationAction}
+		service.Properties.ProvisioningState = "Succeeded"
+	}
+	return Subnet{ID: id, Name: name, Type: SubnetType, Properties: properties}
 }
 
 func (v VNetProperties) SubnetIndex(name string) int {
