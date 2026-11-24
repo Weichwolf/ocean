@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,10 +12,22 @@ import (
 )
 
 func main() {
+	mode := flag.String("mode", "firewall", "firewall or https")
+	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	const config = "/etc/ocean-agent/"
-	if err := nodeagent.RunNetworkPolicies(ctx, config+"config.json", config+"network.json", slog.Default()); err != nil {
+	var err error
+	switch *mode {
+	case "firewall":
+		err = nodeagent.RunNetworkPolicies(ctx, config+"config.json", config+"network.json", slog.Default())
+	case "https":
+		err = nodeagent.RunHTTPSGateways(ctx, config+"config.json", config+"https.json", slog.Default())
+	default:
+		slog.Error("unknown network policy service mode", "mode", *mode)
+		os.Exit(2)
+	}
+	if err != nil {
 		slog.Error("network policy service failed", "error", err)
 		os.Exit(1)
 	}

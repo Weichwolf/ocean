@@ -303,6 +303,7 @@ func unavailable(w http.ResponseWriter) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("x-ms-error-code", code)
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 

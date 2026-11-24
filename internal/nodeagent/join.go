@@ -72,6 +72,32 @@ type joinClient struct {
 	lastAdvertisement atomic.Pointer[time.Time]
 }
 
+func loadEnrolledClient(path string) (*joinClient, error) {
+	cfg, err := config.Load(path, settings{})
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Enrollment == nil {
+		return nil, errors.New("this host service requires enrollment")
+	}
+	client, err := newJoinClient(*cfg.Enrollment)
+	if err != nil {
+		return nil, err
+	}
+	key, err := readIdentityKey(filepath.Join(cfg.Enrollment.StateDirectory, "identity.key"))
+	if err != nil {
+		return nil, err
+	}
+	cert, err := privateData(filepath.Join(cfg.Enrollment.StateDirectory, "identity.crt"))
+	if err != nil {
+		return nil, err
+	}
+	if err := client.useIdentity(cert, key); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
 func newJoinClient(cfg joinConfig) (*joinClient, error) {
 	origin, err := url.Parse(cfg.Origin)
 	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" ||

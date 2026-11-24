@@ -324,6 +324,17 @@ Azure CLI 2.93.0 generates a legacy template for `az network application-gateway
 
 Install OpenSSL on the control-plane guests for the PKCS#12 import. Run `python3 lab/verify_application_gateway_validation.py --state "$OCEAN_LAB_STATE"` with a free public address in the regional pool. It uses the unmodified CLI's `--validate` workflow to confirm the certificate password, an available public address, and a private backend address in the selected subnet. It checks failure responses and verifies that validation makes no changes to the resource group inventory. The certificate must identify one DNS hostname in its Subject Alternative Name. Results appear in `evidence/application-gateway-validation.json`.
 
+The regional `applicationGateways` configuration defines operator slots and two enrolled gateway hosts per slot. Each API replica loads the same private 32-byte certificate encryption key. The region reserves the public address, subnet, and slot together and makes the certificate bundle available only to the assigned, leased host identities over mTLS. The HTTPS agent applies the listener and DNS roles in the operator-provided routing namespace. The local forwarding lease expires after eight seconds without renewal. ARM deployment completes after both gateways report readiness and exactly one owns the public address. Teardown releases reservations after both hosts report removal.
+
+```sh
+make deb-agent
+python3 lab/prepare_application_gateway.py --state "$OCEAN_LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev6_amd64.deb
+python3 lab/verify_application_gateway_lifecycle.py --state "$OCEAN_LAB_STATE"
+```
+
+Use the disposable regional identity lab with a free public address and the enrolled `farm-1-node-05` worker. The preparation command enrolls both gateway guests and attaches the slot's isolated public and backend links. The lifecycle check uses the selected Azure CLI create, show, and delete commands, verifies the certificate from the outside probe, stops the active HTTPS agent to measure failover, and checks withdrawal using the previous public address. It saves `evidence/application-gateway-lifecycle.json`.
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.

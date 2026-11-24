@@ -11,12 +11,10 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"syscall"
 	"time"
 
-	"github.com/Weichwolf/ocean/internal/config"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/network"
 )
@@ -58,26 +56,8 @@ type appliedFirewall struct {
 // RunNetworkPolicies synchronizes root-owned routing links with mTLS-authenticated
 // assignments. Kernel timeouts expire forwarding if reconciliation stops.
 func RunNetworkPolicies(ctx context.Context, agentPath, registryPath string, logger *slog.Logger) error {
-	cfg, err := config.Load(agentPath, settings{})
+	client, err := loadEnrolledClient(agentPath)
 	if err != nil {
-		return err
-	}
-	if cfg.Enrollment == nil {
-		return errors.New("network policy requires host enrollment")
-	}
-	client, err := newJoinClient(*cfg.Enrollment)
-	if err != nil {
-		return err
-	}
-	key, err := readIdentityKey(filepath.Join(cfg.Enrollment.StateDirectory, "identity.key"))
-	if err != nil {
-		return err
-	}
-	cert, err := privateData(filepath.Join(cfg.Enrollment.StateDirectory, "identity.crt"))
-	if err != nil {
-		return err
-	}
-	if err := client.useIdentity(cert, key); err != nil {
 		return err
 	}
 	defer client.client.CloseIdleConnections()

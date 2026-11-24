@@ -121,7 +121,9 @@ func (s Server) applicationGatewayDeployment(ctx context.Context, w http.Respons
 		w.Header().Set("Location", s.Origin+address.ID(scope)+"?api-version="+ApplicationGatewayDeploymentVersion)
 		w.Header().Set("Retry-After", "1")
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusAccepted, result.Resource.view(scope))
+		// The pinned deployments SDK accepts 200 and 201 for the initial
+		// response and follows Azure-AsyncOperation while the gateway starts.
+		writeJSON(w, createdStatus(result.Created), result.Resource.view(scope))
 		return
 	}
 	status := http.StatusOK

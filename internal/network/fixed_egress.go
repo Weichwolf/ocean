@@ -94,7 +94,7 @@ func (gateway FixedEgress) SetActive(ctx context.Context, namespace string, acti
 	policy := nftPolicy{table: egressTable}
 	policy.command("flush set inet %s %s", policy.table, activeTenants)
 	if active {
-		assigned, err := gateway.addressAssigned(ctx, namespace)
+		assigned, err := linkHasIPv4(ctx, namespace, gateway.Outside, gateway.Address)
 		if err != nil {
 			return errors.Join(err, applyNftRules(ctx, namespace, policy.script.String()))
 		}
@@ -111,8 +111,8 @@ func (gateway FixedEgress) SetActive(ctx context.Context, namespace string, acti
 	return applyNftRules(ctx, namespace, policy.script.String())
 }
 
-func (gateway FixedEgress) addressAssigned(ctx context.Context, namespace string) (bool, error) {
-	output, err := exec.CommandContext(ctx, "/usr/bin/ip", "-n", namespace, "-4", "-j", "address", "show", "dev", gateway.Outside).Output()
+func linkHasIPv4(ctx context.Context, namespace, iface string, target netip.Addr) (bool, error) {
+	output, err := exec.CommandContext(ctx, "/usr/bin/ip", "-n", namespace, "-4", "-j", "address", "show", "dev", iface).Output()
 	if err != nil {
 		return false, fmt.Errorf("read assigned gateway addresses: %w", err)
 	}
@@ -126,7 +126,7 @@ func (gateway FixedEgress) addressAssigned(ctx context.Context, namespace string
 	}
 	for _, link := range links {
 		for _, address := range link.Addresses {
-			if address.Local == gateway.Address {
+			if address.Local == target {
 				return true, nil
 			}
 		}

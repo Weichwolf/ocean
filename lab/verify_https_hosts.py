@@ -129,7 +129,7 @@ for unit in {" ".join(UNITS)}; do sudo systemctl start "$unit"; done
 """)
 
 
-def configure_worker(state):
+def configure_worker(state, worker=WORKER):
     nginx = yaml.safe_load((ROOT / "tests/e2e/testdata/images.lock.yaml").read_text())["images"]["nginx"]
     image = f"{nginx['repository']}@{nginx['digest']}"
     reply = worker_command(state, f"""
@@ -141,21 +141,21 @@ sudo nsenter -t "$pid" -n ip addr add {BACKEND}/24 dev https0
 sudo nsenter -t "$pid" -n ip link set https0 up
 pod info --format '{{{{.Host.Security.Rootless}}}}'
 ps -o ni= -p "$pid" | tr -d ' '
-""")
+""", worker)
     require(reply.splitlines() == ["true", "10"], "the NGINX fixture must run rootless at nice 10")
     return image
 
 
-def configure_probe(state, certificate):
+def configure_probe(state, certificate, observer=OBSERVER, parent="external0", address=ADDRESS):
     resolver = f"nameserver {public(0)}\nnameserver {public(1)}\noptions timeout:1 attempts:1\n"
-    upload(state, OBSERVER, {"ca.pem": certificate, "resolv.conf": resolver.encode()}, DEST)
-    ssh(state, OBSERVER, f"""set -eu
+    upload(state, observer, {"ca.pem": certificate, "resolv.conf": resolver.encode()}, DEST)
+    ssh(state, observer, f"""set -eu
 sudo ip netns add {PROBE}
 sudo ip -n {PROBE} link set lo up
-{macvlan(PROBE, "external0", "ext0", "198.51.100.31/24")}
+{macvlan(PROBE, parent, "ext0", "198.51.100.31/24")}
 sudo install -D -m 0644 {DEST}/resolv.conf /etc/netns/{PROBE}/resolv.conf
 sed 's/^hosts:.*/hosts: files dns/' /etc/nsswitch.conf | sudo tee /etc/netns/{PROBE}/nsswitch.conf >/dev/null
-sudo ip -n {PROBE} route add 10.89.1.0/24 via {ADDRESS}
+sudo ip -n {PROBE} route add 10.89.1.0/24 via {address}
 """)
 
 
@@ -164,8 +164,8 @@ def owner(state, index):
     return any(item["local"] == ADDRESS for link in response for item in link["addr_info"])
 
 
-def outside(state, *args):
-    return ssh(state, OBSERVER, shlex.join(["sudo", "ip", "netns", "exec", PROBE, "curl", "--noproxy", "*",
+def outside(state, *args, observer=OBSERVER):
+    return ssh(state, observer, shlex.join(["sudo", "ip", "netns", "exec", PROBE, "curl", "--noproxy", "*",
                                            "-fsS", "--max-time", "3", *args])).decode()
 
 
@@ -187,7 +187,12 @@ sudo systemctl daemon-reload
 if sudo test -e /run/netns/{GATE}; then sudo ip netns delete {GATE}; fi
 if sudo test -e {KEYS}/ingress.key; then sudo unlink {KEYS}/ingress.key; fi
 """)
-    ssh(state, OBSERVER, f"""set -eu
+    cleanup_probe(state)
+    worker_command(state, f"pod rm -f --ignore --time=0 {POD} >/dev/null")
+
+
+def cleanup_probe(state, observer=OBSERVER):
+    ssh(state, observer, f"""set -eu
 if sudo test -e /run/netns/{PROBE}; then sudo ip netns delete {PROBE}; fi
 if sudo test -d /etc/netns/{PROBE}; then
     for file in resolv.conf nsswitch.conf; do
@@ -196,7 +201,6 @@ if sudo test -d /etc/netns/{PROBE}; then
     sudo rmdir /etc/netns/{PROBE}
 fi
 """)
-    worker_command(state, f"pod rm -f --ignore --time=0 {POD} >/dev/null")
 
 
 def verify(state):

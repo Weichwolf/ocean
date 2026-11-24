@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+/usr/sbin/nft get element inet ocean_https_gateway active_addresses "{ $1 }" >/dev/null
+test -n "$(/usr/bin/ss -H -lnt 'sport = :443')"
+/usr/bin/curl --noproxy '*' --silent --max-time 1 --output /dev/null "http://$2/"

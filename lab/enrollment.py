@@ -15,7 +15,7 @@ from region import DEST, NODES, ROOT, ca, ssh, upload
 from verify_operations import wait_api
 
 
-def approval(state, node, *, mac=None, address=None, profile="identity-support"):
+def approval(state, node, *, mac=None, address=None, profile="identity-support", roles=None):
     directory = state / "enrollment-pki"
     directory.mkdir(mode=0o700, exist_ok=True)
     credential = directory / f"{node}.secret"
@@ -30,11 +30,13 @@ def approval(state, node, *, mac=None, address=None, profile="identity-support")
         address = address or NODES[node]
         now = datetime.datetime.now(datetime.timezone.utc)
         data = {"hosts": [{"hostId": node, "mac": mac, "address": address, "profile": profile,
-                           "cell": "cell-1", "pool": "lab-default", "roles": ["compute"], "minimumCPU": 1,
+                           "cell": "cell-1", "pool": "lab-default", "roles": roles or ["compute"], "minimumCPU": 1,
                            "minimumMemoryMiB": 768, "requireKVM": False,
                            "tokenSHA256": hashlib.sha256(credential.read_bytes()).hexdigest(),
                            "expiresAt": (now + datetime.timedelta(minutes=30)).isoformat()}]}
         inventory.write_text(json.dumps(data) + "\n")
+    elif roles is not None and json.loads(inventory.read_text())["hosts"][0]["roles"] != roles:
+        raise RuntimeError(f"{node} already has a different approved role profile")
     return directory, credential, inventory
 
 
@@ -43,13 +45,19 @@ def deploy(state, node, public_ips=None):
     publish(state, public_ips)
 
 
-def publish(state, public_ips=None):
+def publish(state, public_ips=None, gateway_slots=None, gateway_key=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
     cert, key = ca(directory, "host-enrollment")
     for member in NODES:
         config = json.loads(ssh(state, member, f"cat {DEST}/api.json"))
+        extra = {}
+        if gateway_slots is not None:
+            config["region"]["applicationGateways"] = {
+                "certificateKeyFile": f"{DEST}/pki/application-gateway.key", "slots": gateway_slots,
+            }
+            extra["pki/application-gateway.key"] = gateway_key.read_bytes()
         if public_ips is not None:
             config["region"]["publicIPv4Addresses"] = public_ips
         config["tls"]["clientCAFile"] = f"{DEST}/pki/host-enrollment.pem"
@@ -59,7 +67,7 @@ def publish(state, public_ips=None):
                                     "inventoryFile": f"{DEST}/host-inventory.json"}
         upload(state, member, {"pki/host-enrollment.pem": cert.read_bytes(), "pki/host-enrollment.key": key.read_bytes(),
                                "host-inventory.json": inventory, "api.json": json.dumps(config).encode(),
-                               "bin/ocean-control-plane.next": (ROOT / "bin/ocean-control-plane").read_bytes()})
+                               "bin/ocean-control-plane.next": (ROOT / "bin/ocean-control-plane").read_bytes(), **extra})
         ssh(state, member, f"sudo mv {DEST}/bin/ocean-control-plane.next {DEST}/bin/ocean-control-plane && "
             "sudo systemctl restart ocean-api.service")
         wait_api(state, member)

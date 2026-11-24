@@ -2,9 +2,11 @@
 set -eu
 
 if [ "$1" = remove ] && getent passwd ocean-agent >/dev/null; then
-    if [ -d /run/systemd/system ] && systemctl is-active --quiet ocean-network-agent.service; then
-        systemctl stop ocean-network-agent.service
-    fi
+    for unit in ocean-network-agent.service ocean-https-agent.service; do
+        if [ -d /run/systemd/system ] && systemctl is-active --quiet "$unit"; then
+            systemctl stop "$unit"
+        fi
+    done
     uid=$(id -u ocean-agent)
     if [ -S "/run/user/$uid/bus" ]; then
         runuser -u ocean-agent -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop ocean-agent.service

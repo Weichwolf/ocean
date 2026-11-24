@@ -69,7 +69,9 @@ func (r *Region) HTTPSAssignments(ctx context.Context, id string, certificate []
 			return nil, errors.New("invalid HTTPS gateway desired state")
 		}
 		if record.DeleteOperation != "" {
-			result = append(result, enrollment.HTTPSAssignment{Slot: slot, Generation: record.DeleteOperation, Delete: true})
+			result = append(result, enrollment.HTTPSAssignment{
+				Slot: slot, Generation: record.DeleteOperation, Delete: true, PublicIPv4: record.PublicIPv4,
+			})
 			continue
 		}
 		bundle, err := r.gatewayControl.sealer.Open(nil, nil, record.EncryptedCertificate, []byte(recordKey+"/"+record.OperationID))

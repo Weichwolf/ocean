@@ -151,13 +151,13 @@ def translated_packets(state, guest):
     return counters[0]
 
 
-def worker_command(state, command):
+def worker_command(state, command, worker=WORKER):
     prelude = """set -eu
 cd /tmp
 uid=$(id -u ocean-agent)
 pod() { sudo runuser -u ocean-agent -- env XDG_RUNTIME_DIR="/run/user/$uid" nice -n 10 podman "$@"; }
 """
-    return ssh(state, WORKER, prelude + command).decode().strip()
+    return ssh(state, worker, prelude + command).decode().strip()
 
 
 def configure_worker(state, image):
