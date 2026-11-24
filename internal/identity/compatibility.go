@@ -34,6 +34,7 @@ type Compatibility struct {
 	cloud          CloudEndpoints
 	exchangeSecret func(string) (string, error)
 	signingKeys    sync.Map
+	subscriptions  *subscriptionReader
 }
 
 // verifyAccessToken checks tokens against the known tenant issuer and its
@@ -92,6 +93,11 @@ func (c *Compatibility) Handler() http.Handler {
 	mux.HandleFunc("POST /{tenant}/oauth2/v2.0/devicecode", c.device)
 	if c.exchangeSecret != nil {
 		mux.HandleFunc("POST /{tenant}/oauth2/v2.0/token", c.token)
+	}
+	if c.subscriptions != nil {
+		mux.HandleFunc("GET /subscriptions", c.readSubscription)
+		mux.HandleFunc("GET /subscriptions/{subscription}", c.readSubscription)
+		mux.HandleFunc("GET /subscriptions/{subscription}/locations", c.readSubscription)
 	}
 	return mux
 }

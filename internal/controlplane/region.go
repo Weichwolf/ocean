@@ -49,12 +49,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		return config.Server{}, service.Hooks{}, err
 	}
 	var hooks service.Hooks
+	var compatibility *identity.Compatibility
 	if cfg.Identity != nil {
-		compatibility, err := cfg.Identity.OpenCompatibility()
+		compatibility, err = cfg.Identity.OpenCompatibility()
 		if err != nil {
 			return config.Server{}, service.Hooks{}, err
 		}
-		hooks.Handler = compatibility.Handler()
 	}
 	if cfg.Region != nil {
 		region, err := openRegion(*cfg.Region)
@@ -64,6 +64,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Startup = region.bootstrap
 		hooks.Readiness = region.ready
 		hooks.Close = region.client.Close
+		if compatibility != nil {
+			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
+		}
+	}
+	if compatibility != nil {
+		hooks.Handler = compatibility.Handler()
 	}
 	return cfg.Server, hooks, nil
 }
@@ -72,6 +78,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 // own key prefixes for operations and reservations under the same region root.
 type Region struct {
 	client *clientv3.Client
+	root   string
 	keys   [2]string
 	values [2]string
 }
@@ -84,16 +91,16 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys, values := initialRecords(cfg.Name, cfg.InitialCell)
+	root := "/ocean/v1/regions/" + cfg.Name
+	keys, values := initialRecords(root, cfg.Name, cfg.InitialCell)
 	client, err := clientv3.New(connection)
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
-	return &Region{client: client, keys: keys, values: values}, nil
+	return &Region{client: client, root: root, keys: keys, values: values}, nil
 }
 
-func initialRecords(name, cell string) ([2]string, [2]string) {
-	root := "/ocean/v1/regions/" + name
+func initialRecords(root, name, cell string) ([2]string, [2]string) {
 	region := struct {
 		Name        string `json:"name"`
 		InitialCell string `json:"initialCell"`
