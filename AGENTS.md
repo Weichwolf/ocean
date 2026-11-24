@@ -11,3 +11,7 @@ Keep at most one active work branch per host or agent. Each active work branch m
 Name the branch `{hostname}/{issueid}_{issuename}`. Use the hostname, the issue number without `#`, and a Git-safe short title, for example `dev-host/21_add_network_tests`.
 
 The host or agent working on the branch creates its pull request with `gh pr create`. Merge it into the repository default branch with `gh pr merge` after all required checks pass and all required approvals are in place.
+
+## Verification
+
+Run build, test, and acceptance checks locally. Use local runners for continuous integration. Record the commands and results in the pull request.
