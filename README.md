@@ -34,3 +34,7 @@ Both services accept `-config` with a JSON file. Settings omitted from the file 
 ```
 
 For an HTTPS listener, set `tls.certificateFile` and `tls.keyFile` to PEM file paths. A non-loopback listener requires TLS. The service validates configuration and loads its key pair before it binds the listener.
+
+## Development lab
+
+See the [rootless KVM lab guide](lab/README.md) for the `ocean-lab` launcher and the topology profiles used in the [end-to-end protocol](tests/e2e/protocol.md).
