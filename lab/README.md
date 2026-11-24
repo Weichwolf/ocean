@@ -179,6 +179,14 @@ Provider implementations publish their public resource projections to the region
 
 Run `python3 lab/verify_inventory.py --state "$OCEAN_LAB_STATE"` to exercise the selected CLI inventory commands. The lab publishes tagged test projections through the internal resource store and reads a real role assignment by its ARM ID. It checks paging, nested IDs, unsupported API requests, Reader scope, revocation, and group cleanup. The result is stored in `evidence/arm-inventory.json`. Provider acceptance runs exercise inventory against live workloads and reservations as those providers are enabled.
 
+## ARM virtual networks and subnets
+
+Azure CLI 2.93.0 uses `2025-07-01` for `az network vnet` and `2024-07-01` for `az network vnet subnet`. The selected commands create, show, list, and delete networks and subnets. A subnet can be declared with its virtual network or added by a separate request. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) · [Virtual network REST API](https://learn.microsoft.com/en-us/rest/api/virtualnetwork/virtual-networks/create-or-update) · [Subnet resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2024-07-01/virtualnetworks/subnets)
+
+Address spaces use canonical private IPv4 prefixes. A subnet prefix must fit inside the network's address space and contain at least eight addresses. Subnet address ranges within the same virtual network are disjoint. A network and its subnets share one revision so concurrent writes check those constraints against a consistent configuration. The same address range can be used in independent tenant networks.
+
+Run `python3 lab/verify_network.py --state "$OCEAN_LAB_STATE"` from the host after deploying the control plane and the pinned CLI. It checks the ARM lifecycle with fresh tenants, competing subnet reservations, inventory, and resource group cleanup. It writes `evidence/virtual-network-arm.json`. Workload attachment, packet filtering, and egress failover are verified by their own acceptance scenarios.
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.

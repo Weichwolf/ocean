@@ -103,7 +103,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			if cfg.Identity.Cloud != nil {
 				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
-					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region,
+					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region, Networks: region,
 					PrincipalExists: compatibility.RolePrincipalExists}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}

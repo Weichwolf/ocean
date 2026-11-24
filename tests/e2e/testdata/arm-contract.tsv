@@ -11,3 +11,12 @@ CONTRACT-02	inventory-show	2.93.0	none	provider	resource show --ids {id} --api-v
 IDENTITY-04	role-create	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment create --scope {scope} --role Reader --name {name} --assignee-object-id {principal} --assignee-principal-type {kind} -o json
 IDENTITY-04	role-list	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment list --scope {scope} --fill-principal-name false -o json
 IDENTITY-04	role-delete	2.93.0	none	2022-04-01	role assignment delete --ids {id} -o none
+NETWORK-01	vnet-create	2.93.0	none	2025-07-01	network vnet create --resource-group {group} --name {vnet} --location {location} --address-prefixes {vnet_prefix} --subnet-name {subnet} --subnet-prefixes {subnet_prefix} -o json
+NETWORK-01	vnet-show	2.93.0	none	2025-07-01	network vnet show --resource-group {group} --name {vnet} -o json
+NETWORK-01	vnet-list	2.93.0	none	2025-07-01	network vnet list --resource-group {group} -o json
+NETWORK-01	vnet-list-subscription	2.93.0	none	2025-07-01	network vnet list -o json
+NETWORK-01	vnet-delete	2.93.0	none	2025-07-01	network vnet delete --resource-group {group} --name {vnet} -o none
+NETWORK-01	subnet-create	2.93.0	none	2024-07-01	network vnet subnet create --resource-group {group} --vnet-name {vnet} --name {subnet} --address-prefixes {subnet_prefix} -o json
+NETWORK-01	subnet-show	2.93.0	none	2024-07-01	network vnet subnet show --resource-group {group} --vnet-name {vnet} --name {subnet} -o json
+NETWORK-01	subnet-list	2.93.0	none	2024-07-01	network vnet subnet list --resource-group {group} --vnet-name {vnet} -o json
+NETWORK-01	subnet-delete	2.93.0	none	2024-07-01	network vnet subnet delete --resource-group {group} --vnet-name {vnet} --name {subnet} -o none
