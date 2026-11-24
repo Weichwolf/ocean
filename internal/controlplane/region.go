@@ -29,11 +29,13 @@ type settings struct {
 }
 
 type regionConfig struct {
-	Name                string       `json:"name"`
-	InitialCell         string       `json:"initialCell"`
-	OperationController *bool        `json:"operationController"`
-	Etcd                etcdConfig   `json:"etcd"`
-	PublicIPv4Addresses []netip.Addr `json:"publicIPv4Addresses"`
+	Name                string                    `json:"name"`
+	InitialCell         string                    `json:"initialCell"`
+	OperationController *bool                     `json:"operationController"`
+	Etcd                etcdConfig                `json:"etcd"`
+	PublicIPv4Addresses []netip.Addr              `json:"publicIPv4Addresses"`
+	ApplicationGateways *applicationGatewayConfig `json:"applicationGateways"`
+	WireGuard           *wireGuardConfig          `json:"wireGuard"`
 }
 
 type etcdConfig struct {
@@ -56,6 +58,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	}
 	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
 		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
+	}
+	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil) && cfg.HostEnrollment == nil {
+		return config.Server{}, service.Hooks{}, errors.New("gateway execution requires enrolled gateway hosts")
 	}
 	var hooks service.Hooks
 	var hosts *enrollment.Authority
@@ -106,7 +111,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
 					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region, Networks: region, Deployments: region,
-					PrincipalExists: compatibility.RolePrincipalExists}
+					GatewayDeployments: region, SiteConnections: region, PrincipalExists: compatibility.RolePrincipalExists}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}
 		}
@@ -123,11 +128,13 @@ func Load(path string) (config.Server, service.Hooks, error) {
 // Region owns the initial metadata for one region. Resource providers use their
 // own key prefixes for operations and reservations under the same region root.
 type Region struct {
-	client     *clientv3.Client
-	root       string
-	keys       [2]string
-	values     [2]string
-	publicIPv4 []netip.Addr
+	client         *clientv3.Client
+	root           string
+	keys           [2]string
+	values         [2]string
+	publicIPv4     []netip.Addr
+	gatewayControl *gatewayControl
+	wireGuard      *wireGuardConfig
 }
 
 func openRegion(cfg regionConfig) (*Region, error) {
@@ -135,6 +142,14 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, errors.New("region name and initialCell must be lowercase identifiers")
 	}
 	publicIPv4, err := configuredPublicIPs(cfg.PublicIPv4Addresses)
+	if err != nil {
+		return nil, err
+	}
+	gatewayControl, err := openGatewayControl(cfg.ApplicationGateways)
+	if err != nil {
+		return nil, err
+	}
+	wireGuard, err := configureWireGuard(cfg.WireGuard, gatewayControl)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +163,8 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
-	return &Region{client: client, root: root, keys: keys, values: values, publicIPv4: publicIPv4}, nil
+	return &Region{client: client, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
+		gatewayControl: gatewayControl, wireGuard: wireGuard}, nil
 }
 
 func initialRecords(root, name, cell string) ([2]string, [2]string) {
@@ -178,7 +194,13 @@ func (region *Region) bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
-	return region.bootstrapPublicIPPool(ctx)
+	if err := region.bootstrapPublicIPPool(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapApplicationGateways(ctx); err != nil {
+		return err
+	}
+	return region.bootstrapWireGuard(ctx)
 }
 
 func (region *Region) ready(ctx context.Context) error {

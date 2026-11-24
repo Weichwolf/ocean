@@ -44,7 +44,12 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "InvalidDeployment", "The deployment name or operation is unsupported.")
 		return
 	}
-	if _, ok := readQuery(w, r, deploymentAPIVersion, nil); !ok {
+	version := deploymentAPIVersion
+	applicationGateway := s.GatewayDeployments != nil && r.URL.Query().Get("api-version") == ApplicationGatewayDeploymentVersion
+	if applicationGateway {
+		version = ApplicationGatewayDeploymentVersion
+	}
+	if _, ok := readQuery(w, r, version, nil); !ok {
 		return
 	}
 	address := ResourceAddress{Group: group, Path: deploymentType + "/" + name}
@@ -58,7 +63,7 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 			inventoryError(w, err)
 			return
 		}
-		if resource == nil {
+		if resource == nil || applicationGateway && resource.APIVersion != version {
 			writeError(w, http.StatusNotFound, "DeploymentNotFound", "The deployment does not exist.")
 			return
 		}
@@ -81,6 +86,15 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 		return
 	}
 	properties := input.Properties
+	if applicationGateway {
+		if operation == "whatif" || properties.WhatIfSettings != nil ||
+			!strings.EqualFold(properties.Mode, "Incremental") || properties.ValidationLevel != "" && properties.ValidationLevel != "Provider" {
+			writeError(w, http.StatusBadRequest, "InvalidDeployment", "Use an incremental HTTPS Application Gateway deployment.")
+			return
+		}
+		s.applicationGatewayDeployment(ctx, w, scope, actor, address, input, commit)
+		return
+	}
 	format := "FullResourcePayloads"
 	if properties.WhatIfSettings != nil {
 		format = properties.WhatIfSettings.ResultFormat
@@ -170,6 +184,14 @@ func deploymentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
 	case errors.Is(err, ErrSubnetInUse):
 		writeError(w, http.StatusConflict, "SubnetInUse", err.Error())
+	case errors.Is(err, ErrGatewayExecutionUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "GatewayExecutionUnavailable", err.Error())
+	case errors.Is(err, ErrGatewayNameInUse):
+		writeError(w, http.StatusConflict, "ApplicationGatewayInUse", err.Error())
+	case errors.Is(err, ErrGatewaySubnetInUse):
+		writeError(w, http.StatusConflict, "ApplicationGatewaySubnetInUse", err.Error())
+	case errors.Is(err, ErrSiteConnectionInUse):
+		writeError(w, http.StatusConflict, "SiteConnectionInUse", err.Error())
 	default:
 		inventoryError(w, err)
 	}

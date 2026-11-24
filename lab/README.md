@@ -258,13 +258,94 @@ Preview and validation read a single regional revision without writing resource 
 
 Install Bicep CLI 0.49.2 and Debian's `libicu76` in the operator guest. Run `python3 lab/verify_deployment.py --state "$OCEAN_LAB_STATE"` with the empty two-address lab pool configured above. Pass `--bicep` if the compiler is installed outside `/home/ocean/.local/bin`. The verifier runs what-if on a populated group, checks for resource mutations, rejects an invalid deployment, deploys the template, verifies rollback when the pool is exhausted, and reconciles a changed subnet. Find the results in `evidence/network-deployment-arm.json`. [Network fixture](../tests/e2e/testdata/bicep/network.bicep) · [Bicep release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
 
+## Routed WireGuard gateway
+
+The `ocean-gateway` command accepts one `wireguard` configuration for a dedicated routing namespace. Attach an underlay link with a route to the peer's IPv4 endpoint and an inside link for its approved local networks. Supply a private /31 for the tunnel, one peer public key, and a root-owned private key file with owner-only permissions. The tunnel addresses and approved local, remote, and protected networks must be disjoint. Each peer needs its own private key. [WireGuard quick start](https://www.wireguard.com/quickstart/)
+
+```json
+{
+  "namespace": "tenant-vpn",
+  "wireguard": {
+    "tunnel": "wg0",
+    "underlay": "wan0",
+    "inside": "lan0",
+    "localTunnel": "10.99.1.0/31",
+    "peerTunnel": "10.99.1.1",
+    "listenPort": 51820,
+    "peerEndpoint": "198.18.24.2:51820",
+    "peerPublicKey": "<WireGuard public key>",
+    "privateKeyFile": "/etc/ocean-gateway/tenant-vpn.key",
+    "localPrefixes": ["10.91.1.0/24"],
+    "remotePrefixes": ["10.92.1.0/24"],
+    "protectedPrefixes": ["10.231.1.0/24"]
+  }
+}
+```
+
+Use `ocean-gateway -config /etc/ocean-gateway/tenant-vpn.json -mode apply` with `iproute2`, `nftables`, and `wireguard-tools` in the gateway guest. The command blocks namespace forwarding while it reconciles the tunnel and routes. It enables only the approved prefix pairs and permits ICMP peer probes on the tunnel addresses. Use `-mode remove` to close forwarding and remove the tunnel and its routes. Keep the management interface in its own network namespace. [WireGuard network namespaces](https://www.wireguard.com/netns/)
+
+An optional `redundancy` object gives the local inside address and the trusted neighbor's `peer` address and `peerMac`. It enables unicast VRRP traffic matching those addresses and TTL 255 on the inside interface. A routing supervisor can call `-mode probe` to check the peer tunnel using an authenticated ICMP exchange. Use a controlled inside segment for VRRP and configure each gateway with its own tunnel and peer. [Keepalived configuration synopsis](https://www.keepalived.org/manpage.html)
+
+Run the packet check on a disposable Debian KVM guest with `wireguard-tools`, `nftables`, and `iputils-ping`. It creates and removes four isolated namespaces and uses disposable peer keys. The test exercises encrypted forwarding in both directions, blocked paths, prefix changes, failed configuration, and teardown.
+
+```sh
+vpn_test=$(mktemp /tmp/ocean-wireguard-test.XXXXXXXX)
+CGO_ENABLED=0 go test -mod=readonly -tags=e2e -c -o "$vpn_test" ./internal/network
+./bin/ocean-lab ssh -state "$OCEAN_LAB_STATE" farm-1-node-05 -- \
+  'file=$(mktemp); trap "unlink \"$file\"" EXIT; cat > "$file"; chmod 0700 "$file"; sudo env OCEAN_E2E_WIREGUARD=1 "$file" -test.v -test.run=^TestRoutedWireGuard$' \
+  < "$vpn_test"
+```
+
+Run `python3 lab/verify_wireguard_hosts.py --state "$OCEAN_LAB_STATE" --profile "$OCEAN_LAB_PROFILE"` against a disposable regional lab with the installed control plane and enrolled `farm-1-node-05` compute guest. Use the exact running profile so the verifier can restart the stopped gateway. The two gateway guests need WireGuard tools, nftables, iputils-ping, and Keepalived. The customer guest needs WireGuard tools, nftables, iputils-ping, and curl. The verifier sets up two separate peer keys and paths, starts the pinned HTTP workload under rootless Podman at nice +10, and measures route recovery after disabling a tunnel's underlay and powering off the active gateway guest. It probes management from the operator network during gateway loss and records successful and unsuccessful attempts. The customer must remain unable to reach the protected management network. Results appear in `evidence/wireguard-hosts.json`. The lab paths use separate network interfaces on a shared virtual underlay.
+
+The `Ocean.Network/siteConnections` API uses `2026-11-01` and supports resource-group PUT, GET, and DELETE through `az rest`. A request names the tenant subnet, customer prefixes, and the two customer peer endpoints and public keys. The region validates prefix boundaries and reserves an operator slot with two enrolled hosts. Each host receives its own peer settings. Its private key stays on the gateway. The WireGuard agent renews the local eight-second forwarding lease and uses the encrypted peer probe when selecting the active tenant-side router. Creation waits for two healthy paths and one route owner. Deletion releases reservations after both hosts withdraw the tunnel.
+
+After preparing the enrolled gateway guests using the HTTPS lab procedure, run `python3 lab/verify_wireguard_api.py --state "$OCEAN_LAB_STATE" --package bin/ocean-agent_0.1.0~dev7_amd64.deb`. The check creates and deletes the site connection through the pinned CLI. It measures recovery when the active gateway agent stops, checks the protected management path, and checks that packets stop reaching the private workload after deletion. Results appear in `evidence/wireguard-api.json`. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv)
+
+## Public HTTPS ingress
+
+The `ocean-gateway -mode render-https` command renders a dedicated HAProxy configuration from a single `https` role. The bundle must contain a matching private key and a valid certificate for the configured DNS name. Place it in a root-owned, owner-only file. The backend must be a usable address in the declared private subnet.
+
+```json
+{
+  "https": {
+    "publicIPv4": "198.51.100.20",
+    "hostname": "ingress.ocean.test",
+    "certificateFile": "/etc/ocean-gateway/ingress.pem",
+    "backend": "10.89.1.4:8080",
+    "backendSubnet": "10.89.1.0/24"
+  }
+}
+```
+
+Validate the rendered configuration with `haproxy -c -f <configuration>`. Run HAProxy in a gateway namespace with a public and private link and let the routing supervisor own the listener address. HAProxy accepts the configured TLS and HTTP host, checks the private backend, and sets forwarding headers from the actual connection. [HAProxy configuration reference](https://docs.haproxy.org/3.0/configuration.html)
+
+Run `TestPrivateHTTPSIngress` from the network test binary in a Debian KVM guest with `OCEAN_E2E_HTTPS_INGRESS=1`, HAProxy, curl, and Python installed. The test verifies certificate identity, the private backend response, replacement of client-supplied forwarding headers, rejection of other hostnames, and blocked direct access from the public client.
+
+Use the `egress-ha` profile for the separate gateway-guest test. The gateway guests require `haproxy`, `keepalived`, `nftables`, and `dnsmasq-base`. The worker uses the Debian node-agent package and the pinned NGINX image. Run `python3 lab/verify_https_hosts.py --state "$OCEAN_EGRESS_STATE"`. The external probe uses the two DNS instances to resolve the test name and verifies TLS against the test certificate. The check powers off the active KVM gateway and measures recovery with fresh DNS and with the previous address. It records the outcome in `evidence/https-gateway-hosts.json`.
+
+Azure CLI 2.93.0 generates a legacy template for `az network application-gateway create`. It sends the deployment to `2024-11-01` and declares the gateway resource at `2022-05-01`. The command matrix records the parameters for one public HTTPS listener and a private HTTP backend on a two-instance Standard_v2 gateway. The template fixture uses disposable certificate fields and feeds the command's actual request shape into the parser test. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) · [Captured request shape](../tests/e2e/testdata/application-gateway-deployment.json)
+
+Install OpenSSL on the control-plane guests for the PKCS#12 import. Run `python3 lab/verify_application_gateway_validation.py --state "$OCEAN_LAB_STATE"` with a free public address in the regional pool. It uses the unmodified CLI's `--validate` workflow to confirm the certificate password, an available public address, and a private backend address in the selected subnet. It checks failure responses and verifies that validation makes no changes to the resource group inventory. The certificate must identify one DNS hostname in its Subject Alternative Name. Results appear in `evidence/application-gateway-validation.json`.
+
+The regional `applicationGateways` configuration defines operator slots and two enrolled gateway hosts per slot. Each API replica loads the same private 32-byte certificate encryption key. The region reserves the public address, subnet, and slot together and makes the certificate bundle available only to the assigned, leased host identities over mTLS. The HTTPS agent applies the listener and DNS roles in the operator-provided routing namespace. The local forwarding lease expires after eight seconds without renewal. ARM deployment completes after both gateways report readiness and exactly one owns the public address. Teardown releases reservations after both hosts report removal.
+
+```sh
+make deb-agent
+python3 lab/prepare_application_gateway.py --state "$OCEAN_LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev7_amd64.deb
+python3 lab/verify_application_gateway_lifecycle.py --state "$OCEAN_LAB_STATE"
+```
+
+Use the disposable regional identity lab with a free public address and the enrolled `farm-1-node-05` worker. The preparation command enrolls both gateway guests and attaches the slot's isolated public and backend links. The lifecycle check uses the selected Azure CLI create, show, and delete commands, verifies the certificate from the outside probe, stops the active HTTPS agent to measure failover, and checks withdrawal using the previous public address. It saves `evidence/application-gateway-lifecycle.json`.
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.
 
 The package creates the `ocean-agent` system account with subordinate UID and GID ranges. It enables the unit in that account's systemd user manager on a running systemd installation. The agent checks Podman rootless mode before serving readiness at `http://127.0.0.1:8081/readyz`. The configuration file is `/etc/ocean-agent/config.json`. [Debian subordinate IDs for system accounts](https://manpages.debian.org/trixie/passwd/useradd.8.en.html)
 
-Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev4_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
+Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev7_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
 
 ## Host identity enrollment
 
@@ -288,7 +369,7 @@ Start with the `identity-ha-3` lab and build the enrollment-enabled agent with `
 ```sh
 python3 lab/bootstrap_host.py --state "$OCEAN_LAB_STATE" --check-restarts \
   --profile lab/profiles/identity-ha-4.yaml --node farm-1-node-04 \
-  --package bin/ocean-agent_0.1.0~dev4_amd64.deb
+  --package bin/ocean-agent_0.1.0~dev7_amd64.deb
 ```
 
 The installer uses the Debian repositories for package dependencies. The seed carries the local agent package, its configuration, the management CA, and the host's short-lived credential. Cloud-init installs the package, writes the protected credential, and starts the service with its enrollment configuration. The verifier observes the regional registration before connecting to the guest to check cloud-init and mTLS readiness. It records `evidence/host-first-boot-<host-id>.json`.

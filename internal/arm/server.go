@@ -17,16 +17,18 @@ import (
 const resourceAPIVersion = "2024-11-01"
 
 type Server struct {
-	Origin          string
-	Location        string
-	Authenticate    func(context.Context, *http.Request) (identity.ARMPrincipal, error)
-	Groups          GroupStore
-	Roles           RoleStore
-	Operations      OperationStore
-	Inventory       InventoryStore
-	Networks        NetworkStore
-	Deployments     NetworkDeploymentStore
-	PrincipalExists func(context.Context, string, string, string) (bool, error)
+	Origin             string
+	Location           string
+	Authenticate       func(context.Context, *http.Request) (identity.ARMPrincipal, error)
+	Groups             GroupStore
+	Roles              RoleStore
+	Operations         OperationStore
+	Inventory          InventoryStore
+	Networks           NetworkStore
+	Deployments        NetworkDeploymentStore
+	GatewayDeployments ApplicationGatewayDeploymentStore
+	SiteConnections    SiteConnectionStore
+	PrincipalExists    func(context.Context, string, string, string) (bool, error)
 }
 
 type armRoute struct {
@@ -110,6 +112,11 @@ func parseRoute(segments []string) armRoute {
 
 func networkRoute(group string, path []string) (armRoute, bool) {
 	route := armRoute{group: group}
+	if group != "" && strings.EqualFold(path[0], "Ocean.Network") && strings.EqualFold(path[1], "siteConnections") {
+		route.collection = "siteConnection"
+		route.name = strings.Join(path, "/")
+		return route, true
+	}
 	if !strings.EqualFold(path[0], "Microsoft.Network") {
 		return route, false
 	}
@@ -120,6 +127,11 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 		route.collection = "securityGroup"
 	case "publicipaddresses", "natgateways":
 		route.collection = "egress"
+	case "applicationgateways":
+		if group == "" {
+			return route, false
+		}
+		route.collection = "applicationGateway"
 	default:
 		return route, false
 	}
@@ -166,6 +178,10 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.listResources(ctx, w, r, scope, reader, route.group)
 		case "network":
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "applicationGateway":
+			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "siteConnection":
+			s.siteConnection(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "securityGroup":
 			s.securityGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "egress":
@@ -295,6 +311,7 @@ func unavailable(w http.ResponseWriter) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("x-ms-error-code", code)
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 

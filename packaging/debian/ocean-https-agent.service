@@ -1,0 +1,19 @@
+[Unit]
+Description=ocean HTTPS gateway assignments
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ocean-agent/https.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode https
+RuntimeDirectory=ocean-https-agent
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=15s
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

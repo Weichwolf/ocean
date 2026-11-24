@@ -1,0 +1,148 @@
+{
+  "properties": {
+    "template": {
+      "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+      "contentVersion": "1.0.0.0",
+      "parameters": {
+        "certPassword": {
+          "type": "securestring",
+          "metadata": {
+            "description": "Secure certPassword"
+          }
+        }
+      },
+      "variables": {
+        "appGwID": "[resourceId('Microsoft.Network/applicationGateways', 'ingress')]"
+      },
+      "resources": [
+        {
+          "type": "Microsoft.Network/applicationGateways",
+          "name": "ingress",
+          "location": "farm-1",
+          "tags": {},
+          "apiVersion": "2022-05-01",
+          "dependsOn": [],
+          "properties": {
+            "backendAddressPools": [
+              {
+                "name": "appGatewayBackendPool",
+                "properties": {
+                  "BackendAddresses": [
+                    {
+                      "ipAddress": "10.89.1.4"
+                    }
+                  ]
+                }
+              }
+            ],
+            "backendHttpSettingsCollection": [
+              {
+                "name": "appGatewayBackendHttpSettings",
+                "properties": {
+                  "Port": "8080",
+                  "Protocol": "Http",
+                  "CookieBasedAffinity": "disabled",
+                  "connectionDraining": {
+                    "enabled": false,
+                    "drainTimeoutInSec": 1
+                  }
+                }
+              }
+            ],
+            "frontendIPConfigurations": [
+              {
+                "name": "appGatewayFrontendIP",
+                "properties": {
+                  "publicIPAddress": {
+                    "id": "/subscriptions/a3d3a78f-3e23-4a5e-95a9-974f947de067/resourceGroups/gateway-lab/providers/Microsoft.Network/publicIPAddresses/external"
+                  }
+                }
+              }
+            ],
+            "frontendPorts": [
+              {
+                "name": "appGatewayFrontendPort",
+                "properties": {
+                  "Port": "443"
+                }
+              }
+            ],
+            "gatewayIPConfigurations": [
+              {
+                "name": "appGatewayFrontendIP",
+                "properties": {
+                  "subnet": {
+                    "id": "/subscriptions/a3d3a78f-3e23-4a5e-95a9-974f947de067/resourceGroups/gateway-lab/providers/Microsoft.Network/virtualNetworks/private/subnets/workloads"
+                  }
+                }
+              }
+            ],
+            "httpListeners": [
+              {
+                "name": "appGatewayHttpListener",
+                "properties": {
+                  "FrontendIpConfiguration": {
+                    "Id": "[concat(variables('appGwID'), '/frontendIPConfigurations/appGatewayFrontendIP')]"
+                  },
+                  "FrontendPort": {
+                    "Id": "[concat(variables('appGwID'), '/frontendPorts/appGatewayFrontendPort')]"
+                  },
+                  "Protocol": "https",
+                  "SslCertificate": {
+                    "id": "[concat(variables('appGwID'), '/sslCertificates/ingressSslCert')]"
+                  }
+                }
+              }
+            ],
+            "sku": {
+              "name": "Standard_v2",
+              "tier": "Standard_v2",
+              "capacity": 2
+            },
+            "requestRoutingRules": [
+              {
+                "Name": "rule1",
+                "properties": {
+                  "RuleType": "Basic",
+                  "httpListener": {
+                    "id": "[concat(variables('appGwID'), '/httpListeners/appGatewayHttpListener')]"
+                  },
+                  "backendAddressPool": {
+                    "id": "[concat(variables('appGwID'), '/backendAddressPools/appGatewayBackendPool')]"
+                  },
+                  "backendHttpSettings": {
+                    "id": "[concat(variables('appGwID'), '/backendHttpSettingsCollection/appGatewayBackendHttpSettings')]"
+                  },
+                  "priority": 100
+                }
+              }
+            ],
+            "privateLinkConfigurations": [],
+            "sslCertificates": [
+              {
+                "name": "ingressSslCert",
+                "properties": {
+                  "data": "dGVzdC1wZng=",
+                  "password": "[parameters('certPassword')]"
+                }
+              }
+            ]
+          },
+          "zones": null
+        }
+      ],
+      "outputs": {
+        "applicationGateway": {
+          "type": "object",
+          "value": "[reference('ingress')]"
+        }
+      }
+    },
+    "parameters": {
+      "certPassword": {
+        "value": "disposable"
+      }
+    },
+    "mode": "incremental"
+  }
+}

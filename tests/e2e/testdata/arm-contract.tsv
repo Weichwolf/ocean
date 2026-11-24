@@ -30,6 +30,12 @@ NETWORK-01	nsg-rule-create	2.93.0	none	2022-01-01	network nsg rule create --reso
 NETWORK-01	nsg-rule-show	2.93.0	none	2022-01-01	network nsg rule show --resource-group {group} --nsg-name {nsg} --name {rule} -o json
 NETWORK-01	nsg-rule-list	2.93.0	none	2022-01-01	network nsg rule list --resource-group {group} --nsg-name {nsg} --include-default -o json
 NETWORK-01	nsg-rule-delete	2.93.0	none	2022-01-01	network nsg rule delete --resource-group {group} --nsg-name {nsg} --name {rule} -o none
+NETWORK-02	app-gateway-create	2.93.0	none	2024-11-01+2022-05-01	network application-gateway create --resource-group {group} --name {gateway} --location {location} --sku Standard_v2 --capacity 2 --public-ip-address {public_ip_id} --subnet {subnet_id} --frontend-port 443 --http-settings-port {backend_port} --http-settings-protocol Http --priority 100 --servers {backend_ip} --cert-file {certificate_pfx} --cert-password={certificate_password} -o json
+NETWORK-02	app-gateway-show	2.93.0	none	2026-01-01	network application-gateway show --resource-group {group} --name {gateway} -o json
+NETWORK-02	app-gateway-delete	2.93.0	none	2026-01-01	network application-gateway delete --resource-group {group} --name {gateway} -o none
+NETWORK-05	site-connection-create	2.93.0	none	2026-11-01	rest --method put --url {connection_url} --body @{request} -o json
+NETWORK-05	site-connection-show	2.93.0	none	2026-11-01	rest --method get --url {connection_url} -o json
+NETWORK-05	site-connection-delete	2.93.0	none	2026-11-01	rest --method delete --url {connection_url} -o none
 NETWORK-03	public-ip-create	2.93.0	none	2025-09-01	network public-ip create --resource-group {group} --name {ip} --location {location} --sku Standard --tier Regional --version IPv4 --allocation-method Static -o json
 NETWORK-03	public-ip-show	2.93.0	none	2025-09-01	network public-ip show --resource-group {group} --name {ip} -o json
 NETWORK-03	public-ip-list	2.93.0	none	2025-09-01	network public-ip list --resource-group {group} -o json

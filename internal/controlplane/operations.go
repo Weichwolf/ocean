@@ -197,8 +197,13 @@ func decodeOperation(data []byte, id string) (*arm.Operation, error) {
 	if err := json.Unmarshal(data, &operation); err != nil {
 		return nil, err
 	}
-	if operation.ID != id || operation.Kind != deleteResourceGroup || operation.Group == "" || operation.Actor == "" || operation.StartedAt.IsZero() {
+	if operation.ID != id || operation.Group == "" || operation.Actor == "" || operation.StartedAt.IsZero() {
 		return nil, errors.New("invalid ARM operation record")
+	}
+	switch operation.Kind {
+	case deleteResourceGroup, createApplicationGateway, deleteApplicationGateway, createSiteConnection, deleteSiteConnection:
+	default:
+		return nil, errors.New("invalid ARM operation kind")
 	}
 	switch operation.Status {
 	case arm.OperationInProgress:
