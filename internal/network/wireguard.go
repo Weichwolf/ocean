@@ -35,6 +35,7 @@ type WireGuardGateway struct {
 	RemotePrefixes    []netip.Prefix `json:"remotePrefixes"`
 	ProtectedPrefixes []netip.Prefix `json:"protectedPrefixes"`
 	Redundancy        *WireGuardVRRP `json:"redundancy,omitempty"`
+	LeaseControlled   bool           `json:"leaseControlled,omitempty"`
 }
 
 // WireGuardVRRP identifies a trusted unicast peer on the inside routing link.
@@ -64,15 +65,17 @@ func (g WireGuardGateway) validate(namespace string) error {
 		return errors.New("the WireGuard gateway requires UDP ports, a peer endpoint, and valid key configuration")
 	}
 	all := []netip.Prefix{g.LocalTunnel.Masked(), netip.PrefixFrom(g.PeerEndpoint.Addr(), 32)}
-	for _, group := range [][]netip.Prefix{g.LocalPrefixes, g.RemotePrefixes, g.ProtectedPrefixes} {
-		if len(group) == 0 || len(group) > 32 {
+	for _, group := range []struct {
+		prefixes []netip.Prefix
+		private  bool
+	}{{g.LocalPrefixes, true}, {g.RemotePrefixes, true}, {g.ProtectedPrefixes, false}} {
+		if len(group.prefixes) == 0 || len(group.prefixes) > 32 {
 			return errors.New("one to 32 local, remote, and protected prefixes are required")
 		}
-		for _, prefix := range group {
-			if !prefix.Addr().Is4() || prefix != prefix.Masked() || !slices.ContainsFunc(privateBlocks, func(block netip.Prefix) bool {
-				return block.Bits() <= prefix.Bits() && block.Contains(prefix.Addr())
-			}) || slices.ContainsFunc(all, prefix.Overlaps) {
-				return errors.New("VPN prefixes and underlay endpoint must be disjoint, with canonical private IPv4 networks")
+		for _, prefix := range group.prefixes {
+			if !prefix.Addr().Is4() || prefix != prefix.Masked() ||
+				group.private && !privateNetworkPrefix(prefix) || slices.ContainsFunc(all, prefix.Overlaps) {
+				return errors.New("VPN prefixes and the underlay endpoint must be disjoint, and routed prefixes must be private IPv4")
 			}
 			all = append(all, prefix)
 		}
@@ -172,6 +175,15 @@ func (g WireGuardGateway) Remove(ctx context.Context, namespace string) error {
 	if err := g.validate(namespace); err != nil {
 		return err
 	}
+	return RemoveWireGuardTunnel(ctx, namespace, g.Tunnel)
+}
+
+// RemoveWireGuardTunnel closes the slot and withdraws its owned tunnel device.
+func RemoveWireGuardTunnel(ctx context.Context, namespace, tunnel string) error {
+	if !linkName.MatchString(namespace) || !linkName.MatchString(tunnel) || tunnel == "lo" {
+		return errors.New("invalid WireGuard namespace or tunnel")
+	}
+	g := WireGuardGateway{Tunnel: tunnel}
 	if err := g.applyRules(ctx, namespace, false); err != nil {
 		return err
 	}
@@ -181,6 +193,17 @@ func (g WireGuardGateway) Remove(ctx context.Context, namespace string) error {
 	}
 	_, err = vpnIP(ctx, namespace, "link", "delete", "dev", g.Tunnel)
 	return err
+}
+
+// RefreshLease renews the kernel gate on a previously applied tunnel.
+func (g WireGuardGateway) RefreshLease(ctx context.Context, namespace string) error {
+	if !g.LeaseControlled || !linkName.MatchString(g.Tunnel) {
+		return errors.New("the WireGuard tunnel does not have a forwarding lease")
+	}
+	policy := nftPolicy{table: wireGuardTable}
+	policy.command("flush set inet %s live_tunnel", policy.table)
+	policy.command("add element inet %s live_tunnel { %q }", policy.table, g.Tunnel)
+	return applyNftRules(ctx, namespace, policy.script.String())
 }
 
 // Probe checks the authenticated tunnel path for a local routing supervisor.
@@ -194,6 +217,32 @@ func (g WireGuardGateway) Probe(ctx context.Context, namespace string) error {
 		return fmt.Errorf("probe the authenticated WireGuard peer: %w", err)
 	}
 	return nil
+}
+
+// Keepalived follows the encrypted tunnel probe when selecting the LAN router.
+func (g WireGuardGateway) Keepalived(namespace string, address netip.Prefix, id, priority uint8) (string, error) {
+	if err := g.validate(namespace); err != nil {
+		return "", err
+	}
+	if g.Redundancy == nil || id == 0 || priority == 0 || priority == 255 || address == address.Masked() ||
+		!slices.Contains(g.LocalPrefixes, address.Masked()) || !address.Contains(address.Addr().Next()) ||
+		address.Addr() == g.Redundancy.Address || address.Addr() == g.Redundancy.Peer {
+		return "", errors.New("the redundant WireGuard router address must be on an approved inside subnet")
+	}
+	probe := fmt.Sprintf("/usr/bin/ping -n -q -c 1 -W 1 -I %s %s", g.LocalTunnel.Addr(), g.PeerTunnel)
+	return renderGatewayVRRP(probe, g.Inside, id, priority, g.Redundancy.Address, g.Redundancy.Peer, address), nil
+}
+
+func (g WireGuardGateway) OwnsAddress(ctx context.Context, namespace string, address netip.Addr) (bool, error) {
+	return WireGuardOwnsAddress(ctx, namespace, g.Inside, address)
+}
+
+// WireGuardOwnsAddress reports whether the named LAN interface still has a virtual address.
+func WireGuardOwnsAddress(ctx context.Context, namespace, inside string, address netip.Addr) (bool, error) {
+	if !linkName.MatchString(namespace) || !linkName.MatchString(inside) || !address.Is4() {
+		return false, errors.New("invalid WireGuard LAN endpoint")
+	}
+	return linkHasIPv4(ctx, namespace, inside, address)
 }
 
 func (g WireGuardGateway) checkUnderlay(ctx context.Context, namespace string) error {
@@ -342,9 +391,15 @@ func (g WireGuardGateway) applyRules(ctx context.Context, namespace string, acti
 		policy.prefixSet("local_networks", g.LocalPrefixes)
 		policy.prefixSet("remote_networks", g.RemotePrefixes)
 		policy.prefixSet("protected_networks", g.ProtectedPrefixes)
+		if g.LeaseControlled {
+			policy.command("add set inet %s live_tunnel { type ifname; flags timeout; timeout 8s; elements = { %s }; }",
+				policy.table, tunnel)
+			tunnel = "@live_tunnel"
+		}
 		policy.rule("forwarded", "ip saddr @protected_networks counter drop")
 		policy.rule("forwarded", "ip daddr @protected_networks counter drop")
-		policy.rule("forwarded", "ct state invalid counter drop")
+		// Requests and replies can traverse different healthy tunnels.
+		// Peer authentication and the prefix rules apply to each direction.
 		policy.rule("forwarded", fmt.Sprintf("iifname %s oifname %s ip saddr @remote_networks ip daddr @local_networks counter accept", tunnel, inside))
 		policy.rule("forwarded", fmt.Sprintf("iifname %s oifname %s ip saddr @local_networks ip daddr @remote_networks counter accept", inside, tunnel))
 		policy.rule("local_in", fmt.Sprintf("iifname %s ip saddr %s udp dport %d counter accept", underlay, g.PeerEndpoint.Addr(), g.ListenPort))

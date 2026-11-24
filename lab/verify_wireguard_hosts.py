@@ -155,13 +155,20 @@ def macvlan(namespace, parent, name, address, mac=None):
 def configure_gateway(state, index, public, binary):
     host = GATEWAYS[index]
     upload(state, host, {**gateway_files(index, public), "bin/ocean-gateway": binary}, DEST)
+    attach_gateway_links(state, index)
+    ssh(state, host, f"""set -eu
+sudo {gateway_command(CLOUD, "apply")}
+{install_unit(VRRP)}
+""")
+
+
+def attach_gateway_links(state, index):
+    host = GATEWAYS[index]
     ssh(state, host, f"""set -eu
 sudo ip netns add {CLOUD}
 sudo ip -n {CLOUD} link set lo up
 {macvlan(CLOUD, "customer0", "wan0", f"10.233.1.{181 + index}/24")}
 {macvlan(CLOUD, "work0", "lan0", gateway_address(index) + "/24", gateway_mac(index))}
-sudo {gateway_command(CLOUD, "apply")}
-{install_unit(VRRP)}
 """)
 
 

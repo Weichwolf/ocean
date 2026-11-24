@@ -66,33 +66,15 @@ func RunHTTPSGateways(ctx context.Context, agentPath, registryPath string, logge
 }
 
 func readHTTPSRegistry(path string) (httpsRegistry, error) {
-	var registry httpsRegistry
-	const maxBytes = 64 << 10
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	slots, err := readGatewaySlots[network.HTTPSGatewaySlot](path)
+	registry := httpsRegistry{Slots: slots}
 	if err != nil {
 		return registry, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return registry, err
-	}
-	if !info.Mode().IsRegular() || info.Sys().(*syscall.Stat_t).Uid != 0 || info.Mode().Perm()&0022 != 0 || info.Size() > maxBytes {
-		return registry, errors.New("HTTPS slots require a small, root-owned configuration file")
-	}
-	content := &io.LimitedReader{R: file, N: maxBytes + 1}
-	decoder := json.NewDecoder(content)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&registry); err != nil {
-		return registry, err
-	}
-	if decoder.Decode(new(any)) != io.EOF || content.N == 0 || len(registry.Slots) == 0 || len(registry.Slots) > 64 {
-		return registry, errors.New("HTTPS configuration requires one to 64 gateway slots")
 	}
 	namespaces := make(map[string]bool)
 	for name, slot := range registry.Slots {
-		if !gatewaySlotName.MatchString(name) || namespaces[slot.Namespace] {
-			return registry, errors.New("HTTPS slots need unique, valid names and routing namespaces")
+		if namespaces[slot.Namespace] {
+			return registry, errors.New("HTTPS slots need unique routing namespaces")
 		}
 		if err := slot.Validate(); err != nil {
 			return registry, fmt.Errorf("slot %s: %w", name, err)
@@ -100,6 +82,40 @@ func readHTTPSRegistry(path string) (httpsRegistry, error) {
 		namespaces[slot.Namespace] = true
 	}
 	return registry, nil
+}
+
+func readGatewaySlots[T any](path string) (map[string]T, error) {
+	const maxBytes = 64 << 10
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Sys().(*syscall.Stat_t).Uid != 0 || info.Mode().Perm()&0022 != 0 || info.Size() > maxBytes {
+		return nil, errors.New("gateway slots require a small, root-owned configuration file")
+	}
+	content := &io.LimitedReader{R: file, N: maxBytes + 1}
+	decoder := json.NewDecoder(content)
+	decoder.DisallowUnknownFields()
+	var registry struct {
+		Slots map[string]T `json:"slots"`
+	}
+	if err := decoder.Decode(&registry); err != nil {
+		return nil, err
+	}
+	if decoder.Decode(new(any)) != io.EOF || content.N == 0 || len(registry.Slots) == 0 || len(registry.Slots) > 64 {
+		return nil, errors.New("gateway configuration requires one to 64 slots")
+	}
+	for name := range registry.Slots {
+		if !gatewaySlotName.MatchString(name) {
+			return nil, errors.New("invalid gateway slot name")
+		}
+	}
+	return registry.Slots, nil
 }
 
 func reconcileHTTPSGateways(ctx context.Context, registry httpsRegistry, client *joinClient, active map[string]httpsRuntimeState) error {
@@ -123,7 +139,7 @@ func reconcileHTTPSGateways(ctx context.Context, registry httpsRegistry, client 
 			failures = append(failures, fmt.Errorf("slot %s has no local operator binding", name))
 			continue
 		}
-		status := enrollment.HTTPSGatewayStatus{Generation: assignment.Generation}
+		status := enrollment.GatewayStatus{Generation: assignment.Generation}
 		if assignment.Delete {
 			if err := stopHTTPSGateway(ctx, name, slot, assignment.PublicIPv4); err != nil {
 				failures = append(failures, err)
@@ -151,7 +167,7 @@ func reconcileHTTPSGateways(ctx context.Context, registry httpsRegistry, client 
 				continue
 			}
 		}
-		if err := client.reportHTTPSGatewayStatus(ctx, name, status); err != nil {
+		if err := client.reportGatewayStatus(ctx, "https", name, status); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -159,30 +175,12 @@ func reconcileHTTPSGateways(ctx context.Context, registry httpsRegistry, client 
 }
 
 func (client *joinClient) httpsAssignments(ctx context.Context) (map[string]enrollment.HTTPSAssignment, error) {
-	path := client.url() + "/https-assignments"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	page, err := fetchGatewayAssignments[enrollment.HTTPSAssignment](ctx, client, "https")
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTPS assignment lookup returned HTTP %d", response.StatusCode)
-	}
-	const limit = 6 << 20
-	content := &io.LimitedReader{R: response.Body, N: limit + 1}
-	decoder := json.NewDecoder(content)
-	var page struct {
-		Assignments []enrollment.HTTPSAssignment `json:"assignments"`
-	}
-	if err := decoder.Decode(&page); err != nil || decoder.Decode(new(any)) != io.EOF || content.N == 0 || len(page.Assignments) > 64 {
-		return nil, errors.New("invalid HTTPS assignment response")
-	}
-	assignments := make(map[string]enrollment.HTTPSAssignment, len(page.Assignments))
-	for _, assignment := range page.Assignments {
+	assignments := make(map[string]enrollment.HTTPSAssignment, len(page))
+	for _, assignment := range page {
 		if !gatewaySlotName.MatchString(assignment.Slot) || !gatewaySlotName.MatchString(assignment.Generation) ||
 			!assignment.PublicIPv4.Is4() || !assignment.PublicIPv4.IsGlobalUnicast() ||
 			!assignment.Delete && len(assignment.CertificateBundle) == 0 {
@@ -196,9 +194,35 @@ func (client *joinClient) httpsAssignments(ctx context.Context) (map[string]enro
 	return assignments, nil
 }
 
-func (client *joinClient) reportHTTPSGatewayStatus(ctx context.Context, slot string, status enrollment.HTTPSGatewayStatus) error {
+func fetchGatewayAssignments[T any](ctx context.Context, client *joinClient, kind string) ([]T, error) {
+	path := client.url() + "/" + kind + "-assignments"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s assignment lookup returned HTTP %d", kind, response.StatusCode)
+	}
+	const limit = 6 << 20
+	content := &io.LimitedReader{R: response.Body, N: limit + 1}
+	decoder := json.NewDecoder(content)
+	var page struct {
+		Assignments []T `json:"assignments"`
+	}
+	if err := decoder.Decode(&page); err != nil || decoder.Decode(new(any)) != io.EOF || content.N == 0 || len(page.Assignments) > 64 {
+		return nil, errors.New("invalid gateway assignment response")
+	}
+	return page.Assignments, nil
+}
+
+func (client *joinClient) reportGatewayStatus(ctx context.Context, kind, slot string, status enrollment.GatewayStatus) error {
 	payload, _ := json.Marshal(status)
-	path := client.url() + "/https-assignments/" + slot + "/status"
+	path := client.url() + "/" + kind + "-assignments/" + slot + "/status"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -210,7 +234,7 @@ func (client *joinClient) reportHTTPSGatewayStatus(ctx context.Context, slot str
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("HTTPS gateway status returned HTTP %d", response.StatusCode)
+		return fmt.Errorf("%s gateway status returned HTTP %d", kind, response.StatusCode)
 	}
 	return nil
 }

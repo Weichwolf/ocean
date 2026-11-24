@@ -125,11 +125,7 @@ func startHTTPSGateway(ctx context.Context, name string, slot network.HTTPSGatew
 			"--pid", filepath.Join(folder, "keepalived.pid"), "--vrrp_pid", filepath.Join(folder, "vrrp.pid")},
 	}
 	for index, role := range httpsRoles {
-		args := []string{"--quiet", "--no-block", "--collect", "--service-type=exec", "--unit", httpsUnit(name, role),
-			"--property", "BindsTo=" + httpsService, "--property", "After=" + httpsService,
-			"--property", "Restart=on-failure", "--property", "RestartSec=1s",
-			"/usr/bin/ip", "netns", "exec", slot.Namespace}
-		if _, err := httpsRuntimeCommand(ctx, "/usr/bin/systemd-run", append(args, services[index]...)...); err != nil {
+		if err := launchGatewayUnit(ctx, httpsService, httpsUnit(name, role), slot.Namespace, services[index]); err != nil {
 			return err
 		}
 	}
@@ -149,15 +145,8 @@ func stopHTTPSGateway(ctx context.Context, name string, slot network.HTTPSGatewa
 	}
 	_ = slot.RevokeLease(ctx)
 	for index := len(httpsRoles) - 1; index >= 0; index-- {
-		unit := httpsUnit(name, httpsRoles[index])
-		state, err := httpsRuntimeCommand(ctx, "/usr/bin/systemctl", "show", "--property=LoadState", "--value", unit)
-		if err != nil {
+		if err := stopGatewayUnit(ctx, httpsUnit(name, httpsRoles[index])); err != nil {
 			return err
-		}
-		if strings.TrimSpace(string(state)) != "not-found" {
-			if _, err := httpsRuntimeCommand(ctx, "/usr/bin/systemctl", "stop", unit); err != nil {
-				return err
-			}
 		}
 	}
 	if address.IsValid() {
@@ -170,6 +159,23 @@ func stopHTTPSGateway(ctx context.Context, name string, slot network.HTTPSGatewa
 		}
 	}
 	return os.RemoveAll(folder)
+}
+
+func launchGatewayUnit(ctx context.Context, supervisor, unit, namespace string, command []string) error {
+	args := []string{"--quiet", "--no-block", "--collect", "--service-type=exec", "--unit", unit,
+		"--property", "BindsTo=" + supervisor, "--property", "After=" + supervisor,
+		"--property", "Restart=on-failure", "--property", "RestartSec=1s", "/usr/bin/ip", "netns", "exec", namespace}
+	_, err := httpsRuntimeCommand(ctx, "/usr/bin/systemd-run", append(args, command...)...)
+	return err
+}
+
+func stopGatewayUnit(ctx context.Context, unit string) error {
+	state, err := httpsRuntimeCommand(ctx, "/usr/bin/systemctl", "show", "--property=LoadState", "--value", unit)
+	if err != nil || strings.TrimSpace(string(state)) == "not-found" {
+		return err
+	}
+	_, err = httpsRuntimeCommand(ctx, "/usr/bin/systemctl", "stop", unit)
+	return err
 }
 
 func httpsGatewayReady(ctx context.Context, name string, slot network.HTTPSGatewaySlot,

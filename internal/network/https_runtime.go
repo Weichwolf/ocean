@@ -103,19 +103,25 @@ func (slot HTTPSGatewaySlot) Keepalived(address netip.Addr, backend netip.AddrPo
 	if !backend.Addr().Is4() || !backend.Addr().IsPrivate() || backend.Port() == 0 {
 		return "", errors.New("the gateway needs a private IPv4 readiness target")
 	}
+	check := fmt.Sprintf("/usr/libexec/ocean/https-ready %s %s", address, backend)
+	return renderGatewayVRRP(check, slot.PublicInterface, slot.VRRPID, slot.Priority,
+		slot.PublicLink.Addr(), slot.PeerAddress, netip.PrefixFrom(address, slot.PublicLink.Bits())), nil
+}
+
+func renderGatewayVRRP(command, iface string, id, priority uint8, source, peer netip.Addr, address netip.Prefix) string {
 	return fmt.Sprintf(`global_defs {
   script_user root
   enable_script_security
 }
 vrrp_script ingress_ready {
-  script "/usr/libexec/ocean/https-ready %s %s"
+  script "%s"
   interval 1
   timeout 2
   rise 1
   fall 2
   init_fail
 }
-vrrp_instance OCEAN_HTTPS {
+vrrp_instance OCEAN_GATEWAY {
   state BACKUP
   interface %s
   virtual_router_id %d
@@ -131,9 +137,8 @@ vrrp_instance OCEAN_HTTPS {
     ingress_ready
   }
   virtual_ipaddress {
-    %s/%d dev %s
+    %s dev %s
   }
 }
-`, address, backend, slot.PublicInterface, slot.VRRPID, slot.Priority, slot.PublicLink.Addr(), slot.PeerAddress,
-		address, slot.PublicLink.Bits(), slot.PublicInterface), nil
+`, command, iface, id, priority, source, peer, address, iface)
 }

@@ -298,6 +298,10 @@ CGO_ENABLED=0 go test -mod=readonly -tags=e2e -c -o "$vpn_test" ./internal/netwo
 
 Run `python3 lab/verify_wireguard_hosts.py --state "$OCEAN_LAB_STATE" --profile "$OCEAN_LAB_PROFILE"` against a disposable regional lab with the installed control plane and enrolled `farm-1-node-05` compute guest. Use the exact running profile so the verifier can restart the stopped gateway. The two gateway guests need WireGuard tools, nftables, iputils-ping, and Keepalived. The customer guest needs WireGuard tools, nftables, iputils-ping, and curl. The verifier sets up two separate peer keys and paths, starts the pinned HTTP workload under rootless Podman at nice +10, and measures route recovery after disabling a tunnel's underlay and powering off the active gateway guest. It probes management from the operator network during gateway loss and records successful and unsuccessful attempts. The customer must remain unable to reach the protected management network. Results appear in `evidence/wireguard-hosts.json`. The lab paths use separate network interfaces on a shared virtual underlay.
 
+The `Ocean.Network/siteConnections` API uses `2026-11-01` and supports resource-group PUT, GET, and DELETE through `az rest`. A request names the tenant subnet, customer prefixes, and the two customer peer endpoints and public keys. The region validates prefix boundaries and reserves an operator slot with two enrolled hosts. Each host receives its own peer settings. Its private key stays on the gateway. The WireGuard agent renews the local eight-second forwarding lease and uses the encrypted peer probe when selecting the active tenant-side router. Creation waits for two healthy paths and one route owner. Deletion releases reservations after both hosts withdraw the tunnel.
+
+After preparing the enrolled gateway guests using the HTTPS lab procedure, run `python3 lab/verify_wireguard_api.py --state "$OCEAN_LAB_STATE" --package bin/ocean-agent_0.1.0~dev7_amd64.deb`. The check creates and deletes the site connection through the pinned CLI. It measures recovery when the active gateway agent stops, checks the protected management path, and checks that packets stop reaching the private workload after deletion. Results appear in `evidence/wireguard-api.json`. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv)
+
 ## Public HTTPS ingress
 
 The `ocean-gateway -mode render-https` command renders a dedicated HAProxy configuration from a single `https` role. The bundle must contain a matching private key and a valid certificate for the configured DNS name. Place it in a root-owned, owner-only file. The backend must be a usable address in the declared private subnet.
@@ -329,7 +333,7 @@ The regional `applicationGateways` configuration defines operator slots and two 
 ```sh
 make deb-agent
 python3 lab/prepare_application_gateway.py --state "$OCEAN_LAB_STATE" \
-  --package bin/ocean-agent_0.1.0~dev6_amd64.deb
+  --package bin/ocean-agent_0.1.0~dev7_amd64.deb
 python3 lab/verify_application_gateway_lifecycle.py --state "$OCEAN_LAB_STATE"
 ```
 
@@ -341,7 +345,7 @@ Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build
 
 The package creates the `ocean-agent` system account with subordinate UID and GID ranges. It enables the unit in that account's systemd user manager on a running systemd installation. The agent checks Podman rootless mode before serving readiness at `http://127.0.0.1:8081/readyz`. The configuration file is `/etc/ocean-agent/config.json`. [Debian subordinate IDs for system accounts](https://manpages.debian.org/trixie/passwd/useradd.8.en.html)
 
-Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev4_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
+Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev7_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
 
 ## Host identity enrollment
 
@@ -365,7 +369,7 @@ Start with the `identity-ha-3` lab and build the enrollment-enabled agent with `
 ```sh
 python3 lab/bootstrap_host.py --state "$OCEAN_LAB_STATE" --check-restarts \
   --profile lab/profiles/identity-ha-4.yaml --node farm-1-node-04 \
-  --package bin/ocean-agent_0.1.0~dev4_amd64.deb
+  --package bin/ocean-agent_0.1.0~dev7_amd64.deb
 ```
 
 The installer uses the Debian repositories for package dependencies. The seed carries the local agent package, its configuration, the management CA, and the host's short-lived credential. Cloud-init installs the package, writes the protected credential, and starts the service with its enrollment configuration. The verifier observes the regional registration before connecting to the guest to check cloud-init and mTLS readiness. It records `evidence/host-first-boot-<host-id>.json`.

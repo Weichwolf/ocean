@@ -27,6 +27,7 @@ type Server struct {
 	Networks           NetworkStore
 	Deployments        NetworkDeploymentStore
 	GatewayDeployments ApplicationGatewayDeploymentStore
+	SiteConnections    SiteConnectionStore
 	PrincipalExists    func(context.Context, string, string, string) (bool, error)
 }
 
@@ -111,6 +112,11 @@ func parseRoute(segments []string) armRoute {
 
 func networkRoute(group string, path []string) (armRoute, bool) {
 	route := armRoute{group: group}
+	if group != "" && strings.EqualFold(path[0], "Ocean.Network") && strings.EqualFold(path[1], "siteConnections") {
+		route.collection = "siteConnection"
+		route.name = strings.Join(path, "/")
+		return route, true
+	}
 	if !strings.EqualFold(path[0], "Microsoft.Network") {
 		return route, false
 	}
@@ -174,6 +180,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "applicationGateway":
 			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "siteConnection":
+			s.siteConnection(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "securityGroup":
 			s.securityGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "egress":

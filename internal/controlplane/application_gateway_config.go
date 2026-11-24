@@ -38,19 +38,12 @@ func openGatewayControl(config *applicationGatewayConfig) (*gatewayControl, erro
 	if config == nil {
 		return nil, nil
 	}
-	if !filepath.IsAbs(config.CertificateKeyFile) || len(config.Slots) == 0 || len(config.Slots) > 64 {
-		return nil, errors.New("Application Gateways require a certificate key file and one to 64 operator slots")
+	if !filepath.IsAbs(config.CertificateKeyFile) {
+		return nil, errors.New("Application Gateways require an absolute certificate key path")
 	}
-	slots := slices.Clone(config.Slots)
-	slices.SortFunc(slots, func(left, right gatewaySlot) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	for index, slot := range slots {
-		if !identifier.MatchString(slot.Name) || index > 0 && slots[index-1].Name == slot.Name ||
-			len(slot.Hosts) != 2 || slot.Hosts[0] == slot.Hosts[1] ||
-			!identifier.MatchString(slot.Hosts[0]) || !identifier.MatchString(slot.Hosts[1]) {
-			return nil, errors.New("each Application Gateway slot needs a unique name and two distinct gateway hosts")
-		}
+	slots, err := configuredGatewaySlots(config.Slots)
+	if err != nil {
+		return nil, err
 	}
 	key, err := readGatewayCertificateKey(config.CertificateKeyFile)
 	if err != nil {
@@ -73,6 +66,24 @@ func openGatewayControl(config *applicationGatewayConfig) (*gatewayControl, erro
 		return nil, err
 	}
 	return &gatewayControl{sealer: sealer, slots: slots, manifest: string(manifest)}, nil
+}
+
+func configuredGatewaySlots(configured []gatewaySlot) ([]gatewaySlot, error) {
+	if len(configured) == 0 || len(configured) > 64 {
+		return nil, errors.New("one to 64 gateway slots are required")
+	}
+	slots := slices.Clone(configured)
+	slices.SortFunc(slots, func(left, right gatewaySlot) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	for index, slot := range slots {
+		if !identifier.MatchString(slot.Name) || index > 0 && slots[index-1].Name == slot.Name ||
+			len(slot.Hosts) != 2 || slot.Hosts[0] == slot.Hosts[1] ||
+			!identifier.MatchString(slot.Hosts[0]) || !identifier.MatchString(slot.Hosts[1]) {
+			return nil, errors.New("each gateway slot requires a unique name and two distinct gateway hosts")
+		}
+	}
+	return slots, nil
 }
 
 func readGatewayCertificateKey(path string) ([]byte, error) {

@@ -201,7 +201,7 @@ func decodeOperation(data []byte, id string) (*arm.Operation, error) {
 		return nil, errors.New("invalid ARM operation record")
 	}
 	switch operation.Kind {
-	case deleteResourceGroup, createApplicationGateway, deleteApplicationGateway:
+	case deleteResourceGroup, createApplicationGateway, deleteApplicationGateway, createSiteConnection, deleteSiteConnection:
 	default:
 		return nil, errors.New("invalid ARM operation kind")
 	}

@@ -1,0 +1,19 @@
+[Unit]
+Description=ocean WireGuard gateway assignments
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ocean-agent/wireguard.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode wireguard
+RuntimeDirectory=ocean-wireguard-agent
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=15s
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

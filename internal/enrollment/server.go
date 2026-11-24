@@ -87,8 +87,18 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("POST /ocean/hosts/{host}/enrollment", a.enroll)
 	mux.HandleFunc("POST /ocean/hosts/{host}/heartbeat", a.heartbeat)
 	mux.HandleFunc("GET /ocean/hosts/{host}/placements", a.placements)
-	mux.HandleFunc("GET /ocean/hosts/{host}/https-assignments", a.httpsAssignments)
-	mux.HandleFunc("POST /ocean/hosts/{host}/https-assignments/{slot}/status", a.reportHTTPSStatus)
+	mux.HandleFunc("GET /ocean/hosts/{host}/https-assignments", func(w http.ResponseWriter, r *http.Request) {
+		a.gatewayAssignments(w, r, false)
+	})
+	mux.HandleFunc("POST /ocean/hosts/{host}/https-assignments/{slot}/status", func(w http.ResponseWriter, r *http.Request) {
+		a.reportGatewayStatus(w, r, false)
+	})
+	mux.HandleFunc("GET /ocean/hosts/{host}/wireguard-assignments", func(w http.ResponseWriter, r *http.Request) {
+		a.gatewayAssignments(w, r, true)
+	})
+	mux.HandleFunc("POST /ocean/hosts/{host}/wireguard-assignments/{slot}/status", func(w http.ResponseWriter, r *http.Request) {
+		a.reportGatewayStatus(w, r, true)
+	})
 	mux.HandleFunc("GET /ocean/hosts/{host}", a.getHost)
 	mux.Handle("/", fallback)
 	return mux

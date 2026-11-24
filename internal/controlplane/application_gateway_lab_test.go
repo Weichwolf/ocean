@@ -135,7 +135,7 @@ func TestApplicationGatewayReservations(t *testing.T) {
 	if err != nil || len(unassigned) != 0 {
 		t.Fatalf("an unassigned gateway saw another host's configuration: %v", err)
 	}
-	status := enrollment.HTTPSGatewayStatus{Generation: operationID(), Ready: true, OwnsAddress: true}
+	status := enrollment.GatewayStatus{Generation: operationID(), Ready: true, OwnsAddress: true}
 	if err := r.ReportHTTPSGatewayStatus(ctx, "gw-a", certA, "ingress-a", status); !errors.Is(err, enrollment.ErrGatewayAssignmentChanged) {
 		t.Fatalf("a stale generation reported readiness: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestApplicationGatewayReservations(t *testing.T) {
 	if err := r.ReportHTTPSGatewayStatus(ctx, "gw-a", certA, "ingress-a", status); !errors.Is(err, enrollment.ErrGatewayAssignmentChanged) {
 		t.Fatalf("the superseded generation could still report readiness: %v", err)
 	}
-	removed := enrollment.HTTPSGatewayStatus{Generation: deletion.ID, Removed: true}
+	removed := enrollment.GatewayStatus{Generation: deletion.ID, Removed: true}
 	if err := r.ReportHTTPSGatewayStatus(ctx, "gw-a", certA, "ingress-a", removed); err != nil {
 		t.Fatal(err)
 	}

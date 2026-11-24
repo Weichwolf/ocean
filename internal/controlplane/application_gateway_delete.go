@@ -8,11 +8,22 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/network"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func (r *Region) DeleteApplicationGateway(ctx context.Context, scope arm.SubscriptionScope, actor string,
 	address arm.ResourceAddress) (*arm.Operation, error) {
+	return r.requestGatewayDeletion(ctx, scope, actor, address, deleteApplicationGateway, "Microsoft.Network/applicationGateways/delete")
+}
+
+func (r *Region) DeleteSiteConnection(ctx context.Context, scope arm.SubscriptionScope, actor string,
+	address arm.ResourceAddress) (*arm.Operation, error) {
+	return r.requestGatewayDeletion(ctx, scope, actor, address, deleteSiteConnection, network.SiteConnectionType+"/delete")
+}
+
+func (r *Region) requestGatewayDeletion(ctx context.Context, scope arm.SubscriptionScope, actor string,
+	address arm.ResourceAddress, kind, action string) (*arm.Operation, error) {
 	key := r.gatewayRecordKey(scope, address)
 	gatewayKey := r.inventoryPrefix(scope) + address.Key()
 	for range 8 {
@@ -27,6 +38,9 @@ func (r *Region) DeleteApplicationGateway(ctx context.Context, scope arm.Subscri
 		var saved gatewayRecord
 		if err := json.Unmarshal(records[0].Value, &saved); err != nil || saved.Scope != scope || saved.Resource.Key() != address.Key() {
 			return nil, errors.New("invalid Application Gateway desired state")
+		}
+		if (saved.Site != nil) != (kind == deleteSiteConnection) {
+			return nil, errors.New("the gateway resource has an unexpected role")
 		}
 		if saved.DeleteOperation != "" {
 			return r.GetOperation(ctx, scope, saved.DeleteOperation)
@@ -47,7 +61,7 @@ func (r *Region) DeleteApplicationGateway(ctx context.Context, scope arm.Subscri
 		gateway.Properties, _ = json.Marshal(properties)
 		gateway.ProvisioningState = "Deleting"
 		now := time.Now().UTC()
-		op := arm.Operation{ID: operationID(), Kind: deleteApplicationGateway, Group: saved.Resource.Group,
+		op := arm.Operation{ID: operationID(), Kind: kind, Group: saved.Resource.Group,
 			Actor: actor, Status: arm.OperationInProgress, StartedAt: now}
 		saved.DeleteOperation = op.ID
 		recordData, _ := json.Marshal(saved)
@@ -59,7 +73,7 @@ func (r *Region) DeleteApplicationGateway(ctx context.Context, scope arm.Subscri
 			clientv3.Compare(clientv3.Version(opKey), "=", 0),
 		).Then(clientv3.OpPut(key, string(recordData)), clientv3.OpPut(opKey, string(opData)),
 			inventoryPut(gatewayKey, &gateway, &gateway, now),
-			r.auditOp(scope, arm.AuditEvent{Time: now, Actor: actor, Action: "Microsoft.Network/applicationGateways/delete",
+			r.auditOp(scope, arm.AuditEvent{Time: now, Actor: actor, Action: action,
 				Target: address.ID(scope), Outcome: "Accepted"})).Commit()
 		if err != nil {
 			return nil, err
@@ -71,7 +85,7 @@ func (r *Region) DeleteApplicationGateway(ctx context.Context, scope arm.Subscri
 	return nil, arm.ErrGatewayExecutionUnavailable
 }
 
-func (r *Region) completeHTTPSGatewayDeletion(ctx context.Context, desired gatewayRecord) error {
+func (r *Region) completeGatewayDeletion(ctx context.Context, desired gatewayRecord) error {
 	if len(desired.Hosts) != 2 {
 		return errors.New("invalid HTTPS gateway deletion targets")
 	}
@@ -95,7 +109,8 @@ func (r *Region) completeHTTPSGatewayDeletion(ctx context.Context, desired gatew
 	if len(records) == 0 {
 		return nil
 	}
-	if len(deletions) != 1 || len(creations) != 1 || len(gateways) != 1 || len(deployments) != 1 {
+	isSite := desired.Site != nil
+	if len(deletions) != 1 || len(creations) != 1 || len(gateways) != 1 || !isSite && len(deployments) != 1 {
 		return errors.New("HTTPS gateway deletion is missing its inventory or operation records")
 	}
 	var current gatewayRecord
@@ -107,7 +122,11 @@ func (r *Region) completeHTTPSGatewayDeletion(ctx context.Context, desired gatew
 	if err != nil {
 		return err
 	}
-	if operation.Status != arm.OperationInProgress || operation.Kind != deleteApplicationGateway {
+	kind, action := deleteApplicationGateway, "Microsoft.Network/applicationGateways/delete"
+	if isSite {
+		kind, action = deleteSiteConnection, network.SiteConnectionType+"/delete"
+	}
+	if operation.Status != arm.OperationInProgress || operation.Kind != kind {
 		return nil
 	}
 	slotKey := r.gatewaySlotKey(desired.Slot)
@@ -115,10 +134,12 @@ func (r *Region) completeHTTPSGatewayDeletion(ctx context.Context, desired gatew
 		clientv3.Compare(clientv3.ModRevision(deleteKey), "=", deletions[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(createKey), "=", creations[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", gateways[0].ModRevision),
-		clientv3.Compare(clientv3.ModRevision(deploymentKey), "=", deployments[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(recordKey), "=", records[0].ModRevision),
 		clientv3.Compare(clientv3.Value(slotKey), "=", recordKey),
 		clientv3.Compare(clientv3.Value(desired.SubnetLock), "=", recordKey),
+	}
+	if !isSite {
+		guards = append(guards, clientv3.Compare(clientv3.ModRevision(deploymentKey), "=", deployments[0].ModRevision))
 	}
 	mutations := []clientv3.Op{clientv3.OpDelete(recordKey), clientv3.OpDelete(gatewayKey),
 		clientv3.OpDelete(desired.SubnetLock), clientv3.OpDelete(slotKey)}
@@ -128,7 +149,7 @@ func (r *Region) completeHTTPSGatewayDeletion(ctx context.Context, desired gatew
 		if len(observations) != 1 || len(live) != 1 || live[0].Lease == 0 || live[0].Lease != observations[0].Lease {
 			return nil
 		}
-		var status enrollment.HTTPSGatewayStatus
+		var status enrollment.GatewayStatus
 		if err := json.Unmarshal(observations[0].Value, &status); err != nil {
 			return err
 		}
@@ -159,18 +180,21 @@ func (r *Region) completeHTTPSGatewayDeletion(ctx context.Context, desired gatew
 	if creation.Status == arm.OperationInProgress {
 		creation.Status, creation.FinishedAt = arm.OperationFailed, &now
 		canceled, _ := json.Marshal(creation)
-		deployment, err := decodeInventoryResource(deployments[0].Value, desired.Deployment.Key())
-		if err != nil {
-			return err
+		mutations = append(mutations, clientv3.OpPut(createKey, string(canceled)))
+		if !isSite {
+			deployment, err := decodeInventoryResource(deployments[0].Value, desired.Deployment.Key())
+			if err != nil {
+				return err
+			}
+			deployment.ProvisioningState = arm.OperationFailed
+			deployment.Properties = json.RawMessage(`{"provisioningState":"Failed","mode":"Incremental"}`)
+			mutations = append(mutations, inventoryPut(deploymentKey, &deployment, &deployment, now))
 		}
-		deployment.ProvisioningState = arm.OperationFailed
-		deployment.Properties = json.RawMessage(`{"provisioningState":"Failed","mode":"Incremental"}`)
-		mutations = append(mutations, clientv3.OpPut(createKey, string(canceled)), inventoryPut(deploymentKey, &deployment, &deployment, now))
 	}
 	operation.Status, operation.FinishedAt = arm.OperationSucceeded, &now
 	completed, _ := json.Marshal(operation)
 	mutations = append(mutations, clientv3.OpPut(deleteKey, string(completed)), r.auditOp(desired.Scope, arm.AuditEvent{
-		Time: now, Actor: operation.Actor, Action: "Microsoft.Network/applicationGateways/delete",
+		Time: now, Actor: operation.Actor, Action: action,
 		Target: desired.Resource.ID(desired.Scope), Outcome: "Succeeded"}))
 	_, err = r.client.Txn(ctx).If(guards...).Then(mutations...).Commit()
 	return err

@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "firewall", "firewall or https")
+	mode := flag.String("mode", "firewall", "firewall, https, or wireguard")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -23,6 +23,8 @@ func main() {
 		err = nodeagent.RunNetworkPolicies(ctx, config+"config.json", config+"network.json", slog.Default())
 	case "https":
 		err = nodeagent.RunHTTPSGateways(ctx, config+"config.json", config+"https.json", slog.Default())
+	case "wireguard":
+		err = nodeagent.RunWireGuardGateways(ctx, config+"config.json", config+"wireguard.json", slog.Default())
 	default:
 		slog.Error("unknown network policy service mode", "mode", *mode)
 		os.Exit(2)

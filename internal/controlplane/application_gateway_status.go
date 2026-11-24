@@ -10,6 +10,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/network"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -18,7 +19,17 @@ func (r *Region) gatewayStatusKey(host, slot string) string {
 }
 
 func (r *Region) ReportHTTPSGatewayStatus(ctx context.Context, id string, certificate []byte, slot string,
-	status enrollment.HTTPSGatewayStatus) error {
+	status enrollment.GatewayStatus) error {
+	return r.reportGatewayStatus(ctx, id, certificate, slot, status, false)
+}
+
+func (r *Region) ReportWireGuardGatewayStatus(ctx context.Context, id string, certificate []byte, slot string,
+	status enrollment.GatewayStatus) error {
+	return r.reportGatewayStatus(ctx, id, certificate, slot, status, true)
+}
+
+func (r *Region) reportGatewayStatus(ctx context.Context, id string, certificate []byte, slot string,
+	status enrollment.GatewayStatus, wireGuard bool) error {
 	taskKey := r.gatewayTaskKey(id, slot)
 	snapshot, err := r.client.Txn(ctx).Then(
 		clientv3.OpGet(r.hostKey("registered", id)),
@@ -48,7 +59,7 @@ func (r *Region) ReportHTTPSGatewayStatus(ctx context.Context, id string, certif
 		return err
 	}
 	if r.gatewayRecordKey(desired.Scope, desired.Resource) != recordKey || desired.Slot != slot ||
-		desired.generation() != status.Generation || status.Removed && desired.DeleteOperation == "" ||
+		(desired.Site != nil) != wireGuard || desired.generation() != status.Generation || status.Removed && desired.DeleteOperation == "" ||
 		(status.Ready || status.OwnsAddress) && desired.DeleteOperation != "" || !slices.Contains(desired.Hosts, id) {
 		return enrollment.ErrGatewayAssignmentChanged
 	}
@@ -68,14 +79,14 @@ func (r *Region) ReportHTTPSGatewayStatus(ctx context.Context, id string, certif
 		return enrollment.ErrGatewayAssignmentChanged
 	}
 	if desired.DeleteOperation != "" {
-		return r.completeHTTPSGatewayDeletion(ctx, desired)
+		return r.completeGatewayDeletion(ctx, desired)
 	}
-	return r.completeHTTPSGateway(ctx, desired)
+	return r.completeGatewayCreation(ctx, desired)
 }
 
 // Completion binds the two healthy gateway reports, the public address owner,
 // and the ARM result to one transaction. Repeated reports can finish a race.
-func (r *Region) completeHTTPSGateway(ctx context.Context, desired gatewayRecord) error {
+func (r *Region) completeGatewayCreation(ctx context.Context, desired gatewayRecord) error {
 	opKey := r.operationKey(desired.Scope, desired.OperationID)
 	inventory := r.inventoryPrefix(desired.Scope)
 	gatewayKey, deploymentKey := inventory+desired.Resource.Key(), inventory+desired.Deployment.Key()
@@ -90,11 +101,16 @@ func (r *Region) completeHTTPSGateway(ctx context.Context, desired gatewayRecord
 	}
 	operations, gateways := snapshot.Responses[0].GetResponseRange().Kvs, snapshot.Responses[1].GetResponseRange().Kvs
 	deployments, records := snapshot.Responses[2].GetResponseRange().Kvs, snapshot.Responses[3].GetResponseRange().Kvs
-	if len(operations) != 1 || len(records) != 1 || len(gateways) != 1 || len(deployments) != 1 {
+	isSite := desired.Site != nil
+	if len(operations) != 1 || len(records) != 1 || len(gateways) != 1 || !isSite && len(deployments) != 1 {
 		return enrollment.ErrGatewayAssignmentChanged
 	}
 	op, err := decodeOperation(operations[0].Value, desired.OperationID)
-	if err != nil || op.Kind != createApplicationGateway || op.Status != arm.OperationInProgress {
+	kind, action := createApplicationGateway, "Microsoft.Network/applicationGateways/write"
+	if isSite {
+		kind, action = createSiteConnection, network.SiteConnectionType+"/write"
+	}
+	if err != nil || op.Kind != kind || op.Status != arm.OperationInProgress {
 		return err
 	}
 	var current gatewayRecord
@@ -105,8 +121,10 @@ func (r *Region) completeHTTPSGateway(ctx context.Context, desired gatewayRecord
 	guards := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(opKey), "=", operations[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", gateways[0].ModRevision),
-		clientv3.Compare(clientv3.ModRevision(deploymentKey), "=", deployments[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(recordKey), "=", records[0].ModRevision),
+	}
+	if !isSite {
+		guards = append(guards, clientv3.Compare(clientv3.ModRevision(deploymentKey), "=", deployments[0].ModRevision))
 	}
 	for index := range desired.Hosts {
 		observations := snapshot.Responses[4+2*index].GetResponseRange().Kvs
@@ -114,7 +132,7 @@ func (r *Region) completeHTTPSGateway(ctx context.Context, desired gatewayRecord
 		if len(observations) != 1 || len(live) != 1 || live[0].Lease == 0 || live[0].Lease != observations[0].Lease {
 			return nil
 		}
-		var status enrollment.HTTPSGatewayStatus
+		var status enrollment.GatewayStatus
 		if err := json.Unmarshal(observations[0].Value, &status); err != nil {
 			return err
 		}
@@ -134,20 +152,32 @@ func (r *Region) completeHTTPSGateway(ctx context.Context, desired gatewayRecord
 	if err != nil {
 		return err
 	}
-	deployment, err := decodeInventoryResource(deployments[0].Value, desired.Deployment.Key())
-	if err != nil {
-		return err
-	}
-	if err := finishApplicationGateway(&gateway, &deployment, desired.Scope); err != nil {
-		return err
-	}
 	now := time.Now().UTC()
+	var writes []clientv3.Op
+	if isSite {
+		var properties map[string]any
+		if err := json.Unmarshal(gateway.Properties, &properties); err != nil || properties == nil {
+			return errors.New("invalid WireGuard site connection projection")
+		}
+		properties["provisioningState"] = arm.OperationSucceeded
+		gateway.Properties, _ = json.Marshal(properties)
+		gateway.ProvisioningState = arm.OperationSucceeded
+	} else {
+		deployment, err := decodeInventoryResource(deployments[0].Value, desired.Deployment.Key())
+		if err != nil {
+			return err
+		}
+		if err := finishApplicationGateway(&gateway, &deployment, desired.Scope); err != nil {
+			return err
+		}
+		writes = append(writes, inventoryPut(deploymentKey, &deployment, &deployment, now))
+	}
 	op.Status, op.FinishedAt = arm.OperationSucceeded, &now
 	newOperation, _ := json.Marshal(op)
-	_, err = r.client.Txn(ctx).If(guards...).Then(clientv3.OpPut(opKey, string(newOperation)),
-		inventoryPut(gatewayKey, &gateway, &gateway, now), inventoryPut(deploymentKey, &deployment, &deployment, now),
-		r.auditOp(desired.Scope, arm.AuditEvent{Time: now, Actor: op.Actor, Action: "Microsoft.Network/applicationGateways/write",
-			Target: desired.Resource.ID(desired.Scope), Outcome: "Succeeded"})).Commit()
+	writes = append(writes, clientv3.OpPut(opKey, string(newOperation)), inventoryPut(gatewayKey, &gateway, &gateway, now),
+		r.auditOp(desired.Scope, arm.AuditEvent{Time: now, Actor: op.Actor, Action: action,
+			Target: desired.Resource.ID(desired.Scope), Outcome: "Succeeded"}))
+	_, err = r.client.Txn(ctx).If(guards...).Then(writes...).Commit()
 	return err
 }
 

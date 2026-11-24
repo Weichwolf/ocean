@@ -144,7 +144,15 @@ func TestRoutedWireGuard(t *testing.T) {
 		t.Fatal("a gateway with a missing private key was accepted")
 	}
 	ping(customer, "", "10.91.1.4", false)
-	apply(cloud, cloudConfig)
+	leased := cloudConfig
+	leased.LeaseControlled = true
+	apply(cloud, leased)
+	ping(customer, "", "10.91.1.4", true)
+	time.Sleep(9 * time.Second)
+	ping(customer, "", "10.91.1.4", false)
+	if err := leased.RefreshLease(ctx, cloud); err != nil {
+		t.Fatal(err)
+	}
 	ping(customer, "", "10.91.1.4", true)
 	run("ip", "-n", cloud, "link", "delete", "dev", "lan0")
 	for range 2 {
@@ -159,5 +167,5 @@ func TestRoutedWireGuard(t *testing.T) {
 		t.Fatal("the probe reported a removed gateway as reachable")
 	}
 	ping(customer, "", "10.91.1.4", false)
-	t.Log("WireGuard retries preserved reachability, prefix changes withdrew the old route, and failed apply and removal blocked forwarding")
+	t.Log("WireGuard retries preserved reachability, prefix changes withdrew old routes, and expiry, failed apply, and removal blocked forwarding")
 }

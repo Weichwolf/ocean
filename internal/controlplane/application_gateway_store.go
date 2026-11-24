@@ -12,6 +12,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/network"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -35,6 +36,14 @@ type gatewayRecord struct {
 	Backend              netip.AddrPort        `json:"backend"`
 	BackendSubnet        netip.Prefix          `json:"backendSubnet"`
 	EncryptedCertificate []byte                `json:"encryptedCertificate"`
+	Site                 *wireGuardDesired     `json:"site,omitempty"`
+}
+
+type wireGuardDesired struct {
+	Peers             []network.SitePeer `json:"peers"`
+	LocalPrefixes     []netip.Prefix     `json:"localPrefixes"`
+	CustomerPrefixes  []netip.Prefix     `json:"customerPrefixes"`
+	ProtectedPrefixes []netip.Prefix     `json:"protectedPrefixes"`
 }
 
 func (record gatewayRecord) generation() string {
@@ -89,7 +98,7 @@ func (r *Region) beginApplicationGateway(ctx context.Context, scope arm.Subscrip
 	if subnetLock.Count != 0 {
 		return result, arm.ErrGatewaySubnetInUse
 	}
-	slot, slotGuards, err := r.availableGatewaySlot(ctx, target.Revision)
+	slot, slotGuards, err := r.availableGatewaySlot(ctx, target.Revision, r.gatewayControl.slots)
 	if err != nil {
 		return result, err
 	}
@@ -167,8 +176,8 @@ func (r *Region) retryApplicationGateway(ctx context.Context, scope arm.Subscrip
 	return result, nil
 }
 
-func (r *Region) availableGatewaySlot(ctx context.Context, revision int64) (gatewaySlot, []clientv3.Cmp, error) {
-	for _, slot := range r.gatewayControl.slots {
+func (r *Region) availableGatewaySlot(ctx context.Context, revision int64, slots []gatewaySlot) (gatewaySlot, []clientv3.Cmp, error) {
+	for _, slot := range slots {
 		key := r.gatewaySlotKey(slot.Name)
 		reads := []clientv3.Op{clientv3.OpGet(key, clientv3.WithRev(revision), clientv3.WithCountOnly())}
 		for _, host := range slot.Hosts {

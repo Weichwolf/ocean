@@ -190,6 +190,8 @@ func deploymentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "ApplicationGatewayInUse", err.Error())
 	case errors.Is(err, ErrGatewaySubnetInUse):
 		writeError(w, http.StatusConflict, "ApplicationGatewaySubnetInUse", err.Error())
+	case errors.Is(err, ErrSiteConnectionInUse):
+		writeError(w, http.StatusConflict, "SiteConnectionInUse", err.Error())
 	default:
 		inventoryError(w, err)
 	}
