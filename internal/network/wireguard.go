@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -33,6 +34,14 @@ type WireGuardGateway struct {
 	LocalPrefixes     []netip.Prefix `json:"localPrefixes"`
 	RemotePrefixes    []netip.Prefix `json:"remotePrefixes"`
 	ProtectedPrefixes []netip.Prefix `json:"protectedPrefixes"`
+	Redundancy        *WireGuardVRRP `json:"redundancy,omitempty"`
+}
+
+// WireGuardVRRP identifies a trusted unicast peer on the inside routing link.
+type WireGuardVRRP struct {
+	Address netip.Addr `json:"address"`
+	Peer    netip.Addr `json:"peer"`
+	PeerMAC string     `json:"peerMac"`
 }
 
 const (
@@ -70,6 +79,15 @@ func (g WireGuardGateway) validate(namespace string) error {
 	}
 	if g.LocalTunnel.Contains(g.PeerEndpoint.Addr()) {
 		return errors.New("the WireGuard peer endpoint overlaps the tunnel addresses")
+	}
+	if peer := g.Redundancy; peer != nil {
+		mac, err := net.ParseMAC(peer.PeerMAC)
+		if err != nil || len(mac) != 6 || mac[0]&1 != 0 || peer.Address == peer.Peer ||
+			!slices.ContainsFunc(g.LocalPrefixes, func(prefix netip.Prefix) bool {
+				return prefix.Contains(peer.Address) && prefix.Contains(peer.Peer)
+			}) {
+			return errors.New("the redundant gateway peer must have a distinct local IPv4 address and a unicast MAC")
+		}
 	}
 	return nil
 }
@@ -163,6 +181,19 @@ func (g WireGuardGateway) Remove(ctx context.Context, namespace string) error {
 	}
 	_, err = vpnIP(ctx, namespace, "link", "delete", "dev", g.Tunnel)
 	return err
+}
+
+// Probe checks the authenticated tunnel path for a local routing supervisor.
+func (g WireGuardGateway) Probe(ctx context.Context, namespace string) error {
+	if err := g.validate(namespace); err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "/usr/bin/ip", "netns", "exec", namespace,
+		"/usr/bin/ping", "-n", "-c", "1", "-W", "1", "-I", g.LocalTunnel.Addr().String(), g.PeerTunnel.String())
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("probe the authenticated WireGuard peer: %w", err)
+	}
+	return nil
 }
 
 func (g WireGuardGateway) checkUnderlay(ctx context.Context, namespace string) error {
@@ -319,6 +350,11 @@ func (g WireGuardGateway) applyRules(ctx context.Context, namespace string, acti
 		policy.rule("local_in", fmt.Sprintf("iifname %s ip saddr %s udp dport %d counter accept", underlay, g.PeerEndpoint.Addr(), g.ListenPort))
 		policy.rule("local_in", fmt.Sprintf("iifname %s ip saddr %s ip daddr %s icmp type { echo-request, echo-reply } counter accept",
 			tunnel, g.PeerTunnel, g.LocalTunnel.Addr()))
+		if peer := g.Redundancy; peer != nil {
+			mac, _ := net.ParseMAC(peer.PeerMAC)
+			policy.rule("local_in", fmt.Sprintf("iifname %s ether saddr %s ip saddr %s ip daddr %s ip ttl 255 ip protocol vrrp counter accept",
+				inside, mac, peer.Peer, peer.Address))
+		}
 	}
 	return applyNftRules(ctx, namespace, policy.script.String())
 }

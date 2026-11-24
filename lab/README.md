@@ -284,6 +284,8 @@ The `ocean-gateway` command accepts one `wireguard` configuration for a dedicate
 
 Use `ocean-gateway -config /etc/ocean-gateway/tenant-vpn.json -mode apply` with `iproute2`, `nftables`, and `wireguard-tools` in the gateway guest. The command blocks namespace forwarding while it reconciles the tunnel and routes. It enables only the approved prefix pairs and permits ICMP peer probes on the tunnel addresses. Use `-mode remove` to close forwarding and remove the tunnel and its routes. Keep the management interface in its own network namespace. [WireGuard network namespaces](https://www.wireguard.com/netns/)
 
+An optional `redundancy` object gives the local inside address and the trusted neighbor's `peer` address and `peerMac`. It enables unicast VRRP traffic matching those addresses and TTL 255 on the inside interface. A routing supervisor can call `-mode probe` to check the peer tunnel using an authenticated ICMP exchange. Use a controlled inside segment for VRRP and configure each gateway with its own tunnel and peer. [Keepalived configuration synopsis](https://www.keepalived.org/manpage.html)
+
 Run the packet check on a disposable Debian KVM guest with `wireguard-tools`, `nftables`, and `iputils-ping`. It creates and removes four isolated namespaces and uses disposable peer keys. The test exercises encrypted forwarding in both directions, blocked paths, prefix changes, failed configuration, and teardown.
 
 ```sh
@@ -293,6 +295,28 @@ CGO_ENABLED=0 go test -mod=readonly -tags=e2e -c -o "$vpn_test" ./internal/netwo
   'file=$(mktemp); trap "unlink \"$file\"" EXIT; cat > "$file"; chmod 0700 "$file"; sudo env OCEAN_E2E_WIREGUARD=1 "$file" -test.v -test.run=^TestRoutedWireGuard$' \
   < "$vpn_test"
 ```
+
+Run `python3 lab/verify_wireguard_hosts.py --state "$OCEAN_LAB_STATE" --profile "$OCEAN_LAB_PROFILE"` against a disposable regional lab with the installed control plane and enrolled `farm-1-node-05` compute guest. Use the exact running profile so the verifier can restart the stopped gateway. The two gateway guests need WireGuard tools, nftables, iputils-ping, and Keepalived. The customer guest needs WireGuard tools, nftables, iputils-ping, and curl. The verifier sets up two separate peer keys and paths, starts the pinned HTTP workload under rootless Podman at nice +10, and measures route recovery after disabling a tunnel's underlay and powering off the active gateway guest. It probes management from the operator network during gateway loss and records successful and unsuccessful attempts. The customer must remain unable to reach the protected management network. Results appear in `evidence/wireguard-hosts.json`. The lab paths use separate network interfaces on a shared virtual underlay.
+
+## Public HTTPS ingress
+
+The `ocean-gateway -mode render-https` command renders a dedicated HAProxy configuration from a single `https` role. The bundle must contain a matching private key and a valid certificate for the configured DNS name. Place it in a root-owned, owner-only file. The backend must be a usable address in the declared private subnet.
+
+```json
+{
+  "https": {
+    "publicIPv4": "198.51.100.20",
+    "hostname": "ingress.ocean.test",
+    "certificateFile": "/etc/ocean-gateway/ingress.pem",
+    "backend": "10.89.1.4:8080",
+    "backendSubnet": "10.89.1.0/24"
+  }
+}
+```
+
+Validate the rendered configuration with `haproxy -c -f <configuration>`. Run HAProxy in a gateway namespace with a public and private link and let the routing supervisor own the listener address. HAProxy accepts the configured TLS and HTTP host, checks the private backend, and sets forwarding headers from the actual connection. [HAProxy configuration reference](https://docs.haproxy.org/3.0/configuration.html)
+
+Run `TestPrivateHTTPSIngress` from the network test binary in a Debian KVM guest with `OCEAN_E2E_HTTPS_INGRESS=1`, HAProxy, curl, and Python installed. The test verifies certificate identity, the private backend response, replacement of client-supplied forwarding headers, rejection of other hostnames, and blocked direct access from the public client.
 
 ## Debian node-agent package
 

@@ -115,7 +115,9 @@ func TestRoutedWireGuard(t *testing.T) {
 	}
 	apply(cloud, cloudConfig)
 	apply(site, siteConfig)
-	ping(site, "10.99.1.1", "10.99.1.0", true)
+	if err := siteConfig.Probe(ctx, site); err != nil {
+		t.Fatal(err)
+	}
 	ping(customer, "", "10.91.1.4", true)
 	ping(workload, "", "10.92.1.4", true)
 	ping(customer, "10.92.2.4", "10.91.1.4", false)
@@ -152,6 +154,9 @@ func TestRoutedWireGuard(t *testing.T) {
 	}
 	if links := run("ip", "-n", cloud, "-brief", "link", "show"); strings.Contains(links, "wg0") {
 		t.Fatal("removing the gateway left its WireGuard interface behind")
+	}
+	if err := siteConfig.Probe(ctx, site); err == nil {
+		t.Fatal("the probe reported a removed gateway as reachable")
 	}
 	ping(customer, "", "10.91.1.4", false)
 	t.Log("WireGuard retries preserved reachability, prefix changes withdrew the old route, and failed apply and removal blocked forwarding")
