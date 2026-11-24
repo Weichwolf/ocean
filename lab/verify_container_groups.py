@@ -59,6 +59,13 @@ def request(state, observer, address, port, route="/"):
     return ssh(state, observer, f"sudo ip netns exec {PROBE} curl --noproxy '*' -sS --connect-timeout 1 --max-time 2 http://{address}:{port}{route}")
 
 
+def retain_neighbor(state, observer, address):
+    records = json.loads(ssh(state, observer, f"sudo ip -n {PROBE} -j -4 neigh show to {address} dev external0"))
+    require(len(records) == 1 and records[0].get("lladdr"), "the observer has no learned address to cache")
+    mac = shlex.quote(records[0]["lladdr"])
+    ssh(state, observer, f"sudo ip -n {PROBE} neigh replace {address} lladdr {mac} nud permanent dev external0")
+
+
 def cannot_connect(state, observer, address, port):
     response = ssh(state, observer, f"rc=0; sudo ip netns exec {PROBE} curl --noproxy '*' -s --connect-timeout 1 --max-time 2 "
                    f"-o /dev/null http://{address}:{port}/ || rc=$?; printf '%s' \"$rc\"")
@@ -111,6 +118,7 @@ sudo ip -n {PROBE} link set lo up
         started = runtime(state, host, name)
         eventually(lambda: request(state, observer, address, 80), 15)
         request(state, observer, address, 80, PUBLIC_PATH)
+        retain_neighbor(state, observer, address)
         invoke("public-logs")
         invoke("stop")
         eventually(lambda: cannot_connect(state, observer, address, 80), 9)
@@ -145,7 +153,8 @@ sudo ip -n {PROBE} link set lo up
                 "privateImage": busybox, "rootless": True, "nice": 10, "cpuQuota": "25000 100000",
                 "memoryLimitBytes": 67108864, "publicHTTP": True, "privateHTTP": True, "logEventFound": True,
                 "stoppedEndpointClosed": True, "restartChangedProcess": True, "deletedEndpointClosed": True,
-                "publicAddressReused": True, "quotaReleased": True, "standardAndSecureVariablesDelivered": True,
+                "publicAddressReused": True, "cachedNeighborPreserved": True, "quotaReleased": True,
+                "standardAndSecureVariablesDelivered": True,
                 "secureValueAbsentFromInventoryAuditAndExposedLogs": True, **conflict, **deleted}
     finally:
         try:

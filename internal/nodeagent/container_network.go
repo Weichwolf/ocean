@@ -285,6 +285,10 @@ func attachContainerNetwork(ctx context.Context, name string, pid int, uid strin
 		{"-n", router, "addr", "add", containerNextHop + "/32", "dev", containerRouterLink},
 		{"-n", router, "link", "set", "dev", containerRouterLink, "up"},
 		{"-n", router, "link", "set", "dev", containerFabricLink, "up"},
+		// Advertise the endpoint IPv4 address as the source of fabric ARP
+		// requests. Its unicast route still leads to the container veth.
+		{"-n", router, "addr", "add", address.String() + "/32", "dev", containerFabricLink, "noprefixroute"},
+		{"-n", router, "route", "delete", "local", address.String() + "/32", "dev", containerFabricLink, "table", "local"},
 		{"-n", router, "route", "replace", address.String() + "/32", "dev", containerRouterLink},
 		{"-n", router, "neigh", "add", "proxy", address.String(), "dev", containerFabricLink},
 		{"netns", "exec", router, "/usr/sbin/sysctl", "-q", "-w", "net.ipv4.ip_forward=1", "net.ipv4.conf.fabric0.proxy_arp=1"},
