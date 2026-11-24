@@ -178,7 +178,11 @@ type invalidNetwork struct{ message string }
 
 func (e invalidNetwork) Error() string { return e.message }
 
-var errVirtualNetworkMissing = errors.New("virtual network not found")
+var (
+	errVirtualNetworkMissing    = errors.New("virtual network not found")
+	errInvalidNetworkReference  = errors.New("network security groups must be in the same subscription and resource group as the virtual network")
+	errTooManyNetworkReferences = errors.New("too many distinct network security groups are attached to the virtual network")
+)
 
 func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, actor string, address ResourceAddress, path networkPath) {
 	var requested vnetInput
@@ -244,6 +248,9 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 						return nil, invalidNetwork{"subnet names must be valid and unique within a virtual network"}
 					}
 					seen[name] = true
+					if index := properties.SubnetIndex(subnet.Name); index >= 0 && subnet.Properties.NetworkSecurityGroup == nil {
+						subnet.Properties.NetworkSecurityGroup = properties.Subnets[index].Properties.NetworkSecurityGroup
+					}
 					if err := upsertSubnet(&properties, canonical.ID(scope), subnet); err != nil {
 						return nil, err
 					}
@@ -251,6 +258,10 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 			}
 			if err := properties.Validate(); err != nil {
 				return nil, invalidNetwork{err.Error()}
+			}
+			result.References, err = normalizeNetworkReferences(scope, canonical.Group, properties.Subnets)
+			if err != nil {
+				return nil, err
 			}
 			result.Properties, _ = json.Marshal(properties)
 			return &result, nil
@@ -263,6 +274,8 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 		writeError(w, http.StatusNotFound, "VirtualNetworkNotFound", "The virtual network could not be found.")
 	case errors.Is(err, ErrGroupDeleting):
 		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
+	case errors.Is(err, errInvalidNetworkReference), errors.Is(err, errTooManyNetworkReferences), errors.Is(err, ErrLinkedResourceMissing):
+		writeError(w, http.StatusBadRequest, "InvalidResourceReference", err.Error())
 	case errors.As(err, &invalid):
 		writeError(w, http.StatusBadRequest, "InvalidAddressPrefix", invalid.message)
 	case err != nil:
@@ -280,6 +293,42 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 	default:
 		writeJSON(w, createdStatus(created), resource.view(scope))
 	}
+}
+
+func normalizeNetworkReferences(scope SubscriptionScope, group string, subnets []network.Subnet) ([]ResourceAddress, error) {
+	seen := make(map[string]bool)
+	var references []ResourceAddress
+	prefix := (ResourceAddress{Group: group, Path: securityGroupType}).ID(scope) + "/"
+	for index := range subnets {
+		subnet := &subnets[index]
+		if subnet.Properties.NetworkSecurityGroup == nil {
+			continue
+		}
+		id := subnet.Properties.NetworkSecurityGroup.ID
+		if len(id) < len(prefix) || !strings.EqualFold(id[:len(prefix)], prefix) {
+			return nil, errInvalidNetworkReference
+		}
+		name := id[len(prefix):]
+		// Azure CLI expands an empty group name to the collection ID with
+		// a trailing slash when detaching a security group.
+		if name == "" {
+			subnet.Properties.NetworkSecurityGroup = nil
+			continue
+		}
+		if !network.ValidName(name) {
+			return nil, errInvalidNetworkReference
+		}
+		ref := ResourceAddress{Group: group, Path: securityGroupType + "/" + strings.ToLower(name)}
+		if !seen[ref.Key()] {
+			seen[ref.Key()] = true
+			references = append(references, ref)
+		}
+	}
+	if len(references) > MaxResourceReferences {
+		return nil, errTooManyNetworkReferences
+	}
+	slices.SortFunc(references, func(a, b ResourceAddress) int { return strings.Compare(a.Path, b.Path) })
+	return references, nil
 }
 
 func createdStatus(created bool) int {

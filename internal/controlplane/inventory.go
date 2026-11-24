@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -165,8 +166,13 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 			return nil, false, errors.New("invalid resource projection")
 		}
 		if saved != nil && resource != nil && saved.APIVersion == resource.APIVersion && saved.Location == resource.Location &&
-			saved.ProvisioningState == resource.ProvisioningState && maps.Equal(saved.Tags, resource.Tags) && bytes.Equal(saved.Properties, resource.Properties) {
+			saved.ProvisioningState == resource.ProvisioningState && maps.Equal(saved.Tags, resource.Tags) && bytes.Equal(saved.Properties, resource.Properties) &&
+			slices.Equal(saved.References, resource.References) {
 			return saved, false, nil
+		}
+		referenceConditions, referenceChanges, err := r.inventoryReferenceChanges(ctx, scope, canonical, saved, resource, result.Header.Revision)
+		if err != nil {
+			return nil, false, err
 		}
 		now := time.Now().UTC()
 		mutation := clientv3.OpDelete(key)
@@ -182,18 +188,28 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 			data, _ := json.Marshal(resource)
 			mutation = clientv3.OpPut(key, string(data))
 		}
-		mutations := []clientv3.Op{mutation}
+		mutations := append(referenceChanges, mutation)
 		if actor != "" {
 			mutations = append(mutations, r.auditOp(scope, arm.AuditEvent{Time: now, Actor: actor, Action: action,
 				Target: canonical.ID(scope) + auditSuffix, Outcome: "Succeeded"}))
 		}
-		write, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(groupKey), "=", record.ModRevision),
-			clientv3.Compare(clientv3.ModRevision(key), "=", revision)).Then(mutations...).Commit()
+		conditions := append(referenceConditions, clientv3.Compare(clientv3.ModRevision(groupKey), "=", record.ModRevision),
+			clientv3.Compare(clientv3.ModRevision(key), "=", revision))
+		var onConflict []clientv3.Op
+		if resource == nil {
+			prefix := r.dependentsPrefix(scope, canonical)
+			conditions = append(conditions, clientv3.Compare(clientv3.Version(prefix), "=", 0).WithPrefix())
+			onConflict = append(onConflict, clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithLimit(1)))
+		}
+		write, err := r.client.Txn(ctx).If(conditions...).Then(mutations...).Else(onConflict...).Commit()
 		if err != nil {
 			return nil, false, err
 		}
 		if write.Succeeded {
 			return resource, saved == nil, nil
+		}
+		if resource == nil && len(write.Responses[0].GetResponseRange().Kvs) != 0 {
+			return nil, false, arm.ErrLinkedResourceInUse
 		}
 	}
 	return nil, false, errors.New("resource group changed during inventory publication")

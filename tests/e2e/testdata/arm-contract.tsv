@@ -19,6 +19,7 @@ NETWORK-01	vnet-delete	2.93.0	none	2025-07-01	network vnet delete --resource-gro
 NETWORK-01	subnet-create	2.93.0	none	2024-07-01	network vnet subnet create --resource-group {group} --vnet-name {vnet} --name {subnet} --address-prefixes {subnet_prefix} -o json
 NETWORK-01	subnet-show	2.93.0	none	2024-07-01	network vnet subnet show --resource-group {group} --vnet-name {vnet} --name {subnet} -o json
 NETWORK-01	subnet-update	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --address-prefixes {subnet_prefix} -o json
+NETWORK-01	subnet-security-group	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --network-security-group {nsg} -o json
 NETWORK-01	subnet-list	2.93.0	none	2024-07-01	network vnet subnet list --resource-group {group} --vnet-name {vnet} -o json
 NETWORK-01	subnet-delete	2.93.0	none	2024-07-01	network vnet subnet delete --resource-group {group} --vnet-name {vnet} --name {subnet} -o none
 NETWORK-01	nsg-create	2.93.0	none	2022-01-01	network nsg create --resource-group {group} --name {nsg} --location {location} -o json

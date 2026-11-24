@@ -38,13 +38,18 @@ type Subnet struct {
 	Properties SubnetProperties `json:"properties"`
 }
 
+type ResourceReference struct {
+	ID string `json:"id"`
+}
+
 type SubnetProperties struct {
-	AddressPrefix                     string   `json:"addressPrefix,omitempty"`
-	AddressPrefixes                   []string `json:"addressPrefixes,omitempty"`
-	PrivateEndpointNetworkPolicies    string   `json:"privateEndpointNetworkPolicies,omitempty"`
-	PrivateLinkServiceNetworkPolicies string   `json:"privateLinkServiceNetworkPolicies,omitempty"`
-	DefaultOutboundAccess             *bool    `json:"defaultOutboundAccess,omitempty"`
-	ProvisioningState                 string   `json:"provisioningState,omitempty"`
+	AddressPrefix                     string             `json:"addressPrefix,omitempty"`
+	AddressPrefixes                   []string           `json:"addressPrefixes,omitempty"`
+	PrivateEndpointNetworkPolicies    string             `json:"privateEndpointNetworkPolicies,omitempty"`
+	PrivateLinkServiceNetworkPolicies string             `json:"privateLinkServiceNetworkPolicies,omitempty"`
+	DefaultOutboundAccess             *bool              `json:"defaultOutboundAccess,omitempty"`
+	NetworkSecurityGroup              *ResourceReference `json:"networkSecurityGroup,omitempty"`
+	ProvisioningState                 string             `json:"provisioningState,omitempty"`
 }
 
 func (s SubnetProperties) prefixes() ([]netip.Prefix, error) {

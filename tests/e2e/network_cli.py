@@ -24,7 +24,8 @@ def subnet_prefixes(row):
     return subnet.get("addressPrefixes") or [subnet.get("addressPrefix")]
 
 
-def verify_security_group(command, primary, foreign, first_id, foreign_id, api_version):
+def verify_security_group(command, primary, foreign, first_id, foreign_id, api_version, subnet_version):
+    subnet_url = primary.origin + first_id + "/subnets/inline"
     first_id = first_id.replace("/virtualNetworks/", "/networkSecurityGroups/")
     foreign_id = foreign_id.replace("/virtualNetworks/", "/networkSecurityGroups/")
     url = primary.origin + first_id
@@ -37,12 +38,16 @@ def verify_security_group(command, primary, foreign, first_id, foreign_id, api_v
         raise RuntimeError("the security group did not round-trip through its ARM view")
     require_error(primary.request("GET", primary.origin + foreign_id, query=query), 404, "SubscriptionNotFound")
 
-    allow = command(primary, "nsg-rule-create", rule="allow-https", priority=110, source="10.72.1.0/24", port=443,
+    allow = command(primary, "nsg-rule-create", rule="allow-http", priority=110, source="10.77.2.0/24", port="8080-8082",
                     direction="Inbound", access="Allow")
-    deny = command(primary, "nsg-rule-create", rule="deny-https", priority=110, source="*", port=443,
+    deny = command(primary, "nsg-rule-create", rule="deny-egress", priority=110, source="*", port=8081,
                    direction="Outbound", access="Deny")
-    if (allow["id"] != first_id + "/securityRules/allow-https" or properties(allow).get("sourceAddressPrefix") != "10.72.1.0/24"
-            or properties(deny).get("access") != "Deny" or command(primary, "nsg-rule-show", rule="ALLOW-HTTPS")["id"] != allow["id"]):
+    command(primary, "nsg-rule-create", rule="deny-ingress", priority=100, source="10.77.2.0/24", port=8081,
+            direction="Inbound", access="Deny")
+    command(primary, "nsg-rule-create", rule="allow-egress", priority=120, source="10.72.1.0/24", port="8080-8082",
+            direction="Outbound", access="Allow")
+    if (allow["id"] != first_id + "/securityRules/allow-http" or properties(allow).get("sourceAddressPrefix") != "10.77.2.0/24"
+            or properties(deny).get("access") != "Deny" or command(primary, "nsg-rule-show", rule="ALLOW-HTTP")["id"] != allow["id"]):
         raise RuntimeError("the CLI did not create the requested security rules")
     conflicting_rule = {"properties": {"priority": 110, "access": "Deny", "protocol": "Tcp", "direction": "Inbound",
                                        "sourceAddressPrefix": "*", "destinationAddressPrefix": "*",
@@ -52,18 +57,70 @@ def verify_security_group(command, primary, foreign, first_id, foreign_id, api_v
     require_error(primary.request("PUT", url + "/securityRules/invalid", {"properties": bad_range}, query), 400, "InvalidRequestContent")
     require_error(primary.request("DELETE", url + "/defaultSecurityRules/DenyAllInBound", query=query), 405, "MethodNotAllowed")
     listed = command(primary, "nsg-rule-list")
-    if len(listed) != 8 or {row["name"] for row in listed if "/securityRules/" in row["id"]} != {"allow-https", "deny-https"}:
+    if len(listed) != 10 or {row["name"] for row in listed if "/securityRules/" in row["id"]} != {
+            "allow-http", "deny-egress", "deny-ingress", "allow-egress"}:
         raise RuntimeError("security rule listing omitted or added rules after a rejected change")
     command(primary, "nsg-create")
-    if command(primary, "nsg-rule-show", rule="allow-https")["id"] != allow["id"]:
+    if command(primary, "nsg-rule-show", rule="allow-http")["id"] != allow["id"]:
         raise RuntimeError("repeating security group creation removed a rule")
-    command(primary, "nsg-rule-delete", rule="allow-https")
-    command(primary, "nsg-rule-delete", rule="allow-https")
-    require_error(primary.request("GET", url + "/securityRules/allow-https", query=query), 404, "SecurityRuleNotFound")
+    policy = verify_subnet_association(command, primary, subnet_url, subnet_version, first_id, foreign_id, query)
+    command(primary, "nsg-rule-delete", rule="allow-http")
+    command(primary, "nsg-rule-delete", rule="allow-http")
+    require_error(primary.request("GET", url + "/securityRules/allow-http", query=query), 404, "SecurityRuleNotFound")
     command(primary, "nsg-delete")
     command(primary, "nsg-delete")
     if command(primary, "nsg-list") or [row["id"] for row in command(foreign, "nsg-list")] != [foreign_id]:
         raise RuntimeError("security group deletion crossed tenant boundaries")
+    return policy
+
+
+def verify_subnet_association(command, primary, subnet_url, subnet_version, group_id, foreign_id, group_version):
+    def linked(row):
+        return (properties(row).get("networkSecurityGroup") or {}).get("id", "")
+
+    attached = command(primary, "subnet-security-group")
+    if linked(attached).lower() != group_id.lower():
+        raise RuntimeError("subnet update did not attach its security group")
+    # The packet test uses the rules resolved from the live subnet association.
+    status, policy = primary.request("GET", primary.origin + linked(attached), query=group_version)
+    if status != 200 or len(policy["properties"]["securityRules"]) != 4:
+        raise RuntimeError("could not export the firewall policy linked from the subnet")
+    require_error(primary.request("DELETE", primary.origin + group_id, query=group_version),
+                  409, "InUseNetworkSecurityGroupCannotBeDeleted")
+    command(primary, "vnet-create")
+    if linked(command(primary, "subnet-show")).lower() != group_id.lower():
+        raise RuntimeError("reapplying the parent VNet lost its subnet security group")
+
+    def attach(identifier):
+        body = {"properties": {"addressPrefix": "10.72.1.0/24", "networkSecurityGroup": {"id": identifier}}}
+        return primary.request("PUT", subnet_url, body, subnet_version)
+
+    require_error(attach(foreign_id), 400, "InvalidResourceReference")
+    require_error(attach(group_id + "-missing"), 400, "InvalidResourceReference")
+    if linked(command(primary, "subnet-show")).lower() != group_id.lower():
+        raise RuntimeError("a rejected association changed the subnet")
+
+    race_id = command(primary, "nsg-create", nsg="race")["NewNSG"]["id"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        attaching = pool.submit(attach, race_id)
+        deleting = pool.submit(primary.request, "DELETE", primary.origin + race_id, query=group_version)
+        attachment, removal = attaching.result(), deleting.result()
+    if (attachment[0], removal[0]) == (200, 409):
+        require_error(removal, 409, "InUseNetworkSecurityGroupCannotBeDeleted")
+        if linked(command(primary, "subnet-show")) != race_id:
+            raise RuntimeError("the accepted race attachment was not durable")
+    elif (attachment[0], removal[0]) == (400, 204):
+        require_error(attachment, 400, "InvalidResourceReference")
+        if linked(command(primary, "subnet-show")).lower() != group_id.lower():
+            raise RuntimeError("a deleted security group replaced the active attachment")
+    else:
+        raise RuntimeError(f"unexpected attachment/delete race response codes {attachment[0]} and {removal[0]}")
+
+    detached = command(primary, "subnet-security-group", nsg="")
+    if linked(detached) or linked(command(primary, "subnet-show")):
+        raise RuntimeError("subnet update did not detach its security group")
+    command(primary, "nsg-delete", nsg="race")
+    return policy["properties"]
 
 
 def verify(config, matrix_path):
@@ -156,19 +213,24 @@ def verify(config, matrix_path):
         command(primary, "subnet-delete", subnet="standalone")
         command(primary, "subnet-delete", subnet="standalone")
         require_error(primary.request("GET", vnet_url + "/subnets/standalone", query=subnet_version), 404, "SubnetNotFound")
+        firewall = verify_security_group(command, primary, foreign, primary_id, foreign_id, networks["nsg-create"]["api_version"], subnet_version)
         command(primary, "vnet-delete")
         command(primary, "vnet-delete")
         if command(primary, "vnet-list") or [row["id"] for row in command(foreign, "vnet-list")] != [foreign_id]:
             raise RuntimeError("virtual network cleanup crossed a tenant boundary")
-        verify_security_group(command, primary, foreign, primary_id, foreign_id, networks["nsg-create"]["api_version"])
+        command(foreign, "subnet-security-group")
         foreign.command("group-delete", name)
         if command(foreign, "vnet-list-subscription") or command(foreign, "inventory-list"):
             raise RuntimeError("resource group deletion left a virtual network projection")
+        foreign.command("group-create", name)
+        command(foreign, "nsg-create")
+        command(foreign, "nsg-delete")
         return {"azureCLI": primary.version["azure-cli"], "extensions": primary.version["extensions"], "commands": sorted(networks),
                 "virtualNetworkAPIVersion": networks["vnet-create"]["api_version"], "subnetAPIVersion": networks["subnet-create"]["api_version"],
                 "distinctTenantNetworks": True, "overlapRejectedAtomically": True, "parentRetryPreservedSubnets": True,
-                "subnetUpdateVerified": True, "securityGroupLifecycleVerified": True, "invalidRequestsPreservedState": True,
-                "inventoryAndGroupCleanupVerified": True, "deletionVerified": True}
+                "subnetUpdateVerified": True, "securityGroupLifecycleVerified": True, "securityGroupAssociationVerified": True,
+                "invalidRequestsPreservedState": True,
+                "inventoryAndGroupCleanupVerified": True, "deletionVerified": True, "firewallPolicy": firewall}
 
 
 def main():

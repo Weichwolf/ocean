@@ -14,7 +14,12 @@ import (
 
 const inventoryPageSize = 16
 
+const MaxResourceReferences = 16
+
 var (
+	ErrLinkedResourceMissing = errors.New("a linked resource does not exist")
+	ErrLinkedResourceInUse   = errors.New("another resource still references this resource")
+
 	resourceSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.()-]{0,127}$`)
 	namespaceName   = regexp.MustCompile(`^[A-Za-z0-9]+(\.[A-Za-z0-9]+)+$`)
 	resourceVersion = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(-preview)?$`)
@@ -64,13 +69,25 @@ type InventoryResource struct {
 	Tags              map[string]string `json:"tags,omitempty"`
 	Properties        json.RawMessage   `json:"properties,omitempty"`
 	ProvisioningState string            `json:"provisioningState,omitempty"`
+	References        []ResourceAddress `json:"references,omitempty"`
 	CreatedAt         time.Time         `json:"createdTime"`
 	ChangedAt         time.Time         `json:"changedTime"`
 }
 
 func (r InventoryResource) Valid() bool {
-	return r.Address.Valid() && resourceVersion.MatchString(r.APIVersion) && r.Location != "" && validTags(r.Tags) &&
-		(len(r.Properties) == 0 || r.Properties[0] == '{' && json.Valid(r.Properties))
+	if !r.Address.Valid() || !resourceVersion.MatchString(r.APIVersion) || r.Location == "" || !validTags(r.Tags) ||
+		len(r.Properties) != 0 && (r.Properties[0] != '{' || !json.Valid(r.Properties)) || len(r.References) > MaxResourceReferences {
+		return false
+	}
+	seen := make(map[string]bool)
+	for _, ref := range r.References {
+		key := ref.Key()
+		if !ref.Valid() || !strings.EqualFold(ref.Group, r.Address.Group) || key == r.Address.Key() || seen[key] {
+			return false
+		}
+		seen[key] = true
+	}
+	return true
 }
 
 func (r InventoryResource) view(scope SubscriptionScope) map[string]any {

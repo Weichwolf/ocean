@@ -164,6 +164,7 @@ func (r *Region) completeGroupDeletion(ctx context.Context, scope arm.Subscripti
 			op.Status = arm.OperationSucceeded
 			mutations = append(mutations, clientv3.OpDelete(groupKey),
 				clientv3.OpDelete(r.groupInventoryPrefix(scope, op.Group), clientv3.WithPrefix()),
+				clientv3.OpDelete(r.groupInventoryReferencesPrefix(scope, op.Group), clientv3.WithPrefix()),
 				clientv3.OpDelete(r.assignmentPrefix(scope, op.Group), clientv3.WithPrefix()),
 				clientv3.OpDelete(r.groupGrantPrefix(scope, op.Group), clientv3.WithPrefix()))
 		}

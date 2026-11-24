@@ -219,6 +219,8 @@ func (s Server) changeSecurityGroup(ctx context.Context, w http.ResponseWriter, 
 		writeError(w, http.StatusNotFound, "NetworkSecurityGroupNotFound", "The network security group could not be found.")
 	case errors.Is(err, ErrGroupDeleting):
 		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
+	case errors.Is(err, ErrLinkedResourceInUse):
+		writeError(w, http.StatusConflict, "InUseNetworkSecurityGroupCannotBeDeleted", "A subnet still references this network security group.")
 	case errors.Is(err, errSecurityRulePriority):
 		writeError(w, http.StatusBadRequest, "SecurityRuleConflict", err.Error())
 	case errors.Is(err, errSecurityRuleLimit):
