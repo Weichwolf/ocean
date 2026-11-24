@@ -78,6 +78,16 @@ def verify(config, matrix):
         foreign_path = foreign.collection + "/" + name
         payload = {"location": first.config["location"], "tags": {"ocean-fixture": "primary"}}
         try:
+            provider = primary.command("provider-show")
+            supported = [{"resourceType": "resourceGroups", "locations": [first.config["location"]], "apiVersions": [primary.api]}]
+            metadata = [{key: resource[key] for key in supported[0]} for resource in provider["resourceTypes"]]
+            if (provider["namespace"] != "Microsoft.Resources" or provider["registrationState"] != "Registered" or
+                    provider["id"] != f"/subscriptions/{first.config['subscription']}/providers/Microsoft.Resources" or metadata != supported):
+                raise RuntimeError("provider discovery did not describe the implemented resource type")
+            unknown = primary.collection.removesuffix("/resourcegroups") + "/providers/Microsoft.Compute"
+            status, reply = primary.request("GET", unknown)
+            if status != 404 or reply["error"]["code"] != "InvalidResourceNamespace":
+                raise RuntimeError("provider discovery advertised an unsupported namespace")
             created = primary.command("group-create", name)
             verify_group(created, primary_path, name, "primary")
             verify_group(primary.command("group-show", name.lower()), primary_path, name, "primary")
@@ -97,6 +107,13 @@ def verify(config, matrix):
             if status != 400 or reply["error"]["code"] != "InvalidRequestContent":
                 raise RuntimeError("an unsupported resource group property was not rejected")
             verify_group(primary.command("group-show", name), primary_path, name, "primary")
+
+            update = dict(payload, tags={"ocean-fixture": "updated"})
+            status, _ = primary.request("PUT", primary_path, update, discard=True)
+            if status != 200:
+                raise RuntimeError("the resource group update did not commit")
+            verify_group(primary.command("group-create", name.lower(), "updated"), primary_path, name, "updated")
+            verify_group(primary.command("group-show", name), primary_path, name, "updated")
 
             race_path = primary.collection + "/" + concurrent_name
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -134,7 +151,9 @@ def verify(config, matrix):
             raise RuntimeError("cleanup left resource groups behind")
     return {"azureCLI": primary.version["azure-cli"], "extensions": primary.version["extensions"], "apiVersion": primary.api,
             "commands": sorted(matrix), "concurrentRequests": len(races), "groupsEnumerated": len(expected), "pages": 2,
-            "crossTenantRequestDenied": True, "unsupportedRequestsRejected": True, "cleanupVerified": True}
+            "crossTenantRequestDenied": True, "unsupportedRequestsRejected": True, "providerDiscoveryVerified": True,
+            "discardedUpdateResponseRecovered": True,
+            "cleanupVerified": True}
 
 
 def main():

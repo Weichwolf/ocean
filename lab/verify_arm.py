@@ -22,7 +22,7 @@ def main():
     directory = state / "evidence"
     directory.mkdir(mode=0o700, exist_ok=True)
     (directory / "arm-resource-groups.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(f"Azure CLI {result['azureCLI']} verified resource group lifecycle, {result['pages']} inventory pages, "
+    print(f"Azure CLI {result['azureCLI']} verified provider discovery, resource group lifecycle, {result['pages']} inventory pages, "
           f"{result['concurrentRequests']} concurrent requests, isolation, and cleanup.")
 
 
