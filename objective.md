@@ -46,7 +46,21 @@ A region starts with one cell. Assign each workload and persistent volume to a c
 
 Run redundant control-plane, identity, storage, and gateway roles. Maintain independent recovery paths for these dependencies. A loss of quorum must prevent new state-changing operations that require that quorum. Preserve existing workloads when their data paths remain available. Fence a previous volume writer before granting a replacement write access. Bound telemetry backlogs so telemetry failure cannot block provisioning or safety decisions. Verify backup and restore separately from replica failover.
 
-The three-node Debian lab on `trixie` exercises functionality and fault handling. Record the lab's capacity and verify nested KVM if the selected workload isolation needs it. Production claims require independent physical failure domains. Before a release run, record numerical limits for API and workload latency, supported load, failover and recovery time, acceptable data loss, and telemetry backlog. Use those limits for pass or fail decisions.
+Production claims require independent physical failure domains. Before a release run, record numerical limits for API and workload latency, supported load, failover and recovery time, acceptable data loss, and telemetry backlog. Use those limits for pass or fail decisions.
+
+## Development lab on trixie
+
+Run Debian ocean servers as small KVM guests. Start with three ocean nodes for the quorum and management-endpoint tests. Scale to 16 real ocean nodes for join, inventory, placement, drain, and recovery tests. The 16-node baseline allocates 1 GiB of RAM per node. Keep the three control-plane voters fixed while adding gateway and compute capacity. Limit concurrent workload instances so the run exercises scheduling and failure handling on the six-core development host.
+
+| Starting profile | Guest RAM | vCPUs | Typical use |
+| --- | ---: | ---: | --- |
+| Small | 1 GiB | 1 | Baseline ocean node for the 16-node run |
+| Workload | 2 GiB | 2 | Selected node running a Functions runtime or a nested test VM |
+| Support service | 4 GiB | 2 | Initial trial for a database or another support role with a larger working set |
+
+Configure RAM and vCPUs independently per node. Run both a uniform small-node test and a mixed-profile test sized to the resources available on `trixie`. Budget host and hypervisor overhead, disk capacity, and support services before starting a run. Record the role layout, configured memory and CPU, permitted CPU overcommit, and measured headroom. Increase or separately budget support nodes according to the selected backend's requirements. Run storage and identity failover with the real backends on suitably sized nodes.
+
+Use small, representative fixtures. A public OCI HTTP image covers ordinary container lifecycle. A tiny stateful HTTP app writes a checksum to a mounted share and can generate controlled requests, errors, and dependency telemetry. A small Functions v4 Java 21 image exposes a keyed HTTP trigger. When the runtime uses nested virtualization, boot a mini Linux guest and verify KVM and network access from inside the ocean node. Use that guest to test the execution path in the lab.
 
 ## Additional compatibility profiles
 
