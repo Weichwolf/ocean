@@ -33,7 +33,14 @@ type Config struct {
 type Store interface {
 	Enrollment(context.Context, string) (*Approval, *Host, int64, error)
 	RedeemEnrollment(context.Context, Host, int64) (bool, error)
+	PublishHostCapacity(context.Context, string, []byte, Report) error
+	HostAssignments(context.Context, string, []byte, string) (AssignmentPage, error)
 }
+
+var (
+	ErrHostDenied      = errors.New("host identity denied")
+	ErrHostUnqualified = errors.New("host qualification failed")
+)
 
 type Authority struct {
 	issuer *x509.Certificate
@@ -78,6 +85,8 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ocean/hosts/{host}/enrollment", a.enroll)
+	mux.HandleFunc("POST /ocean/hosts/{host}/heartbeat", a.heartbeat)
+	mux.HandleFunc("GET /ocean/hosts/{host}/placements", a.placements)
 	mux.HandleFunc("GET /ocean/hosts/{host}", a.getHost)
 	mux.Handle("/", fallback)
 	return mux
@@ -130,7 +139,7 @@ func (a *Authority) enroll(w http.ResponseWriter, r *http.Request) {
 		returnExisting(w, *current, keyID)
 		return
 	}
-	if !approved.Qualifies(request.Report) {
+	if _, qualified := approved.Available(request.Report); !qualified {
 		reject(w, http.StatusUnprocessableEntity, "HostQualificationFailed")
 		return
 	}
@@ -163,6 +172,82 @@ func (a *Authority) enroll(w http.ResponseWriter, r *http.Request) {
 	returnExisting(w, *current, keyID)
 }
 
+func (a *Authority) heartbeat(w http.ResponseWriter, r *http.Request) {
+	hostID := r.PathValue("host")
+	if !hostName.MatchString(hostID) || r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	peer := verifiedHostCertificate(r)
+	if peer == nil {
+		reject(w, http.StatusUnauthorized, "HostCertificateRequired")
+		return
+	}
+	var report Report
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF {
+		reject(w, http.StatusBadRequest, "InvalidHostReport")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	switch err := a.store.PublishHostCapacity(ctx, hostID, peer.Raw, report); {
+	case errors.Is(err, ErrHostDenied):
+		reject(w, http.StatusForbidden, "HostIdentityDenied")
+	case errors.Is(err, ErrHostUnqualified):
+		reject(w, http.StatusUnprocessableEntity, "HostQualificationFailed")
+	case err != nil:
+		reject(w, http.StatusServiceUnavailable, "EnrollmentUnavailable")
+	default:
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func verifiedHostCertificate(r *http.Request) *x509.Certificate {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+	return r.TLS.PeerCertificates[0]
+}
+
+func (a *Authority) placements(w http.ResponseWriter, r *http.Request) {
+	hostID := r.PathValue("host")
+	if !hostName.MatchString(hostID) {
+		http.NotFound(w, r)
+		return
+	}
+	peer := verifiedHostCertificate(r)
+	if peer == nil {
+		reject(w, http.StatusUnauthorized, "HostCertificateRequired")
+		return
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	cursor := query["continuation"]
+	if err != nil || len(query) != 0 && (len(query) != 1 || len(cursor) != 1 || !validAssignmentCursor(cursor[0])) {
+		reject(w, http.StatusBadRequest, "InvalidPlacementQuery")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	result, err := a.store.HostAssignments(ctx, hostID, peer.Raw, query.Get("continuation"))
+	if errors.Is(err, ErrHostDenied) {
+		reject(w, http.StatusForbidden, "HostIdentityDenied")
+		return
+	}
+	if err != nil {
+		reject(w, http.StatusServiceUnavailable, "PlacementUnavailable")
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
+func validAssignmentCursor(value string) bool {
+	parts := strings.Split(value, "/")
+	return len(parts) == 3 && hostName.MatchString(parts[0]) && hostName.MatchString(parts[1]) && hostName.MatchString(parts[2])
+}
+
 func accepts(approval *Approval, digest [sha256.Size]byte) bool {
 	if approval == nil {
 		return false
@@ -185,7 +270,8 @@ func (a *Authority) getHost(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
+	peer := verifiedHostCertificate(r)
+	if peer == nil {
 		reject(w, http.StatusUnauthorized, "HostCertificateRequired")
 		return
 	}
@@ -196,7 +282,7 @@ func (a *Authority) getHost(w http.ResponseWriter, r *http.Request) {
 		reject(w, http.StatusServiceUnavailable, "EnrollmentUnavailable")
 		return
 	}
-	if host == nil || host.RevokedAt != nil || !bytes.Equal(host.Certificate, r.TLS.PeerCertificates[0].Raw) {
+	if host == nil || host.RevokedAt != nil || !bytes.Equal(host.Certificate, peer.Raw) {
 		reject(w, http.StatusForbidden, "HostIdentityDenied")
 		return
 	}

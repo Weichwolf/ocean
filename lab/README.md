@@ -185,7 +185,7 @@ Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build
 
 The package creates the `ocean-agent` system account with subordinate UID and GID ranges. It enables the unit in that account's systemd user manager on a running systemd installation. The agent checks Podman rootless mode before serving readiness at `http://127.0.0.1:8081/readyz`. The configuration file is `/etc/ocean-agent/config.json`. [Debian subordinate IDs for system accounts](https://manpages.debian.org/trixie/passwd/useradd.8.en.html)
 
-Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev3_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
+Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev4_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
 
 ## Host identity enrollment
 
@@ -209,11 +209,19 @@ Start with the `identity-ha-3` lab and build the enrollment-enabled agent with `
 ```sh
 python3 lab/bootstrap_host.py --state "$OCEAN_LAB_STATE" --check-restarts \
   --profile lab/profiles/identity-ha-4.yaml --node farm-1-node-04 \
-  --package bin/ocean-agent_0.1.0~dev3_amd64.deb
+  --package bin/ocean-agent_0.1.0~dev4_amd64.deb
 ```
 
-The installer uses the Debian repositories for package dependencies. The seed carries the local agent package, its configuration, the management CA, and the host's short-lived credential. Cloud-init installs the package, writes the protected credential, and starts the service with its enrollment configuration. The verifier observes the regional registration before connecting to the guest to check cloud-init and mTLS readiness. It records `evidence/host-first-boot.json`.
+The installer uses the Debian repositories for package dependencies. The seed carries the local agent package, its configuration, the management CA, and the host's short-lived credential. Cloud-init installs the package, writes the protected credential, and starts the service with its enrollment configuration. The verifier observes the regional registration before connecting to the guest to check cloud-init and mTLS readiness. It records `evidence/host-first-boot-<host-id>.json`.
 
 `--check-restarts` also restarts the agent and the guest. Both checks require the same committed host identity and a ready service after recovery.
 
 `ocean-lab up -enrollment-file` accepts a JSON manifest with `hostId`, `origin`, `caFile`, `tokenFile`, and `packageFile`. Build the approval from the same guest inventory before booting. The lab stores the seed with owner-only permissions and reuses the existing seed and disk on a restart. An existing guest rejects a different seed. [NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
+
+## Leased host capacity and reservations
+
+An enrolled agent reports its current host capabilities every four seconds over mTLS. The coordinator checks the report against the approved inventory and publishes available capacity with a 15-second regional lease. Each host can declare its own `reserved` CPU and memory in the approval. The default reserves 100 millicores and 128 MiB. Revocation removes the availability key in the same transaction as the identity update.
+
+Workload providers reserve CPU and memory against a subscription policy containing the allowed operator pools and quota. Reservations account for cell, host, and tenant capacity in one quorum transaction. The retry ID is unique within the subscription. A stale cleanup cannot release a newer allocation with a different generation. Hosts receive only their leased, certificate-authorized assignment list at `GET /ocean/hosts/{host-id}/placements`. Draining blocks new placements and keeps existing reservations available for orderly teardown. Lease expiry removes the host from new placement decisions. Workload controllers release old reservations as part of their fenced cleanup.
+
+Run `python3 lab/verify_placement.py --state "$OCEAN_LAB_STATE" --small farm-1-node-05 --large farm-1-node-06` in the dedicated regional lab with two enrolled hosts and the test subscription from the identity profile. The check exercises capacity, pool policy, concurrent quotas, retry identity, drain, and expiry of a stopped agent's lease. Evidence is written to `evidence/host-placement.json`.

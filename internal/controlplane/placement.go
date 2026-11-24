@@ -1,0 +1,347 @@
+package controlplane
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+
+	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/enrollment"
+	clientv3 "go.etcd.io/etcd/client/v3"
+)
+
+var (
+	ErrPlacementPolicy    = errors.New("tenant placement policy is unavailable")
+	ErrQuotaExceeded      = errors.New("tenant reservation quota exceeded")
+	ErrNoEligibleHost     = errors.New("no eligible host has sufficient available capacity")
+	ErrReservationChanged = errors.New("reservation does not match its original request or generation")
+)
+
+type PlacementPolicy struct {
+	Pools []string            `json:"pools"`
+	Quota enrollment.Capacity `json:"quota"`
+}
+
+type PlacementRequest struct {
+	ID        string              `json:"id"`
+	Cell      string              `json:"cell"`
+	Role      string              `json:"role"`
+	Resources enrollment.Capacity `json:"resources"`
+}
+
+type Reservation struct {
+	PlacementRequest
+	Generation string `json:"generation"`
+	HostID     string `json:"hostId"`
+	Pool       string `json:"pool"`
+}
+
+type capacityCounter struct {
+	key      string
+	used     enrollment.Capacity
+	revision int64
+}
+
+func validCapacity(capacity enrollment.Capacity) bool {
+	return capacity.CPUMillis > 0 && capacity.MemoryMiB > 0
+}
+
+func fits(limit, used, request enrollment.Capacity) bool {
+	return used.CPUMillis <= limit.CPUMillis && used.MemoryMiB <= limit.MemoryMiB &&
+		request.CPUMillis <= limit.CPUMillis-used.CPUMillis && request.MemoryMiB <= limit.MemoryMiB-used.MemoryMiB
+}
+
+func addCapacity(a, b enrollment.Capacity) enrollment.Capacity {
+	return enrollment.Capacity{CPUMillis: a.CPUMillis + b.CPUMillis, MemoryMiB: a.MemoryMiB + b.MemoryMiB}
+}
+
+func (r *Region) counter(ctx context.Context, key string) (capacityCounter, error) {
+	counter := capacityCounter{key: key}
+	result, err := r.client.Get(ctx, key)
+	if err != nil || len(result.Kvs) == 0 {
+		return counter, err
+	}
+	item := result.Kvs[0]
+	if json.Unmarshal(item.Value, &counter.used) != nil || counter.used.CPUMillis < 0 || counter.used.MemoryMiB < 0 {
+		return capacityCounter{}, errors.New("invalid capacity counter")
+	}
+	counter.revision = item.ModRevision
+	return counter, nil
+}
+
+func (c capacityCounter) compare() clientv3.Cmp {
+	return clientv3.Compare(clientv3.ModRevision(c.key), "=", c.revision)
+}
+
+func (c capacityCounter) write(delta enrollment.Capacity) clientv3.Op {
+	data, _ := json.Marshal(addCapacity(c.used, delta))
+	return clientv3.OpPut(c.key, string(data))
+}
+
+func (r *Region) reservationKey(scope arm.SubscriptionScope, cell, id string) string {
+	return r.root + "/cells/" + cell + "/reservations/" + scope.TenantID + "/" + scope.SubscriptionID + "/" + id
+}
+
+func (r *Region) hostReservationPrefix(id string) string { return r.hostKey("placements", id) + "/" }
+
+func (r *Region) hostReservationKey(scope arm.SubscriptionScope, host, id string) string {
+	return r.hostReservationPrefix(host) + scope.TenantID + "/" + scope.SubscriptionID + "/" + id
+}
+
+// HostAssignments reads only the current certified host's placement records.
+// Authorization and the returned page share the same regional snapshot.
+func (r *Region) HostAssignments(ctx context.Context, id string, certificate []byte, after string) (enrollment.AssignmentPage, error) {
+	const size = 32
+	prefix := r.hostReservationPrefix(id)
+	start := prefix
+	if after != "" {
+		start += after + "\x00"
+	}
+	snapshot, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.hostKey("registered", id)), clientv3.OpGet(r.hostKey("live", id), clientv3.WithCountOnly()),
+		clientv3.OpGet(start, clientv3.WithRange(clientv3.GetPrefixRangeEnd(prefix)), clientv3.WithLimit(size+1))).Commit()
+	if err != nil {
+		return enrollment.AssignmentPage{}, err
+	}
+	hosts := snapshot.Responses[0].GetResponseRange().Kvs
+	if len(hosts) != 1 || snapshot.Responses[1].GetResponseRange().Count != 1 {
+		return enrollment.AssignmentPage{}, enrollment.ErrHostDenied
+	}
+	var host enrollment.Host
+	if json.Unmarshal(hosts[0].Value, &host) != nil || host.HostID != id || host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) {
+		return enrollment.AssignmentPage{}, enrollment.ErrHostDenied
+	}
+	items := snapshot.Responses[2].GetResponseRange().Kvs
+	count := min(len(items), size)
+	page := enrollment.AssignmentPage{Assignments: make([]enrollment.Assignment, 0, count)}
+	for _, item := range items[:count] {
+		var assignment enrollment.Assignment
+		if json.Unmarshal(item.Value, &assignment) != nil {
+			return enrollment.AssignmentPage{}, errors.New("invalid host assignment")
+		}
+		page.Assignments = append(page.Assignments, assignment)
+	}
+	if len(items) > count {
+		page.Next = strings.TrimPrefix(string(items[count-1].Key), prefix)
+	}
+	return page, nil
+}
+
+func validScope(scope arm.SubscriptionScope) bool {
+	return identifier.MatchString(scope.TenantID) && identifier.MatchString(scope.SubscriptionID)
+}
+
+// SetPlacementPolicy is called by the trusted provisioning plane. Workload
+// requests inherit this policy from their subscription.
+func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionScope, policy PlacementPolicy) error {
+	if !validScope(scope) || len(policy.Pools) == 0 || !validCapacity(policy.Quota) {
+		return ErrPlacementPolicy
+	}
+	for _, name := range policy.Pools {
+		if !identifier.MatchString(name) {
+			return ErrPlacementPolicy
+		}
+	}
+	subscription, err := r.lookupSubscription(ctx, scope.TenantID)
+	if err != nil {
+		return err
+	}
+	if subscription == nil || !subscription.Valid(scope.TenantID) || subscription.SubscriptionID != scope.SubscriptionID {
+		return ErrPlacementPolicy
+	}
+	base := r.armPrefix(scope)
+	data, _ := json.Marshal(policy)
+	for range 8 {
+		used, err := r.counter(ctx, base+"placement-usage")
+		if err != nil {
+			return err
+		}
+		if !fits(policy.Quota, used.used, enrollment.Capacity{}) {
+			return ErrQuotaExceeded
+		}
+		result, err := r.client.Txn(ctx).If(used.compare()).Then(clientv3.OpPut(base+"placement-policy", string(data))).Commit()
+		if err != nil || result.Succeeded {
+			return err
+		}
+	}
+	return errors.New("tenant quota usage changed concurrently")
+}
+
+// ReservePlacement commits one reservation together with tenant and host
+// accounting. A lost response can be retried with the same placement request.
+func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest) (Reservation, error) {
+	if !validScope(scope) || !identifier.MatchString(wanted.ID) || !identifier.MatchString(wanted.Cell) ||
+		!slices.Contains([]string{"compute", "storage", "gateway"}, wanted.Role) || !validCapacity(wanted.Resources) {
+		return Reservation{}, ErrReservationChanged
+	}
+	base := r.armPrefix(scope)
+	key := base + "placement-requests/" + wanted.ID
+	cellKey := r.reservationKey(scope, wanted.Cell, wanted.ID)
+	for range 12 {
+		if saved, found, err := r.placementRetry(ctx, key, wanted); found || err != nil {
+			return saved, err
+		}
+		policyKey := base + "placement-policy"
+		policies, err := r.client.Get(ctx, policyKey)
+		if err != nil {
+			return Reservation{}, err
+		}
+		var policy PlacementPolicy
+		if len(policies.Kvs) != 1 || json.Unmarshal(policies.Kvs[0].Value, &policy) != nil {
+			return Reservation{}, ErrPlacementPolicy
+		}
+		tenant, err := r.counter(ctx, base+"placement-usage")
+		if err != nil {
+			return Reservation{}, err
+		}
+		if !fits(policy.Quota, tenant.used, wanted.Resources) {
+			if saved, found, err := r.placementRetry(ctx, key, wanted); found || err != nil {
+				return saved, err
+			}
+			return Reservation{}, ErrQuotaExceeded
+		}
+		candidate, err := r.chooseHost(ctx, wanted, policy.Pools)
+		if err != nil {
+			if errors.Is(err, ErrNoEligibleHost) {
+				if saved, found, retryErr := r.placementRetry(ctx, key, wanted); found || retryErr != nil {
+					return saved, retryErr
+				}
+			}
+			return Reservation{}, err
+		}
+		expected := append(candidate.guards, tenant.compare(), clientv3.Compare(clientv3.Version(key), "=", 0),
+			clientv3.Compare(clientv3.Version(cellKey), "=", 0),
+			clientv3.Compare(clientv3.ModRevision(policyKey), "=", policies.Kvs[0].ModRevision))
+		reservation := Reservation{PlacementRequest: wanted, Generation: operationID(), HostID: candidate.host.HostID, Pool: candidate.host.Pool}
+		data, _ := json.Marshal(reservation)
+		hostKey := r.hostReservationKey(scope, reservation.HostID, reservation.ID)
+		expected = append(expected, clientv3.Compare(clientv3.Version(hostKey), "=", 0))
+		assignment, _ := json.Marshal(enrollment.Assignment{ID: reservation.ID, Generation: reservation.Generation, Cell: reservation.Cell,
+			TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources})
+		result, err := r.client.Txn(ctx).If(expected...).Then(clientv3.OpPut(key, string(data)), clientv3.OpPut(cellKey, string(data)),
+			clientv3.OpPut(hostKey, string(assignment)),
+			tenant.write(wanted.Resources), candidate.usage.write(wanted.Resources)).Commit()
+		if err != nil || result.Succeeded {
+			return reservation, err
+		}
+	}
+	return Reservation{}, errors.New("placement changed concurrently")
+}
+
+func (r *Region) placementRetry(ctx context.Context, key string, wanted PlacementRequest) (Reservation, bool, error) {
+	current, err := r.client.Get(ctx, key)
+	if err != nil || len(current.Kvs) == 0 {
+		return Reservation{}, false, err
+	}
+	var saved Reservation
+	if json.Unmarshal(current.Kvs[0].Value, &saved) != nil || saved.PlacementRequest != wanted || saved.Generation == "" {
+		return Reservation{}, false, ErrReservationChanged
+	}
+	return saved, true, nil
+}
+
+type placementHost struct {
+	host   enrollment.Availability
+	usage  capacityCounter
+	guards []clientv3.Cmp
+}
+
+func (r *Region) chooseHost(ctx context.Context, wanted PlacementRequest, pools []string) (placementHost, error) {
+	available, err := r.client.Get(ctx, r.hostKey("live", ""), clientv3.WithPrefix())
+	if err != nil {
+		return placementHost{}, err
+	}
+	for _, item := range available.Kvs {
+		var host enrollment.Availability
+		if json.Unmarshal(item.Value, &host) != nil || !identifier.MatchString(host.HostID) || string(item.Key) != r.hostKey("live", host.HostID) || item.Lease == 0 {
+			return placementHost{}, errors.New("invalid available host record")
+		}
+		if host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) {
+			continue
+		}
+		drainKey := r.hostKey("drain", host.HostID)
+		drain, err := r.client.Get(ctx, drainKey, clientv3.WithCountOnly())
+		if err != nil {
+			return placementHost{}, err
+		}
+		if drain.Count != 0 {
+			continue
+		}
+		used, err := r.counter(ctx, r.hostKey("placement-usage", host.HostID))
+		if err != nil {
+			return placementHost{}, err
+		}
+		if fits(host.Capacity, used.used, wanted.Resources) {
+			return placementHost{host: host, usage: used, guards: []clientv3.Cmp{used.compare(),
+				clientv3.Compare(clientv3.ModRevision(string(item.Key)), "=", item.ModRevision), clientv3.Compare(clientv3.Version(drainKey), "=", 0)}}, nil
+		}
+	}
+	return placementHost{}, ErrNoEligibleHost
+}
+
+// ReleasePlacement returns capacity after the caller has stopped the placement.
+func (r *Region) ReleasePlacement(ctx context.Context, scope arm.SubscriptionScope, cell, id, generation string) error {
+	if !validScope(scope) || !identifier.MatchString(cell) || !identifier.MatchString(id) || !identifier.MatchString(generation) {
+		return ErrReservationChanged
+	}
+	base := r.armPrefix(scope)
+	key := base + "placement-requests/" + id
+	cellKey := r.reservationKey(scope, cell, id)
+	for range 12 {
+		current, err := r.client.Get(ctx, key)
+		if err != nil || len(current.Kvs) == 0 {
+			return err
+		}
+		item := current.Kvs[0]
+		var saved Reservation
+		if json.Unmarshal(item.Value, &saved) != nil || saved.Generation != generation || saved.Cell != cell ||
+			!identifier.MatchString(saved.HostID) || !validCapacity(saved.Resources) {
+			return ErrReservationChanged
+		}
+		tenant, err := r.counter(ctx, base+"placement-usage")
+		if err != nil {
+			return err
+		}
+		host, err := r.counter(ctx, r.hostKey("placement-usage", saved.HostID))
+		if err != nil {
+			return err
+		}
+		if !fits(tenant.used, enrollment.Capacity{}, saved.Resources) || !fits(host.used, enrollment.Capacity{}, saved.Resources) {
+			latest, err := r.client.Get(ctx, key)
+			if err != nil {
+				return err
+			}
+			if len(latest.Kvs) == 0 || latest.Kvs[0].ModRevision != item.ModRevision {
+				continue
+			}
+			return errors.New("inconsistent reservation accounting")
+		}
+		delta := enrollment.Capacity{CPUMillis: -saved.Resources.CPUMillis, MemoryMiB: -saved.Resources.MemoryMiB}
+		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision), tenant.compare(), host.compare()).
+			Then(clientv3.OpDelete(key), clientv3.OpDelete(cellKey), clientv3.OpDelete(r.hostReservationKey(scope, saved.HostID, id)),
+				tenant.write(delta), host.write(delta)).Commit()
+		if err != nil || result.Succeeded {
+			return err
+		}
+	}
+	return errors.New("reservation accounting changed concurrently")
+}
+
+// SetHostDraining blocks new placements while existing reservations reconcile.
+func (r *Region) SetHostDraining(ctx context.Context, id string, draining bool) error {
+	if !identifier.MatchString(id) {
+		return enrollment.ErrHostDenied
+	}
+	key := r.hostKey("drain", id)
+	change := clientv3.OpDelete(key)
+	if draining {
+		change = clientv3.OpPut(key, "true")
+	}
+	result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(r.hostKey("registered", id)), ">", 0)).Then(change).Commit()
+	if err == nil && !result.Succeeded {
+		return enrollment.ErrHostDenied
+	}
+	return err
+}

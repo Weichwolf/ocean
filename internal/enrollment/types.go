@@ -14,6 +14,8 @@ import (
 
 var hostName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
+const HostAvailabilityTTL = 15 * time.Second
+
 type Approval struct {
 	HostID           string    `json:"hostId"`
 	MAC              string    `json:"mac"`
@@ -25,6 +27,7 @@ type Approval struct {
 	MinimumCPU       int       `json:"minimumCPU"`
 	MinimumMemoryMiB int       `json:"minimumMemoryMiB"`
 	RequireKVM       bool      `json:"requireKVM"`
+	Reserved         *Capacity `json:"reserved,omitempty"`
 	TokenSHA256      string    `json:"tokenSHA256"`
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
@@ -35,7 +38,8 @@ func (a Approval) Valid() bool {
 	digest, digestErr := hex.DecodeString(a.TokenSHA256)
 	if !hostName.MatchString(a.HostID) || !hostName.MatchString(a.Profile) || !hostName.MatchString(a.Cell) || !hostName.MatchString(a.Pool) ||
 		macErr != nil || len(mac) != 6 || mac.String() != a.MAC || addrErr != nil || !address.Is4() || !address.IsGlobalUnicast() ||
-		digestErr != nil || len(digest) != sha256.Size || a.ExpiresAt.IsZero() || a.MinimumCPU < 1 || a.MinimumMemoryMiB < 1 || len(a.Roles) == 0 {
+		digestErr != nil || len(digest) != sha256.Size || a.ExpiresAt.IsZero() || a.MinimumCPU < 1 || a.MinimumMemoryMiB < 1 || len(a.Roles) == 0 ||
+		(a.Reserved != nil && (a.Reserved.CPUMillis < 0 || a.Reserved.MemoryMiB < 0)) {
 		return false
 	}
 	seen := make(map[string]bool)
@@ -46,6 +50,47 @@ func (a Approval) Valid() bool {
 		seen[role] = true
 	}
 	return true
+}
+
+// Capacity describes the CPU and RAM available for managed workloads.
+type Capacity struct {
+	CPUMillis int64 `json:"cpuMillis"`
+	MemoryMiB int64 `json:"memoryMiB"`
+}
+
+func (a Approval) Available(r Report) (Capacity, bool) {
+	if !a.Qualifies(r) || int64(r.CPU) > (1<<63-1)/1000 {
+		return Capacity{}, false
+	}
+	reserved := Capacity{CPUMillis: 100, MemoryMiB: 128}
+	if a.Reserved != nil {
+		reserved = *a.Reserved
+	}
+	capacity := Capacity{CPUMillis: int64(r.CPU)*1000 - reserved.CPUMillis, MemoryMiB: int64(r.MemoryMiB) - reserved.MemoryMiB}
+	return capacity, capacity.CPUMillis > 0 && capacity.MemoryMiB > 0
+}
+
+type Availability struct {
+	HostID   string   `json:"hostId"`
+	Cell     string   `json:"cell"`
+	Pool     string   `json:"pool"`
+	Roles    []string `json:"roles"`
+	Capacity Capacity `json:"capacity"`
+}
+
+type Assignment struct {
+	ID             string   `json:"id"`
+	Generation     string   `json:"generation"`
+	Cell           string   `json:"cell"`
+	TenantID       string   `json:"tenantId"`
+	SubscriptionID string   `json:"subscriptionId"`
+	Role           string   `json:"role"`
+	Resources      Capacity `json:"resources"`
+}
+
+type AssignmentPage struct {
+	Assignments []Assignment `json:"assignments"`
+	Next        string       `json:"continuation,omitempty"`
 }
 
 type Report struct {

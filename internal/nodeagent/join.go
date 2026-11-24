@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/config"
@@ -57,15 +58,17 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			return config.Server{}, service.Hooks{}, err
 		}
 		hooks.Startup = client.start
-		hooks.Readiness = client.confirm
+		hooks.Readiness = client.ready
+		hooks.Reconcile = client.reportCapacity
 	}
 	return settings.Server, hooks, nil
 }
 
 type joinClient struct {
-	config joinConfig
-	trust  *x509.CertPool
-	client *http.Client
+	config            joinConfig
+	trust             *x509.CertPool
+	client            *http.Client
+	lastAdvertisement atomic.Pointer[time.Time]
 }
 
 func newJoinClient(cfg joinConfig) (*joinClient, error) {
@@ -120,7 +123,10 @@ func (j *joinClient) start(ctx context.Context) error {
 	if err := j.confirm(ctx); err != nil {
 		return err
 	}
-	return publishFile(path, cert)
+	if err := publishFile(path, cert); err != nil {
+		return err
+	}
+	return j.heartbeat(ctx)
 }
 
 func (j *joinClient) httpClient(certificates []tls.Certificate) *http.Client {

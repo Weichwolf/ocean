@@ -103,7 +103,7 @@ func (r *Region) RevokeHost(ctx context.Context, id string) error {
 		host.RevokedAt = &now
 		data, _ := json.Marshal(host)
 		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision)).
-			Then(clientv3.OpPut(key, string(data))).Commit()
+			Then(clientv3.OpPut(key, string(data)), clientv3.OpDelete(r.hostKey("live", id))).Commit()
 		if err != nil || result.Succeeded {
 			return err
 		}

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from region import NODES, eventually, ssh
+from region import eventually, ssh
 
 INSTALL = r'''
 set -eu
@@ -40,7 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
-    parser.add_argument("--node", choices=NODES, required=True)
+    parser.add_argument("--node", required=True)
     args = parser.parse_args()
     state = args.state.resolve()
     ssh(state, args.node, INSTALL, args.package.read_bytes())

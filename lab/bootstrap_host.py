@@ -82,7 +82,7 @@ def bootstrap(state, profile, package, name, check_restarts=False):
     if check_restarts:
         evidence.update(verify_restarts(state, name, registered["mod_revision"]))
     (state / "evidence").mkdir(mode=0o700, exist_ok=True)
-    (state / "evidence/host-first-boot.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    (state / "evidence" / f"host-first-boot-{name}.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(f"{name} enrolled from its NoCloud seed and confirmed its certificate before readiness.")
 
 
