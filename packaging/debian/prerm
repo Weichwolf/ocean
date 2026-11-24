@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+if [ "$1" = remove ] && getent passwd ocean-agent >/dev/null; then
+    uid=$(id -u ocean-agent)
+    if [ -S "/run/user/$uid/bus" ]; then
+        runuser -u ocean-agent -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop ocean-agent.service
+    fi
+    runuser -u ocean-agent -- rm -f -- /var/lib/ocean-agent/.config/systemd/user/default.target.wants/ocean-agent.service
+fi

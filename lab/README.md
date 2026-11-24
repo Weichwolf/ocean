@@ -178,3 +178,11 @@ The subscription and resource-group inventory endpoints use `2024-11-01`. The CL
 Provider implementations publish their public resource projections to the regional store. Inventory reads and the scope grants used to authorize them share an etcd revision. A resource group delete removes its inventory entries and role grants with the terminal operation state. Provider-specific controllers own data-plane cleanup and capacity release.
 
 Run `python3 lab/verify_inventory.py --state "$OCEAN_LAB_STATE"` to exercise the selected CLI inventory commands. The lab publishes tagged test projections through the internal resource store and reads a real role assignment by its ARM ID. It checks paging, nested IDs, unsupported API requests, Reader scope, revocation, and group cleanup. The result is stored in `evidence/arm-inventory.json`. Provider acceptance runs exercise inventory against live workloads and reservations as those providers are enabled.
+
+## Debian node-agent package
+
+Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.
+
+The package creates the `ocean-agent` system account with subordinate UID and GID ranges. It enables the unit in that account's systemd user manager on a running systemd installation. The agent checks Podman rootless mode before serving readiness at `http://127.0.0.1:8081/readyz`. The configuration file is `/etc/ocean-agent/config.json`. [Debian subordinate IDs for system accounts](https://manpages.debian.org/trixie/passwd/useradd.8.en.html)
+
+Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev1_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The result is written to `evidence/agent-package.json`.

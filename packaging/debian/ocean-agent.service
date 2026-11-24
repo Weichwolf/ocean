@@ -1,0 +1,11 @@
+[Unit]
+Description=ocean node agent
+
+[Service]
+ExecStart=/usr/bin/ocean-agent -config /etc/ocean-agent/config.json
+Restart=on-failure
+RestartSec=3s
+Delegate=yes
+
+[Install]
+WantedBy=default.target
