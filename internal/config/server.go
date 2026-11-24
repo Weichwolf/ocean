@@ -19,9 +19,10 @@ type Server struct {
 
 // TLS identifies the PEM files used to serve HTTPS.
 type TLS struct {
-	CertificateFile string `json:"certificateFile"`
-	KeyFile         string `json:"keyFile"`
-	ClientCAFile    string `json:"clientCAFile"`
+	CertificateFile  string `json:"certificateFile"`
+	KeyFile          string `json:"keyFile"`
+	ClientCAFile     string `json:"clientCAFile"`
+	OptionalClientCA bool   `json:"optionalClientCA"`
 }
 
 // LoadServer reads an optional JSON file over the supplied listener defaults.
@@ -71,6 +72,9 @@ func (settings Server) Validate() error {
 	}
 	if settings.TLS != nil && (settings.TLS.CertificateFile == "" || settings.TLS.KeyFile == "") {
 		return errors.New("TLS requires certificateFile and keyFile")
+	}
+	if settings.TLS != nil && settings.TLS.OptionalClientCA && settings.TLS.ClientCAFile == "" {
+		return errors.New("optional TLS client certificates require clientCAFile")
 	}
 	return nil
 }

@@ -1,0 +1,12 @@
+[Unit]
+Description=ocean node agent
+
+[Service]
+ExecStartPre=/usr/bin/systemd-run --user --scope --quiet /usr/bin/podman info --format {{.Host.Security.Rootless}}
+ExecStart=/usr/bin/ocean-agent -config /etc/ocean-agent/config.json
+Restart=on-failure
+RestartSec=3s
+Delegate=yes
+
+[Install]
+WantedBy=default.target

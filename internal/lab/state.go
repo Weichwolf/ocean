@@ -11,8 +11,9 @@ import (
 
 // Machine contains the persistent inventory record for one launched guest.
 type Machine struct {
-	Guest   Guest `json:"guest"`
-	SSHPort int   `json:"sshPort"`
+	Guest          Guest  `json:"guest"`
+	SSHPort        int    `json:"sshPort"`
+	EnrollmentSeed string `json:"enrollmentSeed,omitempty"`
 }
 
 type state struct {

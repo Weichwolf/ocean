@@ -90,6 +90,9 @@ func serve(ctx context.Context, settings config.Server, hooks Hooks, logger *slo
 			}
 			server.TLSConfig.ClientCAs = pool
 			server.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			if settings.TLS.OptionalClientCA {
+				server.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
+			}
 		}
 	}
 	if hooks.Startup != nil {

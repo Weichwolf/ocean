@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+if [ "$1" != configure ]; then
+    exit 0
+fi
+
+agent=ocean-agent
+agent_home=/var/lib/ocean-agent
+if ! getent passwd "$agent" >/dev/null; then
+    useradd --system --user-group --add-subids-for-system --home-dir "$agent_home" --shell /usr/sbin/nologin "$agent"
+fi
+install -d -m 0700 -o "$agent" -g "$agent" "$agent_home"
+runuser -u "$agent" -- mkdir -p "$agent_home/.config/systemd/user/default.target.wants"
+runuser -u "$agent" -- ln -sfn /usr/lib/systemd/user/ocean-agent.service \
+    "$agent_home/.config/systemd/user/default.target.wants/ocean-agent.service"
+
+if [ -x /usr/sbin/policy-rc.d ] && ! /usr/sbin/policy-rc.d ocean-agent start; then
+    exit 0
+fi
+if [ -d /run/systemd/system ] && [ "${OCEAN_AGENT_DEFER_START:-0}" != 1 ]; then
+    loginctl enable-linger "$agent"
+    uid=$(id -u "$agent")
+    systemctl start "user@$uid.service"
+    runuser -u "$agent" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload
+    runuser -u "$agent" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user restart ocean-agent.service
+fi

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -21,8 +22,9 @@ import (
 
 type settings struct {
 	config.Server
-	Region   *regionConfig    `json:"region"`
-	Identity *identity.Config `json:"identity"`
+	Region         *regionConfig      `json:"region"`
+	Identity       *identity.Config   `json:"identity"`
+	HostEnrollment *enrollment.Config `json:"hostEnrollment"`
 }
 
 type regionConfig struct {
@@ -50,7 +52,11 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if err := cfg.Server.Validate(); err != nil {
 		return config.Server{}, service.Hooks{}, err
 	}
+	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
+		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
+	}
 	var hooks service.Hooks
+	var hosts *enrollment.Authority
 	var compatibility *identity.Compatibility
 	if cfg.Identity != nil {
 		if cfg.Identity.Onboarding != nil && cfg.Region == nil {
@@ -69,6 +75,20 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Startup = region.bootstrap
 		hooks.Readiness = region.ready
 		hooks.Close = region.client.Close
+		if cfg.HostEnrollment != nil {
+			authority, inventory, err := enrollment.Open(*cfg.HostEnrollment, region)
+			if err != nil {
+				_ = region.client.Close()
+				return config.Server{}, service.Hooks{}, err
+			}
+			hosts = authority
+			hooks.Startup = func(ctx context.Context) error {
+				if err := region.bootstrap(ctx); err != nil {
+					return err
+				}
+				return region.seedHostInventory(ctx, inventory)
+			}
+		}
 		if cfg.Region.OperationController == nil || *cfg.Region.OperationController {
 			hooks.Reconcile = region.reconcileOperations
 		}
@@ -91,6 +111,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	}
 	if hooks.Handler == nil && compatibility != nil {
 		hooks.Handler = compatibility.Handler()
+	}
+	if hosts != nil {
+		hooks.Handler = hosts.Handler(hooks.Handler)
 	}
 	return cfg.Server, hooks, nil
 }

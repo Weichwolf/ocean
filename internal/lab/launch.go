@@ -20,7 +20,7 @@ import (
 )
 
 // Up starts a plan. Existing guests keep their disks and configuration.
-func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint) error {
+func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint, enrollmentFile string) error {
 	lock, err := lab.lock()
 	if err != nil {
 		return err
@@ -57,12 +57,24 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 	for _, guest := range plan.Guests {
 		wanted[guest.Name] = guest
 	}
+	var enrollment *bootstrapSeed
+	if enrollmentFile != "" {
+		enrollment, err = loadBootstrapSeed(enrollmentFile, wanted)
+		if err != nil {
+			return err
+		}
+	}
 	machines := make(map[string]Machine)
 	for _, machine := range current.Machines {
 		if !reflect.DeepEqual(wanted[machine.Guest.Name], machine.Guest) {
 			return fmt.Errorf("profile changes or removes %s; use a separate state directory", machine.Guest.Name)
 		}
 		machines[machine.Guest.Name] = machine
+	}
+	if enrollment != nil {
+		if machine, exists := machines[enrollment.host]; exists && machine.EnrollmentSeed != enrollment.digest {
+			return fmt.Errorf("host %s already exists with a different provisioning seed", enrollment.host)
+		}
 	}
 	memory, err := hostMemoryMiB()
 	if err != nil {
@@ -120,6 +132,12 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 			return err
 		}
 		machine := Machine{Guest: guest, SSHPort: port}
+		machine.EnrollmentSeed = machines[guest.Name].EnrollmentSeed
+		var seed *bootstrapSeed
+		if enrollment != nil && enrollment.host == guest.Name {
+			seed = enrollment
+			machine.EnrollmentSeed = enrollment.digest
+		}
 		index := slices.IndexFunc(current.Machines, func(record Machine) bool { return record.Guest.Name == guest.Name })
 		if index == -1 {
 			current.Machines = append(current.Machines, machine)
@@ -129,7 +147,7 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 		if err := lab.save(current); err != nil {
 			return err
 		}
-		if err := lab.startGuest(ctx, machine, image); err != nil {
+		if err := lab.startGuest(ctx, machine, image, seed); err != nil {
 			return err
 		}
 	}
@@ -145,7 +163,7 @@ func (lab *Lab) ensureSSHKey(ctx context.Context) error {
 	}
 }
 
-func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string) error {
+func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string, seed *bootstrapSeed) error {
 	guest := machine.Guest
 	directory := lab.node(guest.Name)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -164,8 +182,19 @@ func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string) e
 	} else if err != nil {
 		return err
 	}
-	if err := lab.seed(ctx, guest); err != nil {
-		return fmt.Errorf("prepare %s: %w", guest.Name, err)
+	if machine.EnrollmentSeed == "" {
+		if err := lab.seed(ctx, guest, nil); err != nil {
+			return fmt.Errorf("prepare %s: %w", guest.Name, err)
+		}
+	} else if _, err := os.Stat(filepath.Join(directory, "seed.iso")); errors.Is(err, os.ErrNotExist) {
+		if seed == nil {
+			return fmt.Errorf("resume provisioning %s with its original enrollment manifest", guest.Name)
+		}
+		if err := lab.seed(ctx, guest, seed); err != nil {
+			return fmt.Errorf("prepare enrollment for %s: %w", guest.Name, err)
+		}
+	} else if err != nil {
+		return err
 	}
 
 	socket := filepath.Join(directory, "qmp")
