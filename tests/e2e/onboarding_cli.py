@@ -25,7 +25,7 @@ def send(cli, method, url, data=None, discard=False, resource="arm"):
     return send_token(cli.config, token, method, url, data, discard)
 
 
-def send_token(config, token, method, url, data=None, discard=False):
+def send_token(config, token, method, url, data=None, discard=False, include_headers=False):
     parts = urlsplit(url)
     route = parts.path
     if parts.query:
@@ -40,7 +40,8 @@ def send_token(config, token, method, url, data=None, discard=False):
             payload = json.dumps(data).encode()
         connection.request(method, route, payload, headers)
         with connection.getresponse() as reply:
-            return reply.status, None if discard else json.load(reply)
+            result = (reply.status, None if discard else json.load(reply))
+            return (*result, {key.lower(): value for key, value in reply.getheaders()}) if include_headers else result
     finally:
         connection.close()
 

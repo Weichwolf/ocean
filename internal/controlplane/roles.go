@@ -196,11 +196,14 @@ func (r *Region) PutAssignment(ctx context.Context, scope arm.SubscriptionScope,
 		if err != nil {
 			return arm.RoleAssignment{}, false, err
 		}
+		if group.DeleteOperation != "" {
+			return arm.RoleAssignment{}, false, arm.ErrGroupDeleting
+		}
 		assignment.Group = group.Name
 		data, _ := json.Marshal(assignment)
 		event := arm.AuditEvent{Time: assignment.CreatedAt, Actor: assignment.CreatedBy, Action: "Microsoft.Authorization/roleAssignments/write",
 			Target: assignment.ResourceID(scope), Outcome: "Succeeded"}
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(groupKey), "=", groups[0].CreateRevision),
+		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups[0].ModRevision),
 			clientv3.Compare(clientv3.Version(assignmentKey), "=", 0), clientv3.Compare(clientv3.Version(grantKey), "=", 0)).
 			Then(clientv3.OpPut(assignmentKey, string(data)), clientv3.OpPut(grantKey, assignment.ID), r.auditOp(scope, event)).Commit()
 		if err != nil || result.Succeeded {

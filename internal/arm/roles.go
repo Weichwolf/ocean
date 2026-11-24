@@ -219,6 +219,8 @@ func (s Server) putAssignment(ctx context.Context, w http.ResponseWriter, r *htt
 	switch {
 	case errors.Is(err, ErrGroupMissing):
 		writeError(w, http.StatusNotFound, "ResourceGroupNotFound", "The resource group could not be found.")
+	case errors.Is(err, ErrGroupDeleting):
+		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
 	case errors.Is(err, ErrAssignmentExists):
 		writeError(w, http.StatusConflict, "RoleAssignmentExists", "The principal already has the role at this scope.")
 	case errors.Is(err, ErrAssignmentChanged):

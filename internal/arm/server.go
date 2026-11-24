@@ -22,6 +22,7 @@ type Server struct {
 	Authenticate    func(context.Context, *http.Request) (identity.ARMPrincipal, error)
 	Groups          GroupStore
 	Roles           RoleStore
+	Operations      OperationStore
 	PrincipalExists func(context.Context, string, string, string) (bool, error)
 }
 
@@ -37,6 +38,12 @@ func parseRoute(segments []string) armRoute {
 	}
 	if len(segments) == 4 && strings.EqualFold(segments[2], "providers") {
 		return armRoute{collection: "providers", name: segments[3]}
+	}
+	if len(segments) == 6 && strings.EqualFold(segments[2], "providers") && strings.EqualFold(segments[3], "Microsoft.Resources") {
+		collection := strings.ToLower(segments[4])
+		if collection == "operationstatuses" || collection == "operationresults" {
+			return armRoute{collection: collection, name: segments[5]}
+		}
 	}
 	var group string
 	start := 2
@@ -104,6 +111,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.roleDefinitions(w, r, scope, route.name)
 		case "roleassignments":
 			s.roleAssignments(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "operationstatuses", "operationresults":
+			s.operation(ctx, w, r, scope, route.collection, route.name)
 		case "invalidGroup":
 			writeError(w, http.StatusBadRequest, "InvalidResourceGroup", "The resource group name is invalid.")
 		case "invalidRoleID":
@@ -117,7 +126,7 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 	if read && (route.collection == "groups" || route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}
-	if read {
+	if read && route.collection != "operationstatuses" && route.collection != "operationresults" {
 		var granted bool
 		var err error
 		if route.group != "" {

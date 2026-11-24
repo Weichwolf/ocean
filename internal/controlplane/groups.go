@@ -66,6 +66,9 @@ func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requ
 			if err != nil {
 				return arm.Group{}, false, err
 			}
+			if existing.DeleteOperation != "" {
+				return arm.Group{}, false, arm.ErrGroupDeleting
+			}
 			if existing.Location != group.Location {
 				return arm.Group{}, false, arm.ErrGroupLocation
 			}
@@ -78,8 +81,11 @@ func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requ
 		data, _ := json.Marshal(group)
 		event := arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Microsoft.Resources/subscriptions/resourceGroups/write",
 			Target: group.ResourceID(scope), Outcome: "Succeeded"}
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", revision)).
-			Then(clientv3.OpPut(key, string(data)), r.auditOp(scope, event)).Commit()
+		mutations := []clientv3.Op{clientv3.OpPut(key, string(data)), r.auditOp(scope, event)}
+		if created {
+			mutations = append(mutations, clientv3.OpDelete(r.deletionKey(scope, name)))
+		}
+		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", revision)).Then(mutations...).Commit()
 		if err != nil {
 			return arm.Group{}, false, err
 		}
@@ -88,16 +94,6 @@ func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requ
 		}
 	}
 	return arm.Group{}, false, errors.New("resource group changed concurrently")
-}
-
-func (r *Region) DeleteGroup(ctx context.Context, scope arm.SubscriptionScope, name, actor string) error {
-	groupKey := r.groupPrefix(scope) + strings.ToLower(name)
-	event := arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Microsoft.Resources/subscriptions/resourceGroups/delete",
-		Target: (arm.Group{Name: name}).ResourceID(scope), Outcome: "Succeeded"}
-	_, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(groupKey), ">", 0)).Then(clientv3.OpDelete(groupKey),
-		clientv3.OpDelete(r.assignmentPrefix(scope, name), clientv3.WithPrefix()),
-		clientv3.OpDelete(r.groupGrantPrefix(scope, name), clientv3.WithPrefix()), r.auditOp(scope, event)).Commit()
-	return err
 }
 
 func decodeGroup(value []byte, name string) (arm.Group, error) {

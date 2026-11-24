@@ -26,9 +26,10 @@ type settings struct {
 }
 
 type regionConfig struct {
-	Name        string     `json:"name"`
-	InitialCell string     `json:"initialCell"`
-	Etcd        etcdConfig `json:"etcd"`
+	Name                string     `json:"name"`
+	InitialCell         string     `json:"initialCell"`
+	OperationController *bool      `json:"operationController"`
+	Etcd                etcdConfig `json:"etcd"`
 }
 
 type etcdConfig struct {
@@ -68,6 +69,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Startup = region.bootstrap
 		hooks.Readiness = region.ready
 		hooks.Close = region.client.Close
+		if cfg.Region.OperationController == nil || *cfg.Region.OperationController {
+			hooks.Reconcile = region.reconcileOperations
+		}
 		if compatibility != nil {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
 			if cfg.Identity.Onboarding != nil {
@@ -79,7 +83,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			if cfg.Identity.Cloud != nil {
 				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
-					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region,
+					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region,
 					PrincipalExists: compatibility.RolePrincipalExists}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}

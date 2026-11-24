@@ -20,19 +20,21 @@ type SubscriptionScope struct {
 }
 
 type Group struct {
-	Name     string            `json:"name"`
-	Location string            `json:"location"`
-	Tags     map[string]string `json:"tags"`
+	Name            string            `json:"name"`
+	Location        string            `json:"location"`
+	Tags            map[string]string `json:"tags"`
+	DeleteOperation string            `json:"deleteOperation,omitempty"`
 }
 
 type GroupStore interface {
 	GetGroup(context.Context, SubscriptionScope, string) (*Group, error)
 	ListGroups(context.Context, SubscriptionScope, string, int) ([]Group, error)
 	PutGroup(context.Context, SubscriptionScope, Group, string) (Group, bool, error)
-	DeleteGroup(context.Context, SubscriptionScope, string, string) error
+	DeleteGroup(context.Context, SubscriptionScope, string, string) (*Operation, error)
 }
 
 var ErrGroupLocation = errors.New("resource group location cannot change")
+var ErrGroupDeleting = errors.New("resource group deletion is in progress")
 
 func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, name, actor, reader string) {
 	allowed := func(key, value string) bool {
@@ -79,11 +81,16 @@ func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	case http.MethodPut:
 		s.putGroup(ctx, w, r, scope, name, actor)
 	case http.MethodDelete:
-		if err := s.Groups.DeleteGroup(ctx, scope, name, actor); err != nil {
+		operation, err := s.Groups.DeleteGroup(ctx, scope, name, actor)
+		if err != nil {
 			unavailable(w)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		if operation == nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		s.acceptOperation(w, scope, *operation)
 	default:
 		methodNotAllowed(w, "GET, HEAD, PUT, DELETE")
 	}
@@ -140,6 +147,10 @@ func (s Server) putGroup(ctx context.Context, w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "InvalidResourceGroupLocation", "The resource group location cannot change.")
 		return
 	}
+	if errors.Is(err, ErrGroupDeleting) {
+		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
+		return
+	}
 	if err != nil {
 		unavailable(w)
 		return
@@ -176,9 +187,11 @@ func validTags(tags map[string]string) bool {
 }
 
 type groupView struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Group
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	Name       string            `json:"name"`
+	Location   string            `json:"location"`
+	Tags       map[string]string `json:"tags"`
 	Properties map[string]string `json:"properties"`
 }
 
@@ -187,6 +200,10 @@ func (g Group) ResourceID(scope SubscriptionScope) string {
 }
 
 func (g Group) view(scope SubscriptionScope) groupView {
+	state := "Succeeded"
+	if g.DeleteOperation != "" {
+		state = "Deleting"
+	}
 	return groupView{ID: g.ResourceID(scope), Type: "Microsoft.Resources/resourceGroups",
-		Group: g, Properties: map[string]string{"provisioningState": "Succeeded"}}
+		Name: g.Name, Location: g.Location, Tags: g.Tags, Properties: map[string]string{"provisioningState": state}}
 }

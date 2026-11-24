@@ -7,6 +7,7 @@ import csv
 import json
 import shlex
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -46,9 +47,26 @@ class GroupContract:
         output = self.cli.run(*args)
         return json.loads(output) if output else None
 
-    def request(self, method, route, data=None, query=None, discard=False):
+    def request(self, method, route, data=None, query=None, discard=False, include_headers=False):
         query = f"api-version={self.api}" if query is None else query
-        return send_token(self.cli.config, self.token, method, route + "?" + query, data, discard)
+        return send_token(self.cli.config, self.token, method, route + "?" + query, data, discard, include_headers)
+
+    def delete_group(self, group):
+        status, _, headers = self.request("DELETE", self.collection + "/" + group, discard=True, include_headers=True)
+        if status == 200:
+            return
+        url = headers.get("azure-asyncoperation", "")
+        if status != 202 or not url.startswith(self.origin + "/"):
+            raise RuntimeError("failed to request removal of a disposable resource group")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            status, result = send_token(self.cli.config, self.token, "GET", url)
+            if status == 200 and result["status"] == "Succeeded":
+                return
+            if status != 200 or result["status"] != "InProgress":
+                raise RuntimeError("the disposable resource group deletion failed")
+            time.sleep(1)
+        raise RuntimeError("the disposable resource group deletion exceeded its deadline")
 
 
 def verify_group(group, path, name, tag):
@@ -154,10 +172,8 @@ def verify(config, matrix):
             verify_group(foreign.command("group-show", name), foreign_path, name, "foreign")
         finally:
             for contract, groups in ((primary, [name, concurrent_name, *synthetic]), (foreign, [name])):
-                for group in groups:
-                    status, _ = contract.request("DELETE", contract.collection + "/" + group, discard=True)
-                    if status != 200:
-                        raise RuntimeError("failed to remove a disposable resource group")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                    list(pool.map(contract.delete_group, groups))
         if primary.command("group-list") or foreign.command("group-list"):
             raise RuntimeError("cleanup left resource groups behind")
     return {"azureCLI": primary.version["azure-cli"], "extensions": primary.version["extensions"], "apiVersion": primary.api,

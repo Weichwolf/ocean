@@ -22,6 +22,7 @@ import (
 type Hooks struct {
 	Startup   func(context.Context) error
 	Readiness func(context.Context) error
+	Reconcile func(context.Context, *slog.Logger)
 	Close     func() error
 	Handler   http.Handler
 }
@@ -106,6 +107,18 @@ func serve(ctx context.Context, settings config.Server, hooks Hooks, logger *slo
 	}
 	defer listener.Close()
 	logger.Info("Service listening", "address", listener.Addr().String(), "tls", settings.TLS != nil)
+	if hooks.Reconcile != nil {
+		reconciler, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			hooks.Reconcile(reconciler, logger)
+		}()
+		defer func() {
+			cancel()
+			<-done
+		}()
+	}
 
 	stopped := make(chan error, 1)
 	go func() {
