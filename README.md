@@ -35,6 +35,8 @@ Both services accept `-config` with a JSON file. Settings omitted from the file 
 
 For an HTTPS listener, set `tls.certificateFile` and `tls.keyFile` to PEM file paths. A non-loopback listener requires TLS. The service validates configuration and loads its key pair before it binds the listener.
 
+Set `tls.clientCAFile` on a private listener to require client certificates signed by that CA. A regional control-plane listener also takes a `region` object with `name`, `initialCell`, and `etcd` settings. The etcd object contains the HTTPS `endpoints` and the PEM file paths `caFile`, `certificateFile`, and `keyFile`. Regional readiness checks committed metadata through the etcd quorum.
+
 ## Development lab
 
 See the [rootless KVM lab guide](lab/README.md) for the `ocean-lab` launcher and the topology profiles used in the [end-to-end protocol](tests/e2e/protocol.md).
