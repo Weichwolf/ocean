@@ -179,6 +179,7 @@ type invalidNetwork struct{ message string }
 func (e invalidNetwork) Error() string { return e.message }
 
 var (
+	ErrSubnetInUse              = errors.New("the subnet still contains bound workload placements")
 	errVirtualNetworkMissing    = errors.New("virtual network not found")
 	errInvalidNetworkReference  = errors.New("linked network resources must be in the same subscription and resource group")
 	errTooManyNetworkReferences = errors.New("too many distinct network resources are attached to the virtual network")
@@ -280,6 +281,8 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 		writeError(w, http.StatusNotFound, "VirtualNetworkNotFound", "The virtual network could not be found.")
 	case errors.Is(err, ErrGroupDeleting):
 		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
+	case errors.Is(err, ErrSubnetInUse):
+		writeError(w, http.StatusConflict, "SubnetInUse", err.Error())
 	case errors.Is(err, errInvalidNetworkReference), errors.Is(err, errTooManyNetworkReferences), errors.Is(err, ErrLinkedResourceMissing):
 		writeError(w, http.StatusBadRequest, "InvalidResourceReference", err.Error())
 	case errors.As(err, &invalid):

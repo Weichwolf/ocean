@@ -111,7 +111,12 @@ func (r *Region) prepareDeployment(ctx context.Context, scope arm.SubscriptionSc
 		if err != nil {
 			return nil, nil, err
 		}
+		placementChecks, err := r.networkPlacementGuards(ctx, scope, previous, resource, revision)
+		if err != nil {
+			return nil, nil, err
+		}
 		conditions = append(conditions, checks...)
+		conditions = append(conditions, placementChecks...)
 		mutations = append(mutations, updates...)
 		if previous == nil && isPublicIPAddress(resource.Address) {
 			if poolRevision == 0 {

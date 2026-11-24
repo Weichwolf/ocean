@@ -168,6 +168,8 @@ func deploymentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "PublicIPPoolUnavailable", err.Error())
 	case errors.Is(err, ErrGroupDeleting):
 		writeError(w, http.StatusConflict, "ResourceGroupBeingDeleted", "The resource group is being deleted.")
+	case errors.Is(err, ErrSubnetInUse):
+		writeError(w, http.StatusConflict, "SubnetInUse", err.Error())
 	default:
 		inventoryError(w, err)
 	}

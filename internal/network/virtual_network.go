@@ -53,7 +53,7 @@ type SubnetProperties struct {
 	ProvisioningState                 string             `json:"provisioningState,omitempty"`
 }
 
-func (s SubnetProperties) prefixes() ([]netip.Prefix, error) {
+func (s SubnetProperties) Prefixes() ([]netip.Prefix, error) {
 	if s.AddressPrefix != "" && len(s.AddressPrefixes) > 0 {
 		return nil, errors.New("specify either addressPrefix or addressPrefixes")
 	}
@@ -102,7 +102,7 @@ func (v VNetProperties) Validate() error {
 			return errors.New("subnet names must be valid and unique within a virtual network")
 		}
 		seen[name] = true
-		children, err := subnet.Properties.prefixes()
+		children, err := subnet.Properties.Prefixes()
 		if err != nil {
 			return err
 		}

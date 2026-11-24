@@ -35,6 +35,7 @@ type GroupStore interface {
 
 var ErrGroupLocation = errors.New("resource group location cannot change")
 var ErrGroupDeleting = errors.New("resource group deletion is in progress")
+var ErrGroupInUse = errors.New("the resource group still contains bound workload placements")
 
 func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, name, actor, reader string) {
 	allowed := func(key, value string) bool {
@@ -82,6 +83,10 @@ func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		s.putGroup(ctx, w, r, scope, name, actor)
 	case http.MethodDelete:
 		operation, err := s.Groups.DeleteGroup(ctx, scope, name, actor)
+		if errors.Is(err, ErrGroupInUse) {
+			writeError(w, http.StatusConflict, "ResourceGroupInUse", err.Error())
+			return
+		}
 		if err != nil {
 			unavailable(w)
 			return

@@ -172,6 +172,10 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 		if err != nil {
 			return nil, false, err
 		}
+		placementConditions, err := r.networkPlacementGuards(ctx, scope, saved, resource, result.Header.Revision)
+		if err != nil {
+			return nil, false, err
+		}
 		poolConditions, poolChanges, err := r.publicIPChange(ctx, key, canonical, saved, resource, result.Header.Revision)
 		if err != nil {
 			return nil, false, err
@@ -190,6 +194,7 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 		conditions := append(referenceConditions, clientv3.Compare(clientv3.ModRevision(groupKey), "=", record.ModRevision),
 			clientv3.Compare(clientv3.ModRevision(key), "=", revision))
 		conditions = append(conditions, poolConditions...)
+		conditions = append(conditions, placementConditions...)
 		var onConflict []clientv3.Op
 		if resource == nil {
 			prefix := r.dependentsPrefix(scope, canonical)
