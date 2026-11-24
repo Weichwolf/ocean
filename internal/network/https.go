@@ -1,8 +1,6 @@
 package network
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // HTTPSIngress describes one public HTTPS listener and its private HTTP backend.
@@ -35,14 +32,8 @@ func (ingress HTTPSIngress) validate() error {
 		!ingress.Backend.Addr().IsPrivate() || !IsUsableSubnetAddress(ingress.BackendSubnet, ingress.Backend.Addr()) {
 		return errors.New("HTTPS ingress requires a public IPv4 listener and a usable private subnet backend")
 	}
-	labels := strings.Split(ingress.Hostname, ".")
-	if len(ingress.Hostname) > 253 || len(labels) < 2 {
+	if !validIngressHostname(ingress.Hostname) {
 		return errors.New("HTTPS ingress requires a canonical DNS hostname")
-	}
-	for _, label := range labels {
-		if !hostLabel.MatchString(label) {
-			return errors.New("HTTPS ingress requires a canonical DNS hostname")
-		}
 	}
 	if !certificatePath.MatchString(ingress.CertificateFile) || filepath.Clean(ingress.CertificateFile) != ingress.CertificateFile {
 		return errors.New("the certificate bundle needs a canonical absolute path")
@@ -57,31 +48,38 @@ func (ingress HTTPSIngress) validate() error {
 	if err != nil {
 		return err
 	}
-	const maximumSize = 64 << 10
 	if !info.Mode().IsRegular() || info.Sys().(*syscall.Stat_t).Uid != 0 ||
-		info.Mode().Perm()&0077 != 0 || info.Size() > maximumSize {
+		info.Mode().Perm()&0077 != 0 || info.Size() > maximumIngressBundle {
 		return errors.New("the TLS bundle must be a small root-owned private file")
 	}
-	bundle, err := io.ReadAll(io.LimitReader(file, maximumSize+1))
+	bundle, err := io.ReadAll(io.LimitReader(file, maximumIngressBundle+1))
 	if err != nil {
 		return err
 	}
-	if len(bundle) > maximumSize {
+	if len(bundle) > maximumIngressBundle {
 		return errors.New("the TLS bundle exceeds its size limit")
 	}
-	keypair, err := tls.X509KeyPair(bundle, bundle)
+	leaf, err := ingressCertificateLeaf(bundle)
 	if err != nil {
-		return errors.New("the TLS bundle must contain a matching certificate and private key")
+		return err
 	}
-	leaf, err := x509.ParseCertificate(keypair.Certificate[0])
-	if err != nil {
-		return errors.New("the ingress certificate is invalid")
-	}
-	now := time.Now()
-	if leaf.VerifyHostname(ingress.Hostname) != nil || now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) {
+	if leaf.VerifyHostname(ingress.Hostname) != nil {
 		return errors.New("the ingress certificate must be valid for the configured hostname")
 	}
 	return nil
+}
+
+func validIngressHostname(hostname string) bool {
+	labels := strings.Split(hostname, ".")
+	if len(hostname) > 253 || len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if !hostLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 
 // HAProxy renders the narrow public listener contract for a dedicated ingress

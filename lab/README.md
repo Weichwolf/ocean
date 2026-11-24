@@ -318,6 +318,10 @@ Validate the rendered configuration with `haproxy -c -f <configuration>`. Run HA
 
 Run `TestPrivateHTTPSIngress` from the network test binary in a Debian KVM guest with `OCEAN_E2E_HTTPS_INGRESS=1`, HAProxy, curl, and Python installed. The test verifies certificate identity, the private backend response, replacement of client-supplied forwarding headers, rejection of other hostnames, and blocked direct access from the public client.
 
+Azure CLI 2.93.0 generates a legacy template for `az network application-gateway create`. It sends the deployment to `2024-11-01` and declares the gateway resource at `2022-05-01`. The command matrix records the parameters for one public HTTPS listener and a private HTTP backend on a two-instance Standard_v2 gateway. The template fixture uses disposable certificate fields and feeds the command's actual request shape into the parser test. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) · [Captured request shape](../tests/e2e/testdata/application-gateway-deployment.json)
+
+Install OpenSSL on the control-plane guests for the PKCS#12 import. Run `python3 lab/verify_application_gateway_validation.py --state "$OCEAN_LAB_STATE"` with a free public address in the regional pool. It uses the unmodified CLI's `--validate` workflow to confirm the certificate password, an available public address, and a private backend address in the selected subnet. It checks failure responses and verifies that validation makes no changes to the resource group inventory. The certificate must identify one DNS hostname in its Subject Alternative Name. Results appear in `evidence/application-gateway-validation.json`.
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.

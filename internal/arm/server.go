@@ -17,16 +17,17 @@ import (
 const resourceAPIVersion = "2024-11-01"
 
 type Server struct {
-	Origin          string
-	Location        string
-	Authenticate    func(context.Context, *http.Request) (identity.ARMPrincipal, error)
-	Groups          GroupStore
-	Roles           RoleStore
-	Operations      OperationStore
-	Inventory       InventoryStore
-	Networks        NetworkStore
-	Deployments     NetworkDeploymentStore
-	PrincipalExists func(context.Context, string, string, string) (bool, error)
+	Origin             string
+	Location           string
+	Authenticate       func(context.Context, *http.Request) (identity.ARMPrincipal, error)
+	Groups             GroupStore
+	Roles              RoleStore
+	Operations         OperationStore
+	Inventory          InventoryStore
+	Networks           NetworkStore
+	Deployments        NetworkDeploymentStore
+	GatewayDeployments ApplicationGatewayDeploymentStore
+	PrincipalExists    func(context.Context, string, string, string) (bool, error)
 }
 
 type armRoute struct {

@@ -65,6 +65,22 @@ func TestPrivateHTTPSIngress(t *testing.T) {
 	ca := filepath.Join(dir, "ca.pem")
 	bundle := filepath.Join(dir, "ingress.pem")
 	writeIngressTestCert(t, hostname, ca, bundle)
+	pfx := filepath.Join(dir, "ingress.pfx")
+	run("/usr/bin/openssl", "pkcs12", "-export", "-inkey", bundle, "-in", ca, "-out", pfx, "-passout", "pass:disposable")
+	encoded, err := os.ReadFile(pfx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeHTTPSCertificate(ctx, encoded, "unrecognized"); err == nil {
+		t.Fatal("a certificate with the wrong password was accepted")
+	}
+	certificate, err := DecodeHTTPSCertificate(ctx, encoded, "disposable")
+	if err != nil || certificate.Hostname != hostname || len(certificate.PublicCertificate) == 0 {
+		t.Fatalf("decode the PFX for the gateway: %v", err)
+	}
+	if err := os.WriteFile(bundle, certificate.Bundle, 0600); err != nil {
+		t.Fatal(err)
+	}
 	configuration := HTTPSIngress{PublicIPv4: netip.MustParseAddr("198.51.100.20"), Hostname: hostname, CertificateFile: bundle,
 		Backend: netip.MustParseAddrPort("10.89.1.4:8080"), BackendSubnet: netip.MustParsePrefix("10.89.1.0/24")}
 	rendered, err := configuration.HAProxy()
