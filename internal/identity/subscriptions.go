@@ -55,6 +55,18 @@ type subscriptionReader struct {
 	lookup   func(context.Context, string) (*Subscription, error)
 }
 
+// ARMPrincipal identifies a verified subject and its tenant subscription.
+// Resource authorization is evaluated separately for each requested scope.
+type ARMPrincipal struct {
+	Subject      string
+	Subscription Subscription
+}
+
+var (
+	ErrInvalidARMToken        = errors.New("a valid ARM access token is required")
+	ErrARMIdentityUnavailable = errors.New("the subscription store is unavailable")
+)
+
 // EnableSubscriptions registers ARM discovery against the regional tenant store.
 func (c *Compatibility) EnableSubscriptions(location string, lookup func(context.Context, string) (*Subscription, error)) {
 	if c.cloud.ResourceManager != "" {
@@ -78,32 +90,19 @@ func (c *Compatibility) readSubscription(w http.ResponseWriter, r *http.Request)
 		armError(w, http.StatusBadRequest, "InvalidApiVersionParameter", "Subscription discovery requires api-version="+subscriptionAPIVersion+".")
 		return
 	}
-	raw, issuer, tenant := c.bearerRealm(r)
-	if tenant == "" {
-		invalidARMToken(w)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	entry, err := c.subscriptions.lookup(ctx, tenant)
-	if err != nil || (entry != nil && !entry.Valid(tenant)) {
+	principal, err := c.AuthenticateARM(ctx, r)
+	if errors.Is(err, ErrARMIdentityUnavailable) {
 		armError(w, http.StatusServiceUnavailable, "ServiceUnavailable", "The subscription store is unavailable.")
 		return
 	}
-	if entry == nil {
+	if err != nil {
 		invalidARMToken(w)
 		return
 	}
-	token, err := c.verifyAccessToken(ctx, raw, issuer, c.cloud.ResourceManager)
-	var claims struct {
-		Type string `json:"typ"`
-	}
-	if err != nil || token.Claims(&claims) != nil || claims.Type != "Bearer" {
-		invalidARMToken(w)
-		return
-	}
-
-	canRead := slices.Contains(entry.Members, token.Subject)
+	entry := principal.Subscription
+	canRead := slices.Contains(entry.Members, principal.Subject)
 	if subscriptionID == "" {
 		items := []map[string]any{}
 		if canRead {
@@ -126,6 +125,33 @@ func (c *Compatibility) readSubscription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, entry.armView())
+}
+
+// AuthenticateARM resolves the registered tenant and verifies its signed access
+// token. An authenticated subject may still have no rights on the subscription.
+func (c *Compatibility) AuthenticateARM(ctx context.Context, r *http.Request) (ARMPrincipal, error) {
+	if c.subscriptions == nil || !strings.EqualFold(r.Host, strings.TrimPrefix(c.cloud.ResourceManager, "https://")) {
+		return ARMPrincipal{}, ErrInvalidARMToken
+	}
+	raw, issuer, tenant := c.bearerRealm(r)
+	if tenant == "" {
+		return ARMPrincipal{}, ErrInvalidARMToken
+	}
+	entry, err := c.subscriptions.lookup(ctx, tenant)
+	if err != nil || (entry != nil && !entry.Valid(tenant)) {
+		return ARMPrincipal{}, ErrARMIdentityUnavailable
+	}
+	if entry == nil {
+		return ARMPrincipal{}, ErrInvalidARMToken
+	}
+	token, err := c.verifyAccessToken(ctx, raw, issuer, c.cloud.ResourceManager)
+	var claims struct {
+		Type string `json:"typ"`
+	}
+	if err != nil || token.Claims(&claims) != nil || claims.Type != "Bearer" || !tenantID.MatchString(token.Subject) {
+		return ARMPrincipal{}, ErrInvalidARMToken
+	}
+	return ARMPrincipal{Subject: token.Subject, Subscription: *entry}, nil
 }
 
 // bearerRealm uses the unverified issuer only to locate a tenant record. Every
