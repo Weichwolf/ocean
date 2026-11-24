@@ -97,8 +97,9 @@ class AzureCLI:
 
     def login_service_principal(self, client, secret, reject=False):
         extra = [] if self.config.get("subscription") else ["--allow-no-subscriptions", "--skip-subscription-discovery"]
+        # Azure CLI requires the joined form when a generated secret starts with '-'.
         self.run("login", "--tenant", self.config["tenant"], "--service-principal", "--username", client,
-                 "--password", secret, *extra, "-o", "none", reject=reject)
+                 f"--password={secret}", *extra, "-o", "none", reject=reject)
         if reject:
             endpoint = self.config["authority"] + "/" + self.config["tenant"] + "/oauth2/v2.0/token"
             fields = parse.urlencode({"grant_type": "client_credentials", "client_id": client,
