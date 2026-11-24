@@ -107,6 +107,15 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /v1.0/users/{user}", c.graphUser)
 		mux.HandleFunc("PATCH /v1.0/users/{user}", c.graphUser)
 		mux.HandleFunc("DELETE /v1.0/users/{user}", c.graphUser)
+		mux.HandleFunc("GET /v1.0/applications", c.graphApplication)
+		mux.HandleFunc("POST /v1.0/applications", c.graphApplication)
+		mux.HandleFunc("GET /v1.0/applications/{application}", c.graphApplication)
+		mux.HandleFunc("PATCH /v1.0/applications/{application}", c.graphApplication)
+		mux.HandleFunc("POST /v1.0/applications/{application}/addPassword", c.graphAppCredential)
+		mux.HandleFunc("POST /v1.0/applications/{application}/removePassword", c.graphAppCredential)
+		mux.HandleFunc("GET /v1.0/servicePrincipals", c.graphPrincipal)
+		mux.HandleFunc("POST /v1.0/servicePrincipals", c.graphPrincipal)
+		mux.HandleFunc("GET /v1.0/servicePrincipals/{principal}", c.graphPrincipal)
 	}
 	return mux
 }
@@ -239,7 +248,14 @@ func jsonString(raw json.RawMessage) string {
 }
 
 func oauthError(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, map[string]string{"error": code})
+	response := map[string]string{"error": code}
+	switch code {
+	case "invalid_client":
+		response["error_description"] = "The application credentials are invalid."
+	case "unauthorized_client":
+		response["error_description"] = "The application is not authorized for this grant."
+	}
+	writeJSON(w, status, response)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

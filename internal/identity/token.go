@@ -86,13 +86,17 @@ func (c *Compatibility) servicePrincipalToken(w http.ResponseWriter, r *http.Req
 		oauthError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	client := form.Get("client_id")
+	secret := form.Get("client_secret")
 	if authorization != "" {
-		client, secret, ok := r.BasicAuth()
-		if !ok || client != form.Get("client_id") || secret == "" || form.Has("client_secret") {
+		var basicClient string
+		var ok bool
+		basicClient, secret, ok = r.BasicAuth()
+		if !ok || basicClient != client || secret == "" || form.Has("client_secret") {
 			oauthError(w, http.StatusBadRequest, "invalid_client")
 			return
 		}
-	} else if form.Get("client_secret") == "" {
+	} else if secret == "" {
 		oauthError(w, http.StatusBadRequest, "invalid_client")
 		return
 	}
@@ -103,11 +107,28 @@ func (c *Compatibility) servicePrincipalToken(w http.ResponseWriter, r *http.Req
 	}
 	// Azure CLI may send client_info for its token cache. Keycloak has no use for it.
 	form.Del("client_info")
+	var principal string
+	if c.onboarding != nil {
+		private, subject, err := c.onboarding.authenticateClient(r.Context(), r.PathValue("tenant"), client, secret)
+		switch {
+		case errors.Is(err, errClientCredential):
+			oauthError(w, http.StatusUnauthorized, "invalid_client")
+			return
+		case err != nil:
+			oauthError(w, http.StatusServiceUnavailable, "temporarily_unavailable")
+			return
+		case private != "":
+			authorization = ""
+			form.Set("client_secret", private)
+			principal = subject
+		}
+	}
 	data, status, err := c.providerJSON(r.Context(), http.MethodPost, endpoint, strings.NewReader(form.Encode()), authorization)
 	if !acceptGrant(w, status, data, err) {
 		return
 	}
-	if _, ok := c.providerAccessToken(r.Context(), data, issuer, audience, form.Get("client_id")); !ok {
+	if identity, ok := c.providerAccessToken(r.Context(), data, issuer, audience, client); !ok ||
+		(principal != "" && identity.Subject != principal) {
 		oauthError(w, http.StatusBadGateway, "temporarily_unavailable")
 		return
 	}

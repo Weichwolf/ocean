@@ -138,3 +138,11 @@ The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph access
 Keycloak stores the directory account and password and enforces login. Ocean declares the Graph display name and alias as managed Keycloak attributes writable by the admin API. Realm-scoped device login uses the bounded offline session policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users` to exercise the user lifecycle with two freshly onboarded tenants. The check verifies that updates preserve the mail alias, regular users are denied directory administration, and deleted users cannot start a new login. Evidence is written to `evidence/graph-users.json`.
+
+## Tenant applications and service principals
+
+Use `az ad app create --display-name <name>` to register a single-tenant application, then `az ad sp create --id <app-id>` to provision its service principal. The application object ID, app ID, and service principal object ID are distinct. The app ID identifies the client during `az login --service-principal`. Access to a subscription requires a separate authorization grant.
+
+Use `az ad app credential reset --id <app-id> --append` to add a password credential. Each password has its own identifier and validity interval. The add operation returns the secret once. Directory reads expose credential metadata. The regional store keeps a keyed verifier for each secret and uses conditional updates for concurrent credential changes. To remove a password, use `az ad app credential delete --id <app-id> --key-id <key-id>`. Removed and expired passwords are denied at the next authentication. The supported validity limit is two years, with at most 64 password credentials per app. [Graph addPassword](https://learn.microsoft.com/en-us/graph/api/application-addpassword?view=graph-rest-1.0)
+
+Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users --directory-apps` to exercise these commands. The run verifies separate ARM and Graph tokens from fresh CLI caches, rejects cross-tenant reads, signs in with both secrets after append, and checks that the remaining secret works after revocation. Inspect `evidence/graph-applications.json` for the object IDs and assertions.

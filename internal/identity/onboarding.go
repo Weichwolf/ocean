@@ -50,16 +50,18 @@ func (r TenantReservation) Valid(tenant string) bool {
 
 // TenantStore provides the regional transactions used by onboarding.
 type TenantStore interface {
+	ApplicationStore
 	ReserveTenant(context.Context, TenantReservation) (TenantReservation, error)
 	LookupTenant(context.Context, string) (*TenantReservation, error)
 	PublishSubscription(context.Context, TenantReservation, Subscription) (bool, error)
 }
 
 type onboarding struct {
-	config OnboardingConfig
-	admin  keycloakAdmin
-	key    []byte
-	store  TenantStore
+	config         OnboardingConfig
+	admin          keycloakAdmin
+	key            []byte
+	store          TenantStore
+	legacyExchange func(string) (string, error)
 }
 
 type onboardingRequest struct {
@@ -98,6 +100,7 @@ func (c *Compatibility) EnableOnboarding(cfg OnboardingConfig, store TenantStore
 		admin: keycloakAdmin{client: &adminClient, endpoints: cfg.AdminEndpoints, clientID: cfg.AdminClient, secret: secret},
 	}
 	fixtureSecret := c.exchangeSecret
+	o.legacyExchange = fixtureSecret
 	c.exchangeSecret = func(tenant string) (string, error) {
 		if fixtureSecret != nil {
 			secret, err := fixtureSecret(tenant)

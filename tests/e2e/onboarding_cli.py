@@ -97,7 +97,53 @@ def graph_users(customer):
         AzureCLI(config, directory).login_device(reject=True)
 
 
-def verify(config, directory_users=False):
+def graph_application(customer):
+    name = "Ocean Automation " + uuid.uuid4().hex[:12]
+    app = json.loads(customer.run("ad", "app", "create", "--display-name", name, "-o", "json"))
+    client, app_id = app["appId"], app["id"]
+    if client == app_id or app["displayName"] != name:
+        raise RuntimeError("the Graph application identity is invalid")
+    principal = json.loads(customer.run("ad", "sp", "create", "--id", client, "-o", "json"))
+    if principal["appId"] != client or principal["id"] in (app_id, client):
+        raise RuntimeError("the service principal does not refer to the application")
+    shown = json.loads(customer.run("ad", "sp", "show", "--id", client, "-o", "json"))
+    if shown["id"] != principal["id"]:
+        raise RuntimeError("the service principal lookup returned another object")
+
+    def append(label):
+        data = json.loads(customer.run("ad", "app", "credential", "reset", "--id", client,
+                                       "--append", "--display-name", label, "-o", "json"))
+        if data["appId"] != client or data["tenant"] != customer.config["tenant"]:
+            raise RuntimeError("the credential was minted for another application")
+        return data["password"]
+
+    def sign_in(password, reject=False):
+        config = dict(customer.config, subscription=None)
+        with tempfile.TemporaryDirectory(prefix="ocean-graph-principal-") as directory:
+            cli = AzureCLI(config, directory)
+            cli.login_service_principal(client, password, reject=reject)
+            if not reject and cli.resource_subject() != principal["id"]:
+                raise RuntimeError("the credential did not identify the service principal")
+
+    first = append("Original secret")
+    sign_in(first)
+    second = append("Appended secret")
+    if first == second:
+        raise RuntimeError("appending a credential returned the old secret")
+    sign_in(second)
+    sign_in(first)
+    data = json.loads(customer.run("ad", "app", "show", "--id", client, "-o", "json"))
+    credentials = data["passwordCredentials"]
+    labels = {row["displayName"]: row["keyId"] for row in credentials}
+    if labels.keys() != {"Original secret", "Appended secret"} or any("secretText" in row for row in credentials):
+        raise RuntimeError("the application did not retain both credential records")
+    customer.run("ad", "app", "credential", "delete", "--id", client, "--key-id", labels["Original secret"], "-o", "none")
+    sign_in(first, reject=True)
+    sign_in(second)
+    return {"applicationId": app_id, "clientId": client, "principalId": principal["id"]}
+
+
+def verify(config, directory_users=False, directory_apps=False):
     first, first_input = fixture()
     second, second_input = fixture()
     with tempfile.TemporaryDirectory(prefix="ocean-operator-") as directory:
@@ -125,6 +171,7 @@ def verify(config, directory_users=False):
     if any(first_result[key] == second_result[key] for key in ("subscriptionId", "administratorId")):
         raise RuntimeError("tenant registrations share an allocation")
 
+    applications = []
     for own, body, other in ((first_result, first_input, second_result), (second_result, second_input, first_result)):
         tenant_config = dict(config, tenant=own["tenantId"], subscription=own["subscriptionId"], location="farm-1",
                              user=body["administratorUserPrincipalName"], password=body["administratorPassword"])
@@ -156,10 +203,19 @@ def verify(config, directory_users=False):
                 if status != 401 or reply["error"]["code"] != "InvalidAuthenticationToken":
                     raise RuntimeError("Graph accepted a token issued for ARM")
                 graph_users(customer)
+            if directory_apps:
+                if applications:
+                    url = f"{config['graph']}/v1.0/applications/{applications[0]['applicationId']}"
+                    status, reply = send(customer, "GET", url, resource="graph")
+                    if status != 404 or reply["error"]["code"] != "Request_ResourceNotFound":
+                        raise RuntimeError("Graph disclosed an application from another tenant")
+                applications.append(graph_application(customer))
     result = {"tenants": [first_result, second_result], "discardedResponseRecovered": True,
               "tenantRegistrationsDenied": True, "crossTenantSubscriptionsHidden": True}
     if directory_users:
         result["graphUserLifecycle"] = True
+    if directory_apps:
+        result.update({"applications": applications, "appendedCredentialsPreserved": True, "revokedCredentialsDenied": True})
     return result
 
 
@@ -167,8 +223,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
     parser.add_argument("--directory-users", action="store_true")
+    parser.add_argument("--directory-apps", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(verify(json.loads(args.settings.read_text()), args.directory_users), sort_keys=True))
+    print(json.dumps(verify(json.loads(args.settings.read_text()), args.directory_users, args.directory_apps), sort_keys=True))
 
 
 if __name__ == "__main__":
