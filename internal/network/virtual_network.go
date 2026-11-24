@@ -12,6 +12,7 @@ import (
 const (
 	VNetAPIVersion   = "2025-07-01"
 	SubnetAPIVersion = "2024-07-01"
+	SubnetType       = "Microsoft.Network/virtualNetworks/subnets"
 )
 
 var resourceName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9_])?$`)
@@ -120,7 +121,7 @@ func NewSubnet(parentID, name string, properties SubnetProperties) Subnet {
 		value := false
 		properties.DefaultOutboundAccess = &value
 	}
-	return Subnet{ID: parentID + "/subnets/" + name, Name: name, Type: "Microsoft.Network/virtualNetworks/subnets", Properties: properties}
+	return Subnet{ID: parentID + "/subnets/" + name, Name: name, Type: SubnetType, Properties: properties}
 }
 
 func (v VNetProperties) SubnetIndex(name string) int {

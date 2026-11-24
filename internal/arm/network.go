@@ -168,7 +168,9 @@ type vnetInput struct {
 }
 
 type subnetInput struct {
+	ID         string                   `json:"id"`
 	Name       string                   `json:"name"`
+	Type       string                   `json:"type"`
 	Properties network.SubnetProperties `json:"properties"`
 }
 
@@ -198,6 +200,9 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 			writeError(w, http.StatusBadRequest, "InvalidRequestContent", "The requested network location, name, tags, or protection policy is unsupported.")
 			return
 		}
+		if path.Child {
+			child.Name = path.Subnet
+		}
 	}
 	deleting := r.Method == http.MethodDelete
 	var createdChild bool
@@ -225,7 +230,7 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 						properties.Subnets = slices.Delete(properties.Subnets, index, index+1)
 					}
 				} else {
-					if err := upsertSubnet(&properties, canonical.ID(scope), path.Subnet, child.Properties); err != nil {
+					if err := upsertSubnet(&properties, canonical.ID(scope), child); err != nil {
 						return nil, err
 					}
 				}
@@ -239,7 +244,7 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 						return nil, invalidNetwork{"subnet names must be valid and unique within a virtual network"}
 					}
 					seen[name] = true
-					if err := upsertSubnet(&properties, canonical.ID(scope), subnet.Name, subnet.Properties); err != nil {
+					if err := upsertSubnet(&properties, canonical.ID(scope), subnet); err != nil {
 						return nil, err
 					}
 				}
@@ -301,14 +306,23 @@ func storedNetwork(resource *InventoryResource) (network.VNetProperties, error) 
 	return properties, nil
 }
 
-func upsertSubnet(properties *network.VNetProperties, parentID, name string, requested network.SubnetProperties) error {
-	if requested.ProvisioningState != "" {
-		return invalidNetwork{"provisioningState is set by the network provider"}
+func upsertSubnet(properties *network.VNetProperties, parentID string, requested subnetInput) error {
+	index := properties.SubnetIndex(requested.Name)
+	if requested.ID != "" || requested.Type != "" || requested.Properties.ProvisioningState != "" {
+		if index < 0 {
+			return invalidNetwork{"a new subnet cannot specify existing resource fields"}
+		}
+		existing := properties.Subnets[index]
+		if requested.ID != "" && !strings.EqualFold(requested.ID, existing.ID) ||
+			requested.Type != "" && !strings.EqualFold(requested.Type, existing.Type) ||
+			requested.Properties.ProvisioningState != "" && requested.Properties.ProvisioningState != existing.Properties.ProvisioningState {
+			return invalidNetwork{"subnet resource fields must match the existing resource"}
+		}
 	}
-	if index := properties.SubnetIndex(name); index >= 0 {
-		properties.Subnets[index] = network.NewSubnet(parentID, properties.Subnets[index].Name, requested)
+	if index >= 0 {
+		properties.Subnets[index] = network.NewSubnet(parentID, properties.Subnets[index].Name, requested.Properties)
 	} else {
-		properties.Subnets = append(properties.Subnets, network.NewSubnet(parentID, name, requested))
+		properties.Subnets = append(properties.Subnets, network.NewSubnet(parentID, requested.Name, requested.Properties))
 	}
 	return nil
 }

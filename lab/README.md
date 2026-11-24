@@ -181,7 +181,7 @@ Run `python3 lab/verify_inventory.py --state "$OCEAN_LAB_STATE"` to exercise the
 
 ## ARM virtual networks and subnets
 
-Azure CLI 2.93.0 uses `2025-07-01` for `az network vnet` and `2024-07-01` for `az network vnet subnet`. The selected commands create, show, list, and delete networks and subnets. A subnet can be declared with its virtual network or added by a separate request. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) · [Virtual network REST API](https://learn.microsoft.com/en-us/rest/api/virtualnetwork/virtual-networks/create-or-update) · [Subnet resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2024-07-01/virtualnetworks/subnets)
+Azure CLI 2.93.0 uses `2025-07-01` for `az network vnet` and `2024-07-01` for `az network vnet subnet`. The selected commands create, show, list, and delete networks and subnets. A subnet can be declared with its virtual network or added by a separate request. The supported subnet update changes its address prefixes. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) · [Virtual network REST API](https://learn.microsoft.com/en-us/rest/api/virtualnetwork/virtual-networks/create-or-update) · [Subnet resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2024-07-01/virtualnetworks/subnets)
 
 Address spaces use canonical private IPv4 prefixes. A subnet prefix must fit inside the network's address space and contain at least eight addresses. Subnet address ranges within the same virtual network are disjoint. A network and its subnets share one revision so concurrent writes check those constraints against a consistent configuration. The same address range can be used in independent tenant networks.
 

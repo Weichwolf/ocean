@@ -19,6 +19,11 @@ def properties(row):
     return row.get("properties", row)
 
 
+def subnet_prefixes(row):
+    subnet = properties(row)
+    return subnet.get("addressPrefixes") or [subnet.get("addressPrefix")]
+
+
 def verify(config, matrix_path):
     first, second = create_customers(config)
     groups = load_matrix(matrix_path)
@@ -71,18 +76,26 @@ def verify(config, matrix_path):
         standalone = command(primary, "subnet-create", subnet="standalone", subnet_prefix="10.72.2.0/24")
         if standalone["id"] != primary_id + "/subnets/standalone" or command(primary, "subnet-show", subnet="STANDALONE")["id"] != standalone["id"]:
             raise RuntimeError("the standalone subnet did not round-trip with its ARM ID")
+        updated = command(primary, "subnet-update", subnet="STANDALONE", subnet_prefix="10.72.3.0/24")
+        if updated["id"] != standalone["id"] or subnet_prefixes(updated) != ["10.72.3.0/24"]:
+            raise RuntimeError("subnet update did not retain the ARM ID or apply the requested address range")
         if {row["name"] for row in command(primary, "subnet-list")} != {"inline", "standalone"}:
             raise RuntimeError("the subnet list omitted an inline or standalone subnet")
 
         command(primary, "vnet-create")
-        if command(primary, "subnet-show", subnet="standalone")["id"] != standalone["id"]:
+        persisted = command(primary, "subnet-show", subnet="standalone")
+        if persisted["id"] != standalone["id"] or subnet_prefixes(persisted) != ["10.72.3.0/24"]:
             raise RuntimeError("a repeated parent create discarded an independent subnet")
         require_error(primary.request("GET", vnet_url, query="api-version=2000-01-01"), 400, "InvalidApiVersionParameter")
         invalid = [({"properties": {"addressPrefix": "10.73.4.0/24"}}, "InvalidAddressPrefix"),
-                   ({"properties": {"addressPrefix": "10.72.2.0/25"}}, "InvalidAddressPrefix"),
+                   ({"properties": {"addressPrefix": "10.72.3.0/25"}}, "InvalidAddressPrefix"),
                    ({"properties": {"addressPrefix": "10.72.4.0/24", "natGateway": {"id": "invalid"}}}, "InvalidRequestContent")]
         for payload, code in invalid:
             require_error(primary.request("PUT", vnet_url + "/subnets/invalid", payload, subnet_version), 400, code)
+        spoofed = {"id": foreign_id + "/subnets/standalone", "properties": {"addressPrefix": "10.72.4.0/24"}}
+        require_error(primary.request("PUT", vnet_url + "/subnets/standalone", spoofed, subnet_version), 400, "InvalidAddressPrefix")
+        if command(primary, "subnet-show", subnet="standalone") != persisted:
+            raise RuntimeError("the rejected update changed the existing subnet")
 
         def contender(label):
             return primary.request("PUT", vnet_url + "/subnets/" + label, {"properties": {"addressPrefix": "10.72.8.0/24"}}, subnet_version)
@@ -111,7 +124,8 @@ def verify(config, matrix_path):
         return {"azureCLI": primary.version["azure-cli"], "extensions": primary.version["extensions"], "commands": sorted(networks),
                 "virtualNetworkAPIVersion": networks["vnet-create"]["api_version"], "subnetAPIVersion": networks["subnet-create"]["api_version"],
                 "distinctTenantNetworks": True, "overlapRejectedAtomically": True, "parentRetryPreservedSubnets": True,
-                "invalidRequestsPreservedState": True, "inventoryAndGroupCleanupVerified": True, "deletionVerified": True}
+                "subnetUpdateVerified": True, "invalidRequestsPreservedState": True,
+                "inventoryAndGroupCleanupVerified": True, "deletionVerified": True}
 
 
 def main():
