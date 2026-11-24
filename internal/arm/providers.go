@@ -33,7 +33,10 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 	switch strings.ToLower(namespace) {
 	case "microsoft.resources":
 		namespace = "Microsoft.Resources"
-		types = []providerResourceType{{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}}}
+		types = []providerResourceType{
+			{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}},
+			{ResourceType: "deployments", Locations: []string{s.Location}, APIVersions: []string{deploymentAPIVersion}},
+		}
 	case "microsoft.network":
 		namespace = "Microsoft.Network"
 		types = []providerResourceType{

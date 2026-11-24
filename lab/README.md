@@ -208,6 +208,14 @@ python3 lab/verify_egress.py --state "$OCEAN_LAB_STATE" --pool 198.51.100.20 198
 
 Use a dedicated lab with an empty two-address pool for this verifier. The optional packet stage needs nftables and Keepalived alongside the node agent, curl, Python, and the pinned BusyBox fixture. It runs two gateway namespaces on one disposable KVM guest, with separate tenant and external links. The external HTTP observer reports the source address of a fresh TCP connection before and after the active gateway loses its uplink. The test gives the standby eight seconds to recover and records the measured time. The verifier writes `evidence/public-ip-nat-arm.json` and `evidence/fixed-egress-packet.log`. Gateway fencing, automatic workload attachment, and the Functions egress case need their deployment-level runs.
 
+## Resource group network deployments
+
+Azure CLI 2.93.0 uses `2025-04-01` for `az deployment group what-if`, `create`, and `show`. The supported template is inline and incremental, with at most eight resources. It accepts virtual networks, child subnets, regional Standard static IPv4 addresses, and Standard NAT gateways at the provider versions listed in the command matrix. Supported expressions are `parameters`, positional `format`, same-group `resourceId`, and `resourceGroup().location`. Parameters and outputs use strings. The API rejects linked templates, unsupported types and expressions, and dependency cycles. [What-if API](https://learn.microsoft.com/en-us/rest/api/resources/deployments/what-if?view=rest-resources-2025-04-01) · [Deployments API](https://learn.microsoft.com/en-us/rest/api/resources/deployments/create-or-update?view=rest-resources-2025-04-01)
+
+Preview and validation read a single regional revision without writing resource or operation records. The resource graph, public IPv4 reservation, deployment record, and audit commit together. An incremental deployment preserves unmanaged resources. A repeated deployment preserves the assigned public address and reconciles supported changes.
+
+Install Bicep CLI 0.49.2 and Debian's `libicu76` in the operator guest. Run `python3 lab/verify_deployment.py --state "$OCEAN_LAB_STATE"` with the empty two-address lab pool configured above. Pass `--bicep` if the compiler is installed outside `/home/ocean/.local/bin`. The verifier runs what-if on a populated group, checks for resource mutations, rejects an invalid deployment, deploys the template, verifies rollback when the pool is exhausted, and reconciles a changed subnet. Find the results in `evidence/network-deployment-arm.json`. [Network fixture](../tests/e2e/testdata/bicep/network.bicep) · [Bicep release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.

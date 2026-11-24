@@ -112,27 +112,35 @@ func (r *Region) publicIPChange(ctx context.Context, owner string, address arm.R
 		}
 		delete(pool.Allocations, owner)
 	} else {
-		if _, exists := pool.Allocations[owner]; exists {
-			return nil, nil, errors.New("public IPv4 reservation already exists without a resource")
-		}
-		if err := json.Unmarshal(next.Properties, &properties); err != nil {
+		if err := assignPublicIPv4(pool, owner, next); err != nil {
 			return nil, nil, err
 		}
-		used := make(map[netip.Addr]bool, len(pool.Allocations))
-		for _, address := range pool.Allocations {
-			used[address] = true
-		}
-		index := slices.IndexFunc(pool.Addresses, func(address netip.Addr) bool { return !used[address] })
-		if index < 0 {
-			return nil, nil, arm.ErrPublicIPPoolExhausted
-		}
-		assigned := pool.Addresses[index]
-		pool.Allocations[owner] = assigned
-		properties.Address = assigned.String()
-		next.Properties, _ = json.Marshal(properties)
 	}
 	comparison, mutation := r.publicIPPoolUpdate(pool, poolRevision)
 	return []clientv3.Cmp{comparison}, []clientv3.Op{mutation}, nil
+}
+
+func assignPublicIPv4(pool publicIPPool, owner string, resource *arm.InventoryResource) error {
+	if _, exists := pool.Allocations[owner]; exists {
+		return errors.New("public IPv4 reservation already exists without a resource")
+	}
+	var properties network.PublicIPAddressProperties
+	if err := json.Unmarshal(resource.Properties, &properties); err != nil {
+		return err
+	}
+	used := make(map[netip.Addr]bool, len(pool.Allocations))
+	for _, address := range pool.Allocations {
+		used[address] = true
+	}
+	index := slices.IndexFunc(pool.Addresses, func(address netip.Addr) bool { return !used[address] })
+	if index < 0 {
+		return arm.ErrPublicIPPoolExhausted
+	}
+	assigned := pool.Addresses[index]
+	pool.Allocations[owner] = assigned
+	properties.Address = assigned.String()
+	resource.Properties, _ = json.Marshal(properties)
+	return nil
 }
 
 func (r *Region) releaseGroupPublicIPs(ctx context.Context, scope arm.SubscriptionScope, group string) ([]clientv3.Cmp, []clientv3.Op, error) {

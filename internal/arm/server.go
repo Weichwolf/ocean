@@ -25,6 +25,7 @@ type Server struct {
 	Operations      OperationStore
 	Inventory       InventoryStore
 	Networks        NetworkStore
+	Deployments     NetworkDeploymentStore
 	PrincipalExists func(context.Context, string, string, string) (bool, error)
 }
 
@@ -74,6 +75,14 @@ func parseRoute(segments []string) armRoute {
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
 			if route, ok := networkRoute(group, segments[5:]); ok {
 				return route
+			}
+			if (len(segments) == 8 || len(segments) == 9) &&
+				strings.EqualFold(segments[5]+"/"+segments[6], deploymentType) {
+				name := segments[7]
+				if len(segments) == 9 {
+					name += "/" + strings.ToLower(segments[8])
+				}
+				return armRoute{collection: "deployment", group: group, name: name}
 			}
 		}
 		start = 4
@@ -161,6 +170,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.securityGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "egress":
 			s.egressResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "deployment":
+			s.deployment(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "resource":
 			s.showResource(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
 		case "invalidGroup":
@@ -174,7 +185,7 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
 	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress"
-	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || networkResource ||
+	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}
@@ -192,6 +203,17 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 		}
 		if granted {
 			return true
+		}
+	}
+	if route.collection == "deployment" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
+		action := deploymentType + "/write"
+		if _, op, ok := strings.Cut(route.name, "/"); ok {
+			action = deploymentType + "/" + op + "/action"
+		}
+		if err := s.Roles.RecordAudit(ctx, scope, AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action,
+			Target: r.URL.Path, Outcome: "Denied"}); err != nil {
+			unavailable(w)
+			return false
 		}
 	}
 	if (r.Method == http.MethodPut || r.Method == http.MethodDelete) &&

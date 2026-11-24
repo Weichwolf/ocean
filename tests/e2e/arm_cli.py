@@ -92,7 +92,8 @@ def create_customers(config):
     return customers
 
 
-def verify(config, matrix):
+def verify(config, matrix_path):
+    matrix = load_matrix(matrix_path)
     customers = create_customers(config)
     with tempfile.TemporaryDirectory(prefix="ocean-arm-first-") as first_dir, tempfile.TemporaryDirectory(prefix="ocean-arm-second-") as second_dir:
         first, second = [AzureCLI(customer, directory) for customer, directory in zip(customers, (first_dir, second_dir), strict=True)]
@@ -108,7 +109,11 @@ def verify(config, matrix):
         payload = {"location": first.config["location"], "tags": {"ocean-fixture": "primary"}}
         try:
             provider = primary.command("provider-show")
-            supported = [{"resourceType": "resourceGroups", "locations": [first.config["location"]], "apiVersions": [primary.api]}]
+            supported = [
+                {"resourceType": "resourceGroups", "locations": [first.config["location"]], "apiVersions": [primary.api]},
+                {"resourceType": "deployments", "locations": [first.config["location"]],
+                 "apiVersions": [load_matrix(matrix_path, "NETWORK-04")["deployment-create"]["api_version"]]},
+            ]
             metadata = [{key: resource[key] for key in supported[0]} for resource in provider["resourceTypes"]]
             if (provider["namespace"] != "Microsoft.Resources" or provider["registrationState"] != "Registered" or
                     provider["id"] != f"/subscriptions/{first.config['subscription']}/providers/Microsoft.Resources" or metadata != supported):
@@ -189,7 +194,7 @@ def main():
     parser.add_argument("--settings", type=Path, required=True)
     parser.add_argument("--matrix", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(verify(json.loads(args.settings.read_text()), load_matrix(args.matrix)), sort_keys=True))
+    print(json.dumps(verify(json.loads(args.settings.read_text()), args.matrix), sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ func (r *Region) dependentsPrefix(scope arm.SubscriptionScope, target arm.Resour
 // inventoryReferenceChanges reads new targets at the same revision as the
 // owner and emits the comparisons and index changes for the owner transaction.
 func (r *Region) inventoryReferenceChanges(ctx context.Context, scope arm.SubscriptionScope, owner arm.ResourceAddress,
-	previous, next *arm.InventoryResource, revision int64) ([]clientv3.Cmp, []clientv3.Op, error) {
+	previous, next *arm.InventoryResource, revision int64, staged map[string]bool) ([]clientv3.Cmp, []clientv3.Op, error) {
 	before, after := resourceReferences(previous), resourceReferences(next)
 	var additions []arm.ResourceAddress
 	var mutations []clientv3.Op
@@ -54,11 +54,13 @@ func (r *Region) inventoryReferenceChanges(ctx context.Context, scope arm.Subscr
 	conditions := make([]clientv3.Cmp, 0, len(additions))
 	for index, ref := range additions {
 		keys := targets.Responses[index].GetResponseRange().Kvs
-		if len(keys) != 1 {
+		if len(keys) != 1 && !staged[ref.Key()] {
 			return nil, nil, arm.ErrLinkedResourceMissing
 		}
-		target := keys[0]
-		conditions = append(conditions, clientv3.Compare(clientv3.CreateRevision(string(target.Key)), "=", target.CreateRevision))
+		if len(keys) == 1 {
+			target := keys[0]
+			conditions = append(conditions, clientv3.Compare(clientv3.CreateRevision(string(target.Key)), "=", target.CreateRevision))
+		}
 		indexPrefix := r.dependentsPrefix(scope, ref)
 		if offset, ok := exclusive[index]; ok {
 			if len(targets.Responses[offset].GetResponseRange().Kvs) != 0 {

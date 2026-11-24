@@ -165,12 +165,10 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 		if resource != nil && (!resource.Valid() || resource.Address != canonical) {
 			return nil, false, errors.New("invalid resource projection")
 		}
-		if saved != nil && resource != nil && saved.APIVersion == resource.APIVersion && saved.Location == resource.Location &&
-			saved.ProvisioningState == resource.ProvisioningState && maps.Equal(saved.Tags, resource.Tags) && bytes.Equal(saved.Properties, resource.Properties) &&
-			saved.SKU == resource.SKU && slices.Equal(saved.References, resource.References) {
+		if saved != nil && resource != nil && inventoryEqual(*saved, *resource) {
 			return saved, false, nil
 		}
-		referenceConditions, referenceChanges, err := r.inventoryReferenceChanges(ctx, scope, canonical, saved, resource, result.Header.Revision)
+		referenceConditions, referenceChanges, err := r.inventoryReferenceChanges(ctx, scope, canonical, saved, resource, result.Header.Revision, nil)
 		if err != nil {
 			return nil, false, err
 		}
@@ -181,16 +179,7 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 		now := time.Now().UTC()
 		mutation := clientv3.OpDelete(key)
 		if resource != nil {
-			resource.CreatedAt = now
-			resource.ChangedAt = now
-			if saved != nil {
-				resource.CreatedAt = saved.CreatedAt
-				if resource.ChangedAt.Before(saved.ChangedAt) {
-					resource.ChangedAt = saved.ChangedAt
-				}
-			}
-			data, _ := json.Marshal(resource)
-			mutation = clientv3.OpPut(key, string(data))
+			mutation = inventoryPut(key, saved, resource, now)
 		}
 		mutations := append(referenceChanges, poolChanges...)
 		mutations = append(mutations, mutation)
@@ -219,6 +208,23 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 		}
 	}
 	return nil, false, errors.New("resource group changed during inventory publication")
+}
+
+func inventoryEqual(a, b arm.InventoryResource) bool {
+	return a.APIVersion == b.APIVersion && a.Location == b.Location && a.ProvisioningState == b.ProvisioningState &&
+		maps.Equal(a.Tags, b.Tags) && bytes.Equal(a.Properties, b.Properties) && a.SKU == b.SKU && slices.Equal(a.References, b.References)
+}
+
+func inventoryPut(key string, previous, next *arm.InventoryResource, timestamp time.Time) clientv3.Op {
+	next.CreatedAt, next.ChangedAt = timestamp, timestamp
+	if previous != nil {
+		next.CreatedAt = previous.CreatedAt
+		if next.ChangedAt.Before(previous.ChangedAt) {
+			next.ChangedAt = previous.ChangedAt
+		}
+	}
+	data, _ := json.Marshal(next)
+	return clientv3.OpPut(key, string(data))
 }
 
 func decodeInventoryResource(data []byte, key string) (arm.InventoryResource, error) {

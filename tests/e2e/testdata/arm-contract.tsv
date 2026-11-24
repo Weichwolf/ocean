@@ -39,3 +39,6 @@ NETWORK-03	nat-show	2.93.0	none	2025-07-01	network nat gateway show --resource-g
 NETWORK-03	nat-list	2.93.0	none	2025-07-01	network nat gateway list --resource-group {group} -o json
 NETWORK-03	nat-delete	2.93.0	none	2025-07-01	network nat gateway delete --resource-group {group} --name {nat} -o none
 NETWORK-03	subnet-nat	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --nat-gateway {nat} -o json
+NETWORK-04	deployment-preview	2.93.0	none	2025-04-01	deployment group what-if --resource-group {group} --name {deployment} --template-file {template} --parameters namePrefix={prefix} subnetPrefix={subnet_prefix} --no-pretty-print -o json
+NETWORK-04	deployment-create	2.93.0	none	2025-04-01	deployment group create --resource-group {group} --name {deployment} --template-file {template} --parameters namePrefix={prefix} subnetPrefix={subnet_prefix} -o json
+NETWORK-04	deployment-show	2.93.0	none	2025-04-01	deployment group show --resource-group {group} --name {deployment} -o json

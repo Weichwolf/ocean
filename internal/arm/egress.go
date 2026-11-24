@@ -78,7 +78,7 @@ func (s Server) changeEgressResource(ctx context.Context, w http.ResponseWriter,
 	var desired *InventoryResource
 	if !deleting {
 		var err error
-		desired, err = s.readEgressRequest(w, r, scope, address, kind, version)
+		desired, err = s.readEgressRequest(http.MaxBytesReader(w, r.Body, 128<<10), scope, address, kind, version)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "InvalidRequestContent", err.Error())
 			return
@@ -93,15 +93,9 @@ func (s Server) changeEgressResource(ctx context.Context, w http.ResponseWriter,
 			update := *desired
 			update.Address = canonical
 			if current != nil && kind == network.PublicIPType {
-				var previous, requested network.PublicIPAddressProperties
-				if err := json.Unmarshal(current.Properties, &previous); err != nil {
+				if err := retainPublicIPAddress(*current, &update); err != nil {
 					return nil, err
 				}
-				if err := json.Unmarshal(update.Properties, &requested); err != nil {
-					return nil, err
-				}
-				requested.Address = previous.Address
-				update.Properties, _ = json.Marshal(requested)
 			}
 			return &update, nil
 		})
@@ -129,9 +123,22 @@ func (s Server) changeEgressResource(ctx context.Context, w http.ResponseWriter,
 	}
 }
 
-func (s Server) readEgressRequest(w http.ResponseWriter, r *http.Request, scope SubscriptionScope, address ResourceAddress, kind, version string) (*InventoryResource, error) {
+func retainPublicIPAddress(current InventoryResource, update *InventoryResource) error {
+	var previous, requested network.PublicIPAddressProperties
+	if err := json.Unmarshal(current.Properties, &previous); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(update.Properties, &requested); err != nil {
+		return err
+	}
+	requested.Address = previous.Address
+	update.Properties, _ = json.Marshal(requested)
+	return nil
+}
+
+func (s Server) readEgressRequest(body io.Reader, scope SubscriptionScope, address ResourceAddress, kind, version string) (*InventoryResource, error) {
 	result := &InventoryResource{Address: address, APIVersion: version, Location: s.Location, ProvisioningState: "Succeeded"}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10))
+	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
 	if kind == network.PublicIPType {
 		var input egressInput[network.PublicIPAddressProperties]
