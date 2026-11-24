@@ -47,37 +47,43 @@ def eventually(check, seconds=30):
             time.sleep(1)
 
 
-def ca(pki, name):
+def ca(pki, name, key_type="ed25519"):
     certificate, key = pki / (name + ".pem"), pki / (name + ".key")
     if not certificate.exists():
-        run(["openssl", "req", "-new", "-x509", "-newkey", "ed25519", "-noenc", "-days", "30",
+        run(["openssl", "req", "-new", "-x509", "-newkey", key_type, "-noenc", "-days", "30",
              "-subj", f"/CN=ocean-lab-{name}", "-out", certificate, "-keyout", key])
     return certificate, key
 
 
-def leaf(pki, name, authority, usages, names=""):
+def leaf(pki, name, authority, usages, names="", key_type="ed25519"):
     certificate, key = pki / (name + ".pem"), pki / (name + ".key")
     if not certificate.exists():
         with tempfile.TemporaryDirectory(dir=pki) as directory:
             csr = Path(directory) / "request"
             extensions = Path(directory) / "extensions"
             extensions.write_text(f"extendedKeyUsage={usages}\nsubjectAltName={names}\n" if names else f"extendedKeyUsage={usages}\n")
-            run(["openssl", "req", "-new", "-newkey", "ed25519", "-noenc", "-subj", f"/CN={name}", "-keyout", key, "-out", csr])
+            run(["openssl", "req", "-new", "-newkey", key_type, "-noenc", "-subj", f"/CN={name}", "-keyout", key, "-out", csr])
             run(["openssl", "x509", "-req", "-in", csr, "-CA", authority[0], "-CAkey", authority[1], "-CAcreateserial",
                  "-days", "14", "-extfile", extensions, "-out", certificate])
     return {f"pki/{name}.pem": certificate.read_bytes(), f"pki/{name}.key": key.read_bytes()}
 
 
-def upload(state, guest, files):
+def upload(state, guest, files, destination=DEST, owner="ocean"):
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w:gz") as archive:
         for name, data in files.items():
             entry = tarfile.TarInfo(name)
-            entry.mode = 0o755 if name.startswith("bin/") else 0o600 if name.endswith(".key") else 0o644
+            entry.mode = 0o755 if name.startswith("bin/") else 0o600 if name.endswith((".key", ".secret")) else 0o644
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
-    ssh(state, guest, f"sudo install -d {DEST} && sudo tar -xz --no-same-owner -C {DEST} && sudo chown ocean {DEST}/pki/*.key",
-        payload.getvalue())
+    scripts = [
+        shlex.join(["sudo", "install", "-d", destination]),
+        shlex.join(["sudo", "tar", "-xz", "--no-same-owner", "-C", destination]),
+    ]
+    secrets = [f"{destination}/{name}" for name in files if name.endswith((".key", ".secret"))]
+    if secrets:
+        scripts.append(shlex.join(["sudo", "chown", owner, *secrets]))
+    ssh(state, guest, " && ".join(scripts), payload.getvalue())
 
 
 def unit(command, user="root", after="network-online.target"):
@@ -101,7 +107,9 @@ def node_files(name, address, binary, etcd, public, pki, authorities):
     peer, storage, ingress = authorities
     files = dict(public, **etcd)
     files.update(leaf(pki, f"{name}-peer", peer, "serverAuth,clientAuth", f"IP:{address}"))
-    files.update(leaf(pki, f"{name}-storage", storage, "serverAuth", f"IP:{address}"))
+    # etcd's HTTPS gateway dials its own client listener with this certificate.
+    server_name = f"{name}-etcd-gateway"
+    files.update(leaf(pki, server_name, storage, "serverAuth,clientAuth", f"IP:{address}"))
     files.update(leaf(pki, f"{name}-api-client", storage, "clientAuth"))
     files.update(leaf(pki, f"{name}-api", ingress, "serverAuth", f"DNS:{ARM},IP:{address}"))
     files["bin/ocean-control-plane"] = binary
@@ -109,7 +117,7 @@ def node_files(name, address, binary, etcd, public, pki, authorities):
     args = [f"--name={name}", f"--listen-client-urls=https://{address}:2379", f"--advertise-client-urls=https://{address}:2379",
             f"--listen-peer-urls=https://{address}:2380", f"--initial-advertise-peer-urls=https://{address}:2380",
             f"--initial-cluster={cluster}", "--initial-cluster-token=ocean-farm-1", f"--data-dir={DEST}/data",
-            f"--cert-file={DEST}/pki/{name}-storage.pem", f"--key-file={DEST}/pki/{name}-storage.key",
+            f"--cert-file={DEST}/pki/{server_name}.pem", f"--key-file={DEST}/pki/{server_name}.key",
             f"--trusted-ca-file={DEST}/pki/storage-ca.pem", "--client-cert-auth",
             f"--peer-cert-file={DEST}/pki/{name}-peer.pem", f"--peer-key-file={DEST}/pki/{name}-peer.key",
             f"--peer-trusted-ca-file={DEST}/pki/peer-ca.pem", "--peer-client-cert-auth"]

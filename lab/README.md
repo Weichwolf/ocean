@@ -56,6 +56,21 @@ The stack uses three mutually authenticated etcd voters, three HTTPS API replica
 
 The deploy script installs HAProxy, Keepalived, and dnsmasq inside the gateway guests. The generated lab CA keys stay in the operator's private state directory. Peer, store client, and ingress certificates use separate CAs. Lab client credentials are for the disposable deployment. Use operator-managed certificates and a dedicated production deployment when qualifying physical hosts.
 
+Regional bootstrap creates the region record and its initial cell record in one etcd transaction. Incompatible bootstrap settings prevent a replica from starting. Provider operations use keys under `/ocean/v1/regions/<region>/operations` and cell reservations use keys under `/ocean/v1/regions/<region>/cells/<cell>/reservations`. The local fault check exercises authoritative DNS, gateway and API loss, leader replacement, and the absence of a committed mutation while quorum is unavailable. A timed-out raw etcd request has an unknown outcome after recovery. Providers must reconcile such requests using the existing operation ID. The check restores affected services and removes its own test keys. Run it on a dedicated lab because it stops services and powers off a guest.
+
+## Replicated identity database
+
+Start a dedicated lab with `lab/profiles/identity-ha-3.yaml`, deploy the regional management stack into it, and run the database deployment and fault check locally. This profile gives the two nodes planned for Keycloak 3 GiB of RAM each and the third node 2 GiB, with two vCPUs per server.
+
+```sh
+python3 lab/postgres.py --state "$OCEAN_LAB_STATE"
+python3 lab/verify_postgres.py --state "$OCEAN_LAB_STATE"
+```
+
+The deployment uses Debian PostgreSQL 17 and Patroni. The PostgreSQL replication and application connections require verified TLS and SCRAM authentication. The cluster uses the existing etcd quorum over mTLS, with its own state prefix and client certificate. The etcd TLS listener certificate authenticates the HTTPS gateway's internal connection to etcd.
+
+Patroni requires a watchdog before promoting a writer. The KVM control-plane guests expose an Intel 6300ESB watchdog and QEMU resets the guest on expiry. Strict synchronous replication requires one standby for a commit. The failover check writes a marker, stalls Patroni's main process, and observes the watchdog reset over QMP. It requires promotion within 45 seconds, preservation of the acknowledged marker, and replay of a new commit after the former writer rejoins as a standby. It temporarily disables the stalled service at boot to represent a member that remains down after reset. Use this check on the dedicated lab. The virtual watchdog validates guest-process failure. Production fencing also requires independent host-level controls. [Patroni watchdog behavior](https://patroni.readthedocs.io/en/latest/watchdog.html)
+
 ## Azure CLI identity compatibility
 
 Configure the control plane with the public ocean authority, the public Keycloak origin, and an optional PEM CA for the Keycloak connection. If cloud endpoint discovery is enabled, configure distinct public ARM and Graph origins.
@@ -86,5 +101,3 @@ Configure the public client's access token mapper to give its native grant the s
 The CLI device flow starts with the ARM scope. The compatibility endpoint obtains a native Keycloak grant and asks Keycloak to exchange the native access token for the requested resource. On refresh it can request ARM or Graph using the same Keycloak session. The response keeps the user's native session and includes the exchanged access token. The endpoint requires the same issuer and subject and exactly one resource audience. Keycloak handles user consent, token lifetimes, and signing. [Keycloak standard token exchange](https://www.keycloak.org/securing-apps/token-exchange)
 
 Local probes with disposable realms passed cloud discovery, end-user device login, service-principal login, and token acquisition for both audiences from each login. The probes skipped subscription discovery. Identity acceptance still requires tests for subscription discovery, audience validation at the API boundary, tenant onboarding, and identity failover.
-
-Regional bootstrap creates the region record and its initial cell record in one etcd transaction. Incompatible bootstrap settings prevent a replica from starting. Provider operations use keys under `/ocean/v1/regions/<region>/operations` and cell reservations use keys under `/ocean/v1/regions/<region>/cells/<cell>/reservations`. The local fault check exercises authoritative DNS, gateway and API loss, leader replacement, and the absence of a committed mutation while quorum is unavailable. A timed-out raw etcd request has an unknown outcome after recovery. Providers must reconcile such requests using the existing operation ID. The check restores affected services and removes its own test keys. Run it on a dedicated lab because it stops services and powers off a guest.

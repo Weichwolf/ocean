@@ -185,6 +185,9 @@ func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string) e
 		"-drive", "file=" + escapeQEMU(filepath.Join(directory, "seed.iso")) + ",format=raw,media=cdrom,readonly=on",
 		"-netdev", bootstrap, "-device", "virtio-net-pci,netdev=boot,mac=" + bootstrapMAC(guest),
 	}
+	if slices.Contains(guest.Roles, "control-plane") {
+		args = append(args, "-device", "i6300esb", "-action", "watchdog=reset")
+	}
 	for index, attachment := range guest.Interfaces {
 		id := fmt.Sprintf("net%d", index)
 		args = append(args, "-netdev", "vde,id="+id+",sock="+escapeQEMU(filepath.Join(lab.network(attachment.Segment), "data")),
