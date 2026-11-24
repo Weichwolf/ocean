@@ -1,0 +1,6 @@
+case_id	command_id	azure_cli	extensions	api_version	command
+CONTRACT-02	group-create	2.93.0	none	2024-11-01	group create --name {group} --location {location} --tags ocean-fixture={tag} -o json
+CONTRACT-02	group-show	2.93.0	none	2024-11-01	group show --name {group} -o json
+CONTRACT-02	group-list	2.93.0	none	2024-11-01	group list -o json
+CONTRACT-02	group-exists	2.93.0	none	2024-11-01	group exists --name {group} -o json
+CONTRACT-02	group-delete	2.93.0	none	2024-11-01	group delete --name {group} --yes -o none

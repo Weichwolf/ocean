@@ -22,11 +22,15 @@ def endpoint(config, tenant):
 def send(cli, method, url, data=None, discard=False, resource="arm"):
     token = cli.run("account", "get-access-token", "--resource", cli.config[resource],
                     "--query", "accessToken", "-o", "tsv").strip()
+    return send_token(cli.config, token, method, url, data, discard)
+
+
+def send_token(config, token, method, url, data=None, discard=False):
     parts = urlsplit(url)
     route = parts.path
     if parts.query:
         route += "?" + parts.query
-    tls = ssl.create_default_context(cafile=cli.config["ca"])
+    tls = ssl.create_default_context(cafile=config["ca"])
     connection = http.client.HTTPSConnection(parts.hostname, parts.port or 443, timeout=28, context=tls)
     try:
         headers = {"Authorization": "Bearer " + token, "Connection": "close"}

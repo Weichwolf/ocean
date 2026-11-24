@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/config"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
@@ -75,9 +76,14 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					return config.Server{}, service.Hooks{}, err
 				}
 			}
+			if cfg.Identity.Cloud != nil {
+				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
+					Authenticate: compatibility.AuthenticateARM, Groups: region}
+				hooks.Handler = resources.Handler(compatibility.Handler())
+			}
 		}
 	}
-	if compatibility != nil {
+	if hooks.Handler == nil && compatibility != nil {
 		hooks.Handler = compatibility.Handler()
 	}
 	return cfg.Server, hooks, nil
