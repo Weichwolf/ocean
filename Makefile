@@ -1,6 +1,6 @@
 .PHONY: build check deb-agent
 
-DEB_VERSION ?= 0.1.0~dev1
+DEB_VERSION ?= 0.1.0~dev3
 export DEB_VERSION
 
 build:

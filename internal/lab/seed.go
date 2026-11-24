@@ -13,7 +13,7 @@ func bootstrapMAC(guest Guest) string {
 	return strings.Replace(guest.Interfaces[0].MAC, "02:4f:00:", "02:4f:01:", 1)
 }
 
-func (lab *Lab) seed(ctx context.Context, guest Guest) error {
+func (lab *Lab) seed(ctx context.Context, guest Guest, seed *bootstrapSeed) error {
 	directory := lab.node(guest.Name)
 	publicKey, err := os.ReadFile(filepath.Join(lab.root, "ssh-key.pub"))
 	if err != nil {
@@ -37,18 +37,23 @@ func (lab *Lab) seed(ctx context.Context, guest Guest) error {
 			hosts += fmt.Sprintf("10.231.%d.10 arm.farm-%d.ocean.test id.farm-%d.ocean.test\n", guest.Farm, guest.Farm, guest.Farm)
 		}
 	}
+	userData := map[string]any{
+		"ssh_pwauth": false,
+		"users": []any{map[string]any{
+			"name": "ocean", "shell": "/bin/bash", "sudo": "ALL=(ALL) NOPASSWD:ALL",
+			"ssh_authorized_keys": []string{strings.TrimSpace(string(publicKey))},
+		}},
+		"write_files": []any{map[string]any{"path": "/etc/hosts", "content": hosts}},
+	}
+	if seed != nil {
+		userData["write_files"] = append(userData["write_files"].([]any), seed.files...)
+		userData["runcmd"] = [][]string{{"/bin/sh", "/root/ocean-bootstrap/provision.sh"}}
+	}
 	files := []struct {
 		name, prefix string
 		data         any
 	}{
-		{"user-data", "#cloud-config\n", map[string]any{
-			"ssh_pwauth": false,
-			"users": []any{map[string]any{
-				"name": "ocean", "shell": "/bin/bash", "sudo": "ALL=(ALL) NOPASSWD:ALL",
-				"ssh_authorized_keys": []string{strings.TrimSpace(string(publicKey))},
-			}},
-			"write_files": []any{map[string]any{"path": "/etc/hosts", "content": hosts}},
-		}},
+		{"user-data", "#cloud-config\n", userData},
 		{"meta-data", "", map[string]string{"instance-id": guest.Name, "local-hostname": guest.Name}},
 		{"network-config", "", map[string]any{"version": 2, "ethernets": interfaces}},
 	}
@@ -61,6 +66,35 @@ func (lab *Lab) seed(ctx context.Context, guest Guest) error {
 			return err
 		}
 	}
-	return command(ctx, "cloud-localds", "--network-config", filepath.Join(directory, "network-config"),
-		filepath.Join(directory, "seed.iso"), filepath.Join(directory, "user-data"), filepath.Join(directory, "meta-data"))
+	staged := filepath.Join(directory, "seed.partial")
+	defer os.Remove(staged)
+	if seed == nil {
+		if err := command(ctx, "cloud-localds", "--network-config", filepath.Join(directory, "network-config"),
+			staged, filepath.Join(directory, "user-data"), filepath.Join(directory, "meta-data")); err != nil {
+			return err
+		}
+	} else if err := buildEnrollmentISO(ctx, directory, staged, seed.packageData); err != nil {
+		return err
+	}
+	if err := os.Chmod(staged, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(staged, filepath.Join(directory, "seed.iso"))
+}
+
+func buildEnrollmentISO(ctx context.Context, directory, output string, packageData []byte) error {
+	contents, err := os.MkdirTemp(directory, ".seed-contents-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(contents)
+	for _, name := range []string{"user-data", "meta-data", "network-config"} {
+		if err := os.Link(filepath.Join(directory, name), filepath.Join(contents, name)); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(contents, "ocean-agent.deb"), packageData, 0o600); err != nil {
+		return err
+	}
+	return command(ctx, "genisoimage", "-quiet", "-output", output, "-volid", "cidata", "-joliet", "-rock", contents)
 }

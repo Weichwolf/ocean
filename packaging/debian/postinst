@@ -18,7 +18,7 @@ runuser -u "$agent" -- ln -sfn /usr/lib/systemd/user/ocean-agent.service \
 if [ -x /usr/sbin/policy-rc.d ] && ! /usr/sbin/policy-rc.d ocean-agent start; then
     exit 0
 fi
-if [ -d /run/systemd/system ]; then
+if [ -d /run/systemd/system ] && [ "${OCEAN_AGENT_DEFER_START:-0}" != 1 ]; then
     loginctl enable-linger "$agent"
     uid=$(id -u "$agent")
     systemctl start "user@$uid.service"

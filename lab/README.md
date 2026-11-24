@@ -185,7 +185,7 @@ Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build
 
 The package creates the `ocean-agent` system account with subordinate UID and GID ranges. It enables the unit in that account's systemd user manager on a running systemd installation. The agent checks Podman rootless mode before serving readiness at `http://127.0.0.1:8081/readyz`. The configuration file is `/etc/ocean-agent/config.json`. [Debian subordinate IDs for system accounts](https://manpages.debian.org/trixie/passwd/useradd.8.en.html)
 
-Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev1_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The result is written to `evidence/agent-package.json`.
+Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev3_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The Podman runtime is initialized in a separate user scope so its user namespace can outlive an agent restart. The result is written to `evidence/agent-package.json`.
 
 ## Host identity enrollment
 
@@ -201,3 +201,19 @@ python3 lab/verify_enrollment.py --state "$OCEAN_LAB_STATE" --node farm-1-node-0
 ```
 
 The check verifies capability rejection, a discarded enrollment response, reuse of the committed certificate by the packaged service, rejection of a different key with the redeemed credential, and rejection after revocation. It writes `evidence/host-enrollment.json`. The test leaves the disposable identity revoked.
+
+## First-boot host provisioning
+
+Start with the `identity-ha-3` lab and build the enrollment-enabled agent with `make deb-agent`. The following command admits the additional compute guest using its planned management MAC and address, then boots it with a private NoCloud seed. The new guest uses 1 GiB of RAM and one vCPU. Existing voter membership comes from the regional profile.
+
+```sh
+python3 lab/bootstrap_host.py --state "$OCEAN_LAB_STATE" --check-restarts \
+  --profile lab/profiles/identity-ha-4.yaml --node farm-1-node-04 \
+  --package bin/ocean-agent_0.1.0~dev3_amd64.deb
+```
+
+The installer uses the Debian repositories for package dependencies. The seed carries the local agent package, its configuration, the management CA, and the host's short-lived credential. Cloud-init installs the package, writes the protected credential, and starts the service with its enrollment configuration. The verifier observes the regional registration before connecting to the guest to check cloud-init and mTLS readiness. It records `evidence/host-first-boot.json`.
+
+`--check-restarts` also restarts the agent and the guest. Both checks require the same committed host identity and a ready service after recovery.
+
+`ocean-lab up -enrollment-file` accepts a JSON manifest with `hostId`, `origin`, `caFile`, `tokenFile`, and `packageFile`. Build the approval from the same guest inventory before booting. The lab stores the seed with owner-only permissions and reuses the existing seed and disk on a restart. An existing guest rejects a different seed. [NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
