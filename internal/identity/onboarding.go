@@ -51,6 +51,7 @@ func (r TenantReservation) Valid(tenant string) bool {
 // TenantStore provides the regional transactions used by onboarding.
 type TenantStore interface {
 	ReserveTenant(context.Context, TenantReservation) (TenantReservation, error)
+	LookupTenant(context.Context, string) (*TenantReservation, error)
 	PublishSubscription(context.Context, TenantReservation, Subscription) (bool, error)
 }
 

@@ -64,9 +64,13 @@ class Browser:
                 return self.open(target, hidden | fields, url)
         raise RuntimeError(f"device flow omitted the {expected} form")
 
-    def approve(self, endpoint, code, user, password):
+    def approve(self, endpoint, code, user, password, reject=False):
         page = self.open(endpoint + "?" + parse.urlencode({"user_code": code}))
         page = self.submit(page, "authenticate", {"username": user, "password": password})
+        if reject:
+            if parse.urlsplit(page[0]).path.endswith("/login-actions/authenticate") and "Invalid username or password" in page[1]:
+                return
+            raise RuntimeError("the deleted directory user reached a different device sign-in state")
         page = self.submit(page, "consent", {"code": code, "accept": "Yes"})
         if not parse.urlsplit(page[0]).path.endswith("/device/status"):
             raise RuntimeError("device authorization did not reach the confirmation page")
@@ -110,7 +114,7 @@ class AzureCLI:
                         return
             raise RuntimeError("the token endpoint did not reject the client credentials")
 
-    def login_device(self):
+    def login_device(self, reject=False):
         tenant = self.config["tenant"]
         script = ["az", "login", "--tenant", tenant, "--use-device-code", "-o", "none"]
         if not self.config.get("subscription"):
@@ -128,7 +132,9 @@ class AzureCLI:
                 if match is None:
                     raise RuntimeError("Azure CLI emitted an unexpected device prompt")
                 Browser(self.config["provider"], self.config["ca"]).approve(verification, match[1],
-                                                                             self.config["user"], self.config["password"])
+                                                                             self.config["user"], self.config["password"], reject)
+                if reject:
+                    return
                 if cli.wait(timeout=22) != 0:
                     raise RuntimeError("Azure CLI rejected the approved device sign-in")
             finally:

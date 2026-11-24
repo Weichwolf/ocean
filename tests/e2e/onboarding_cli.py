@@ -19,11 +19,13 @@ def endpoint(config, tenant):
     return f"{config['arm']}/ocean/tenants/{tenant}?api-version=2026-11-01"
 
 
-def send(cli, method, url, data=None, discard=False):
-    token = cli.run("account", "get-access-token", "--resource", cli.config["arm"],
+def send(cli, method, url, data=None, discard=False, resource="arm"):
+    token = cli.run("account", "get-access-token", "--resource", cli.config[resource],
                     "--query", "accessToken", "-o", "tsv").strip()
     parts = urlsplit(url)
-    route = parts.path + "?" + parts.query
+    route = parts.path
+    if parts.query:
+        route += "?" + parts.query
     tls = ssl.create_default_context(cafile=cli.config["ca"])
     connection = http.client.HTTPSConnection(parts.hostname, parts.port or 443, timeout=28, context=tls)
     try:
@@ -55,7 +57,47 @@ def fixture():
     }
 
 
-def verify(config):
+def graph_users(customer):
+    user_id = uuid.uuid4().hex[:12]
+    upn = f"graph-{user_id}@lab.ocean.test"
+    name = f"Graph User {user_id}"
+    alias = f"ocean-{user_id}"
+    password = secrets.token_urlsafe(24)
+    created = json.loads(customer.run("ad", "user", "create", "--display-name", name,
+                                      "--user-principal-name", upn, "--mail-nickname", alias,
+                                      "--password", password, "-o", "json"))
+    if created["userPrincipalName"] != upn or created["displayName"] != name or created["mailNickname"] != alias:
+        raise RuntimeError("the created directory user properties did not round-trip")
+    object_id = created["id"]
+    for key, value in (("--upn", upn), ("--display-name", name)):
+        listed = json.loads(customer.run("ad", "user", "list", key, value, "-o", "json"))
+        if [entry["id"] for entry in listed] != [object_id]:
+            raise RuntimeError("a directory filter returned unexpected users")
+    shown = json.loads(customer.run("ad", "user", "show", "--id", upn, "-o", "json"))
+    if shown["id"] != object_id:
+        raise RuntimeError("the user principal name resolved to a different directory object")
+    updated_name = f"{name} Updated"
+    customer.run("ad", "user", "update", "--id", object_id, "--display-name", updated_name, "-o", "none")
+    shown = json.loads(customer.run("ad", "user", "show", "--id", object_id, "-o", "json"))
+    if shown["displayName"] != updated_name or shown["mailNickname"] != alias:
+        raise RuntimeError("the display-name update did not preserve the mail alias")
+    config = dict(customer.config, subscription=None, user=upn, password=password)
+    with tempfile.TemporaryDirectory(prefix="ocean-graph-user-") as directory:
+        cli = AzureCLI(config, directory)
+        cli.login_device()
+        if cli.resource_subject() != object_id:
+            raise RuntimeError("the directory credentials did not identify the new user")
+        cli.run("ad", "user", "list", reject=True)
+        status, reply = send(cli, "GET", config["graph"] + "/v1.0/users", resource="graph")
+        if status != 403 or reply["error"]["code"] != "Authorization_RequestDenied":
+            raise RuntimeError("a regular tenant user could administer the directory")
+    customer.run("ad", "user", "delete", "--id", object_id)
+    customer.run("ad", "user", "show", "--id", object_id, reject=True)
+    with tempfile.TemporaryDirectory(prefix="ocean-graph-deleted-") as directory:
+        AzureCLI(config, directory).login_device(reject=True)
+
+
+def verify(config, directory_users=False):
     first, first_input = fixture()
     second, second_input = fixture()
     with tempfile.TemporaryDirectory(prefix="ocean-operator-") as directory:
@@ -105,15 +147,28 @@ def verify(config):
             status, reply = send(customer, "PUT", url, forbidden_input)
             if status != 403 or reply["error"]["code"] != "AuthorizationFailed":
                 raise RuntimeError("the tenant could provision another tenant")
-    return {"tenants": [first_result, second_result], "discardedResponseRecovered": True,
-            "tenantRegistrationsDenied": True, "crossTenantSubscriptionsHidden": True}
+            if directory_users:
+                foreign = f"{config['graph']}/v1.0/users/{other['administratorId']}"
+                status, reply = send(customer, "GET", foreign, resource="graph")
+                if status != 404 or reply["error"]["code"] != "Request_ResourceNotFound":
+                    raise RuntimeError("Graph disclosed a user from another tenant")
+                status, reply = send(customer, "GET", config["graph"] + "/v1.0/users")
+                if status != 401 or reply["error"]["code"] != "InvalidAuthenticationToken":
+                    raise RuntimeError("Graph accepted a token issued for ARM")
+                graph_users(customer)
+    result = {"tenants": [first_result, second_result], "discardedResponseRecovered": True,
+              "tenantRegistrationsDenied": True, "crossTenantSubscriptionsHidden": True}
+    if directory_users:
+        result["graphUserLifecycle"] = True
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
+    parser.add_argument("--directory-users", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(verify(json.loads(args.settings.read_text())), sort_keys=True))
+    print(json.dumps(verify(json.loads(args.settings.read_text()), args.directory_users), sort_keys=True))
 
 
 if __name__ == "__main__":

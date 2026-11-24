@@ -57,6 +57,19 @@ func (r *Region) ReserveTenant(ctx context.Context, reservation identity.TenantR
 	return existing, nil
 }
 
+func (r *Region) LookupTenant(ctx context.Context, tenant string) (*identity.TenantReservation, error) {
+	key, _ := r.tenantKeys(tenant)
+	result, err := r.client.Get(ctx, key)
+	if err != nil || len(result.Kvs) == 0 {
+		return nil, err
+	}
+	var record identity.TenantReservation
+	if err := json.Unmarshal(result.Kvs[0].Value, &record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
 func (r *Region) PublishSubscription(ctx context.Context, reservation identity.TenantReservation, sub identity.Subscription) (bool, error) {
 	registration, key := r.tenantKeys(reservation.TenantID)
 	lock, _ := json.Marshal(reservation)

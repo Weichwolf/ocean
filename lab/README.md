@@ -130,3 +130,11 @@ The response contains `tenantId`, `subscriptionId`, and `administratorId`. The c
 The `identity.onboarding` configuration contains the operator tenant and client IDs, the private Keycloak admin origins, the lab admin client and its credential file, and a regional key file. Each API replica uses the same regional key to derive the exchange credential for a tenant. Keep this key with the region's recoverable credentials and provision the files with owner-only access.
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE"` after the identity deployment and CLI installation. The test discards a successful response body, retries through `az rest`, creates a second tenant, and verifies independent administrator sign-ins and cross-tenant denials. It records the resulting IDs and assertions in `evidence/tenant-onboarding.json` under the disposable lab state.
+
+## Tenant directory users
+
+The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph access token. The CLI workflow uses `az ad user create`, `list`, `show`, `update`, and `delete`. Lists support an exact UPN or a display-name prefix, with server paging. Object lookup accepts a UUID or a UPN. The administrator can change a user's display name, mail alias, login status, and password. The original administrator can update their profile and password and must remain enabled.
+
+Keycloak stores the directory account and password and enforces login. Ocean declares the Graph display name and alias as managed Keycloak attributes writable by the admin API. Realm-scoped device login uses the bounded offline session policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
+
+Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users` to exercise the user lifecycle with two freshly onboarded tenants. The check verifies that updates preserve the mail alias, regular users are denied directory administration, and deleted users cannot start a new login. Evidence is written to `evidence/graph-users.json`.

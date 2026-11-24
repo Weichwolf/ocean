@@ -102,6 +102,11 @@ func (c *Compatibility) Handler() http.Handler {
 	}
 	if c.onboarding != nil {
 		mux.HandleFunc("PUT /ocean/tenants/{tenant}", c.onboardTenant)
+		mux.HandleFunc("GET /v1.0/users", c.graphUser)
+		mux.HandleFunc("POST /v1.0/users", c.graphUser)
+		mux.HandleFunc("GET /v1.0/users/{user}", c.graphUser)
+		mux.HandleFunc("PATCH /v1.0/users/{user}", c.graphUser)
+		mux.HandleFunc("DELETE /v1.0/users/{user}", c.graphUser)
 	}
 	return mux
 }

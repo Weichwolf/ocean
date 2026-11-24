@@ -19,6 +19,36 @@ type keycloakAdmin struct {
 	secret    string
 }
 
+// directoryRequest selects an available admin endpoint. A mutation is
+// attempted once so a lost response cannot cause another provider write.
+func (k keycloakAdmin) directoryRequest(ctx context.Context, tenant, method, path string, input, output any) (int, error) {
+	var payload []byte
+	if input != nil {
+		var err error
+		payload, err = json.Marshal(input)
+		if err != nil {
+			return 0, err
+		}
+	}
+	for _, origin := range k.endpoints {
+		token, err := k.login(ctx, origin)
+		if err != nil {
+			continue
+		}
+		var body io.Reader
+		media := ""
+		if payload != nil {
+			body = bytes.NewReader(payload)
+			media = "application/json"
+		}
+		status, err := k.request(ctx, method, origin+"/admin/realms/"+tenant+path, token, media, body, output)
+		if method != http.MethodGet || (err == nil && status < 500) {
+			return status, err
+		}
+	}
+	return 0, errors.New("Keycloak directory is unavailable")
+}
+
 func (k keycloakAdmin) ensureRealm(ctx context.Context, reservation TenantReservation, representation any) error {
 	body, err := json.Marshal(representation)
 	if err != nil {
