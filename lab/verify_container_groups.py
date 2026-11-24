@@ -55,6 +55,22 @@ def runtime(state, host, name):
     return result[-1]
 
 
+def exercise_limits(state, host, name):
+    def counter(filename, field):
+        raw = worker_command(state, f"pod exec {name} cat /sys/fs/cgroup/{filename}", host)
+        return int(dict(line.split() for line in raw.splitlines())[field])
+
+    throttled = counter("cpu.stat", "nr_throttled")
+    cpu_probe = shlex.join(["timeout", "2", "sh", "-c", "while :; do :; done"])
+    worker_command(state, f"rc=0; pod exec {name} {cpu_probe} >/dev/null 2>&1 || rc=$?; test \"$rc\" -eq 143 || test \"$rc\" -eq 124", host)
+    require(counter("cpu.stat", "nr_throttled") > throttled, "the CPU limit did not throttle a saturated workload")
+    killed = counter("memory.events", "oom_kill")
+    memory_probe = shlex.join(["timeout", "15", "awk", 'BEGIN { for (i=0; i<400000; i++) a[i]=sprintf("%01024d",i); print length(a[0]); }'])
+    worker_command(state, f"rc=0; pod exec {name} {memory_probe} >/dev/null 2>&1 || rc=$?; test \"$rc\" -ne 0", host)
+    require(counter("memory.events", "oom_kill") > killed, "the memory limit did not stop an oversized allocation")
+    return {"cpuThrottlingObserved": True, "oversizedAllocationOOMKilled": True}
+
+
 def request(state, observer, address, port, route="/"):
     return ssh(state, observer, f"sudo ip netns exec {PROBE} curl --noproxy '*' -sS --connect-timeout 1 --max-time 2 http://{address}:{port}{route}")
 
@@ -143,6 +159,8 @@ sudo ip -n {PROBE} link set lo up
         runtime(state, private_host, private_name)
         result = eventually(lambda: request(state, observer, private["address"], 8080), 15)
         require(result.strip() == b"configuration-present", "the workload did not receive the expected variables")
+        limits = exercise_limits(state, private_host, private_name)
+        require(request(state, observer, private["address"], 8080) == result, "the limit probe interrupted the service")
         invoke("private-logs")
         check_no_secret(state, private, fixture)
         conflict = invoke("foreign-conflict", busybox)
@@ -155,7 +173,7 @@ sudo ip -n {PROBE} link set lo up
                 "stoppedEndpointClosed": True, "restartChangedProcess": True, "deletedEndpointClosed": True,
                 "publicAddressReused": True, "cachedNeighborPreserved": True, "quotaReleased": True,
                 "standardAndSecureVariablesDelivered": True,
-                "secureValueAbsentFromInventoryAuditAndExposedLogs": True, **conflict, **deleted}
+                "secureValueAbsentFromInventoryAuditAndExposedLogs": True, **limits, **conflict, **deleted}
     finally:
         try:
             invoke("cleanup")
