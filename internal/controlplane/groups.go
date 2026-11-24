@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func (r *Region) groupPrefix(scope arm.SubscriptionScope) string {
-	return r.root + "/tenants/" + scope.TenantID + "/arm/" + scope.SubscriptionID + "/resource-groups/"
+	return r.armPrefix(scope) + "resource-groups/"
 }
 
 func (r *Region) GetGroup(ctx context.Context, scope arm.SubscriptionScope, name string) (*arm.Group, error) {
@@ -48,7 +49,7 @@ func (r *Region) ListGroups(ctx context.Context, scope arm.SubscriptionScope, af
 	return groups, nil
 }
 
-func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requested arm.Group) (arm.Group, bool, error) {
+func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requested arm.Group, actor string) (arm.Group, bool, error) {
 	name := strings.ToLower(requested.Name)
 	key := r.groupPrefix(scope) + name
 	for range 8 {
@@ -75,8 +76,10 @@ func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requ
 			group.Name = existing.Name
 		}
 		data, _ := json.Marshal(group)
+		event := arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Microsoft.Resources/subscriptions/resourceGroups/write",
+			Target: group.ResourceID(scope), Outcome: "Succeeded"}
 		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", revision)).
-			Then(clientv3.OpPut(key, string(data))).Commit()
+			Then(clientv3.OpPut(key, string(data)), r.auditOp(scope, event)).Commit()
 		if err != nil {
 			return arm.Group{}, false, err
 		}
@@ -87,8 +90,13 @@ func (r *Region) PutGroup(ctx context.Context, scope arm.SubscriptionScope, requ
 	return arm.Group{}, false, errors.New("resource group changed concurrently")
 }
 
-func (r *Region) DeleteGroup(ctx context.Context, scope arm.SubscriptionScope, name string) error {
-	_, err := r.client.Delete(ctx, r.groupPrefix(scope)+strings.ToLower(name))
+func (r *Region) DeleteGroup(ctx context.Context, scope arm.SubscriptionScope, name, actor string) error {
+	groupKey := r.groupPrefix(scope) + strings.ToLower(name)
+	event := arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Microsoft.Resources/subscriptions/resourceGroups/delete",
+		Target: (arm.Group{Name: name}).ResourceID(scope), Outcome: "Succeeded"}
+	_, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(groupKey), ">", 0)).Then(clientv3.OpDelete(groupKey),
+		clientv3.OpDelete(r.assignmentPrefix(scope, name), clientv3.WithPrefix()),
+		clientv3.OpDelete(r.groupGrantPrefix(scope, name), clientv3.WithPrefix()), r.auditOp(scope, event)).Commit()
 	return err
 }
 

@@ -14,9 +14,16 @@ from identity_cli import AzureCLI
 from onboarding_cli import fixture, put, send_token
 
 
-def load_matrix(path):
+def load_matrix(path, case_id="CONTRACT-02"):
     with path.open(newline="") as stream:
-        return {row["command_id"]: row for row in csv.DictReader(stream, delimiter="\t")}
+        return {row["command_id"]: row for row in csv.DictReader(stream, delimiter="\t") if row["case_id"] == case_id}
+
+
+def command_args(row, version, **bindings):
+    extensions = ",".join(f"{name}={release}" for name, release in sorted(version["extensions"].items())) or "none"
+    if (row["azure_cli"], row["extensions"]) != (version["azure-cli"], extensions):
+        raise RuntimeError("the CLI installation differs from the compatibility matrix")
+    return [value.format(**bindings) for value in shlex.split(row["command"])]
 
 
 class GroupContract:
@@ -33,10 +40,9 @@ class GroupContract:
 
     def command(self, label, group="", tag="primary"):
         row = self.matrix[label]
-        extensions = ",".join(f"{name}={version}" for name, version in sorted(self.version["extensions"].items())) or "none"
-        if (row["azure_cli"], row["extensions"], row["api_version"]) != (self.version["azure-cli"], extensions, self.api):
-            raise RuntimeError("the CLI installation or API version differs from the compatibility matrix")
-        args = [value.format(group=group, location=self.cli.config["location"], tag=tag) for value in shlex.split(row["command"])]
+        if row["api_version"] != self.api:
+            raise RuntimeError("the API version differs from the compatibility matrix")
+        args = command_args(row, self.version, group=group, location=self.cli.config["location"], tag=tag)
         output = self.cli.run(*args)
         return json.loads(output) if output else None
 
@@ -53,7 +59,7 @@ def verify_group(group, path, name, tag):
         raise RuntimeError("the resource group did not round-trip with its ARM ID, tags, and provisioning state")
 
 
-def verify(config, matrix):
+def create_customers(config):
     customers = []
     with tempfile.TemporaryDirectory(prefix="ocean-arm-operator-") as directory:
         operator = AzureCLI(config, directory)
@@ -63,8 +69,13 @@ def verify(config, matrix):
             tenant, data = fixture()
             allocation = put(operator, tenant, data, request_file)
             customers.append(dict(config, tenant=tenant, subscription=allocation["subscriptionId"], location="farm-1",
-                                  user=data["administratorUserPrincipalName"], password=data["administratorPassword"]))
+                                  administrator=allocation["administratorId"], user=data["administratorUserPrincipalName"],
+                                  password=data["administratorPassword"]))
+    return customers
 
+
+def verify(config, matrix):
+    customers = create_customers(config)
     with tempfile.TemporaryDirectory(prefix="ocean-arm-first-") as first_dir, tempfile.TemporaryDirectory(prefix="ocean-arm-second-") as second_dir:
         first, second = [AzureCLI(customer, directory) for customer, directory in zip(customers, (first_dir, second_dir), strict=True)]
         for cli in (first, second):

@@ -53,6 +53,7 @@ func (s Subscription) Valid(tenant string) bool {
 type subscriptionReader struct {
 	location string
 	lookup   func(context.Context, string) (*Subscription, error)
+	granted  func(context.Context, Subscription, string) (bool, error)
 }
 
 // ARMPrincipal identifies a verified subject and its tenant subscription.
@@ -71,6 +72,14 @@ var (
 func (c *Compatibility) EnableSubscriptions(location string, lookup func(context.Context, string) (*Subscription, error)) {
 	if c.cloud.ResourceManager != "" {
 		c.subscriptions = &subscriptionReader{location: location, lookup: lookup}
+	}
+}
+
+// EnableSubscriptionGrants lets scoped roles expose their parent subscription
+// to clients without granting subscription-wide resource permissions.
+func (c *Compatibility) EnableSubscriptionGrants(check func(context.Context, Subscription, string) (bool, error)) {
+	if c.subscriptions != nil {
+		c.subscriptions.granted = check
 	}
 }
 
@@ -103,6 +112,13 @@ func (c *Compatibility) readSubscription(w http.ResponseWriter, r *http.Request)
 	}
 	entry := principal.Subscription
 	canRead := slices.Contains(entry.Members, principal.Subject)
+	if !canRead && c.subscriptions.granted != nil && (subscriptionID == "" || strings.EqualFold(entry.SubscriptionID, subscriptionID)) {
+		canRead, err = c.subscriptions.granted(ctx, entry, principal.Subject)
+		if err != nil {
+			armError(w, http.StatusServiceUnavailable, "ServiceUnavailable", "The subscription grants are unavailable.")
+			return
+		}
+	}
 	if subscriptionID == "" {
 		items := []map[string]any{}
 		if canRead {

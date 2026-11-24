@@ -28,13 +28,13 @@ type Group struct {
 type GroupStore interface {
 	GetGroup(context.Context, SubscriptionScope, string) (*Group, error)
 	ListGroups(context.Context, SubscriptionScope, string, int) ([]Group, error)
-	PutGroup(context.Context, SubscriptionScope, Group) (Group, bool, error)
-	DeleteGroup(context.Context, SubscriptionScope, string) error
+	PutGroup(context.Context, SubscriptionScope, Group, string) (Group, bool, error)
+	DeleteGroup(context.Context, SubscriptionScope, string, string) error
 }
 
 var ErrGroupLocation = errors.New("resource group location cannot change")
 
-func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, name string) {
+func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, name, actor, reader string) {
 	allowed := func(key, value string) bool {
 		return key == "$skiptoken" && name == "" && r.Method == http.MethodGet && validGroupName(value) && value == strings.ToLower(value)
 	}
@@ -44,7 +44,7 @@ func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	}
 	if name == "" {
 		if r.Method == http.MethodGet {
-			s.listGroups(ctx, w, scope, query.Get("$skiptoken"))
+			s.listGroups(ctx, w, scope, reader, query.Get("$skiptoken"))
 			return
 		}
 		methodNotAllowed(w, "GET")
@@ -52,12 +52,22 @@ func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		group, err := s.Groups.GetGroup(ctx, scope, name)
+		var group *Group
+		var err error
+		if reader != "" {
+			group, err = s.Roles.GetGrantedGroup(ctx, scope, name, reader)
+		} else {
+			group, err = s.Groups.GetGroup(ctx, scope, name)
+		}
 		if err != nil {
 			unavailable(w)
 			return
 		}
 		if group == nil {
+			if reader != "" {
+				writeError(w, http.StatusForbidden, "AuthorizationFailed", "The principal has no permission at this scope.")
+				return
+			}
 			writeError(w, http.StatusNotFound, "ResourceGroupNotFound", "The resource group could not be found.")
 			return
 		}
@@ -67,9 +77,9 @@ func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		}
 		writeJSON(w, http.StatusOK, group.view(scope))
 	case http.MethodPut:
-		s.putGroup(ctx, w, r, scope, name)
+		s.putGroup(ctx, w, r, scope, name, actor)
 	case http.MethodDelete:
-		if err := s.Groups.DeleteGroup(ctx, scope, name); err != nil {
+		if err := s.Groups.DeleteGroup(ctx, scope, name, actor); err != nil {
 			unavailable(w)
 			return
 		}
@@ -79,8 +89,14 @@ func (s Server) group(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (s Server) listGroups(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, after string) {
-	groups, err := s.Groups.ListGroups(ctx, scope, after, groupPageSize+1)
+func (s Server) listGroups(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, reader, after string) {
+	var groups []Group
+	var err error
+	if reader != "" {
+		groups, err = s.Roles.ListGrantedGroups(ctx, scope, reader, after, groupPageSize+1)
+	} else {
+		groups, err = s.Groups.ListGroups(ctx, scope, after, groupPageSize+1)
+	}
 	if err != nil {
 		unavailable(w)
 		return
@@ -101,7 +117,7 @@ func (s Server) listGroups(ctx context.Context, w http.ResponseWriter, scope Sub
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s Server) putGroup(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, name string) {
+func (s Server) putGroup(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, name, actor string) {
 	var input struct {
 		Location string            `json:"location"`
 		Tags     map[string]string `json:"tags"`
@@ -119,7 +135,7 @@ func (s Server) putGroup(ctx context.Context, w http.ResponseWriter, r *http.Req
 	if input.Tags == nil {
 		input.Tags = map[string]string{}
 	}
-	group, created, err := s.Groups.PutGroup(ctx, scope, Group{Name: name, Location: s.Location, Tags: input.Tags})
+	group, created, err := s.Groups.PutGroup(ctx, scope, Group{Name: name, Location: s.Location, Tags: input.Tags}, actor)
 	if errors.Is(err, ErrGroupLocation) {
 		writeError(w, http.StatusConflict, "InvalidResourceGroupLocation", "The resource group location cannot change.")
 		return
@@ -166,7 +182,11 @@ type groupView struct {
 	Properties map[string]string `json:"properties"`
 }
 
+func (g Group) ResourceID(scope SubscriptionScope) string {
+	return groupID(scope, g.Name)
+}
+
 func (g Group) view(scope SubscriptionScope) groupView {
-	return groupView{ID: "/subscriptions/" + scope.SubscriptionID + "/resourceGroups/" + g.Name, Type: "Microsoft.Resources/resourceGroups",
+	return groupView{ID: g.ResourceID(scope), Type: "Microsoft.Resources/resourceGroups",
 		Group: g, Properties: map[string]string{"provisioningState": "Succeeded"}}
 }

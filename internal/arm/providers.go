@@ -27,15 +27,26 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 	if _, ok := readQuery(w, r, resourceAPIVersion, nil); !ok {
 		return
 	}
-	if !strings.EqualFold(namespace, "Microsoft.Resources") {
+	var types []providerResourceType
+	switch strings.ToLower(namespace) {
+	case "microsoft.resources":
+		namespace = "Microsoft.Resources"
+		types = []providerResourceType{{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}}}
+	case "microsoft.authorization":
+		namespace = "Microsoft.Authorization"
+		types = []providerResourceType{
+			{ResourceType: "roleAssignments", Locations: []string{}, APIVersions: []string{assignmentAPIVersion}},
+			{ResourceType: "roleDefinitions", Locations: []string{}, APIVersions: []string{definitionAPIVersion}},
+		}
+	default:
 		writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
 		return
 	}
 	writeJSON(w, http.StatusOK, providerView{
-		ID:                 "/subscriptions/" + scope.SubscriptionID + "/providers/Microsoft.Resources",
-		Namespace:          "Microsoft.Resources",
+		ID:                 "/subscriptions/" + scope.SubscriptionID + "/providers/" + namespace,
+		Namespace:          namespace,
 		RegistrationState:  "Registered",
 		RegistrationPolicy: "RegistrationFree",
-		ResourceTypes:      []providerResourceType{{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}}},
+		ResourceTypes:      types,
 	})
 }

@@ -17,24 +17,66 @@ import (
 const resourceAPIVersion = "2024-11-01"
 
 type Server struct {
-	Origin       string
-	Location     string
-	Authenticate func(context.Context, *http.Request) (identity.ARMPrincipal, error)
-	Groups       GroupStore
+	Origin          string
+	Location        string
+	Authenticate    func(context.Context, *http.Request) (identity.ARMPrincipal, error)
+	Groups          GroupStore
+	Roles           RoleStore
+	PrincipalExists func(context.Context, string, string, string) (bool, error)
+}
+
+type armRoute struct {
+	collection string
+	group      string
+	name       string
+}
+
+func parseRoute(segments []string) armRoute {
+	if len(segments) < 3 || !strings.EqualFold(segments[0], "subscriptions") {
+		return armRoute{}
+	}
+	if len(segments) == 4 && strings.EqualFold(segments[2], "providers") {
+		return armRoute{collection: "providers", name: segments[3]}
+	}
+	var group string
+	start := 2
+	if strings.EqualFold(segments[2], "resourcegroups") {
+		if len(segments) == 3 {
+			return armRoute{collection: "groups"}
+		}
+		group = segments[3]
+		if !validGroupName(group) {
+			return armRoute{collection: "invalidGroup"}
+		}
+		if len(segments) == 4 {
+			return armRoute{collection: "groups", group: group}
+		}
+		start = 4
+	}
+	if (len(segments) != start+3 && len(segments) != start+4) || !strings.EqualFold(segments[start], "providers") ||
+		!strings.EqualFold(segments[start+1], "Microsoft.Authorization") {
+		return armRoute{}
+	}
+	collection := strings.ToLower(segments[start+2])
+	if collection != "roleassignments" && collection != "roledefinitions" {
+		return armRoute{}
+	}
+	route := armRoute{collection: collection, group: group}
+	if len(segments) == start+4 {
+		route.name = segments[start+3]
+		if !validUUID.MatchString(route.name) {
+			route.collection = "invalidRoleID"
+		}
+	}
+	return route
 }
 
 // Handler serves ARM routes over the same ingress as identity and discovery.
 func (s Server) Handler(fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		if !strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) ||
-			(len(segments) != 3 && len(segments) != 4) || !strings.EqualFold(segments[0], "subscriptions") {
-			fallback.ServeHTTP(w, r)
-			return
-		}
-		resourceGroup := strings.EqualFold(segments[2], "resourcegroups")
-		provider := len(segments) == 4 && strings.EqualFold(segments[2], "providers")
-		if !resourceGroup && !provider {
+		route := parseRoute(segments)
+		if route.collection == "" || !strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
 			fallback.ServeHTTP(w, r)
 			return
 		}
@@ -45,25 +87,70 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			return
 		}
 		entry := principal.Subscription
-		if !slices.Contains(entry.Members, principal.Subject) {
-			writeError(w, http.StatusForbidden, "AuthorizationFailed", "The principal has no permission at this scope.")
-			return
-		}
 		scope := SubscriptionScope{TenantID: entry.TenantID, SubscriptionID: entry.SubscriptionID}
-		if provider {
-			s.provider(w, r, scope, segments[3])
-			return
-		}
-		name := ""
-		if len(segments) == 4 {
-			name = segments[3]
-			if !validGroupName(name) {
-				writeError(w, http.StatusBadRequest, "InvalidResourceGroup", "The resource group name is invalid.")
+		reader := ""
+		if !slices.Contains(entry.Members, principal.Subject) {
+			if !s.authorizeReader(ctx, w, r, scope, route, principal.Subject) {
 				return
 			}
+			reader = principal.Subject
 		}
-		s.group(ctx, w, r, scope, name)
+		switch route.collection {
+		case "groups":
+			s.group(ctx, w, r, scope, route.group, principal.Subject, reader)
+		case "providers":
+			s.provider(w, r, scope, route.name)
+		case "roledefinitions":
+			s.roleDefinitions(w, r, scope, route.name)
+		case "roleassignments":
+			s.roleAssignments(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "invalidGroup":
+			writeError(w, http.StatusBadRequest, "InvalidResourceGroup", "The resource group name is invalid.")
+		case "invalidRoleID":
+			writeError(w, http.StatusBadRequest, "InvalidRoleAssignmentId", "The resource identifier must be a UUID.")
+		}
 	})
+}
+
+func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
+	read := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if read && (route.collection == "groups" || route.collection == "roleassignments" && route.group != "") {
+		return true // Scoped reads apply the grant in the same store operation as the resource read.
+	}
+	if read {
+		var granted bool
+		var err error
+		if route.group != "" {
+			granted, err = s.Roles.GroupGrant(ctx, scope, route.group, subject)
+		} else {
+			granted, err = s.Roles.SubscriptionGrant(ctx, scope, subject)
+		}
+		if err != nil {
+			unavailable(w)
+			return false
+		}
+		if granted {
+			return true
+		}
+	}
+	if (r.Method == http.MethodPut || r.Method == http.MethodDelete) && (route.collection == "groups" || route.collection == "roleassignments") {
+		action := "Microsoft.Resources/subscriptions/resourceGroups/"
+		if route.collection == "roleassignments" {
+			action = "Microsoft.Authorization/roleAssignments/"
+		}
+		if r.Method == http.MethodDelete {
+			action += "delete"
+		} else {
+			action += "write"
+		}
+		event := AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action, Target: r.URL.Path, Outcome: "Denied"}
+		if err := s.Roles.RecordAudit(ctx, scope, event); err != nil {
+			unavailable(w)
+			return false
+		}
+	}
+	writeError(w, http.StatusForbidden, "AuthorizationFailed", "The principal has no permission at this scope.")
+	return false
 }
 
 func (s Server) subscriptionPrincipal(ctx context.Context, w http.ResponseWriter, r *http.Request, subscription string) (identity.ARMPrincipal, bool) {
