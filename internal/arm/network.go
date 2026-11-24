@@ -180,8 +180,8 @@ func (e invalidNetwork) Error() string { return e.message }
 
 var (
 	errVirtualNetworkMissing    = errors.New("virtual network not found")
-	errInvalidNetworkReference  = errors.New("network security groups must be in the same subscription and resource group as the virtual network")
-	errTooManyNetworkReferences = errors.New("too many distinct network security groups are attached to the virtual network")
+	errInvalidNetworkReference  = errors.New("linked network resources must be in the same subscription and resource group")
+	errTooManyNetworkReferences = errors.New("too many distinct network resources are attached to the virtual network")
 )
 
 func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, actor string, address ResourceAddress, path networkPath) {
@@ -248,8 +248,14 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 						return nil, invalidNetwork{"subnet names must be valid and unique within a virtual network"}
 					}
 					seen[name] = true
-					if index := properties.SubnetIndex(subnet.Name); index >= 0 && subnet.Properties.NetworkSecurityGroup == nil {
-						subnet.Properties.NetworkSecurityGroup = properties.Subnets[index].Properties.NetworkSecurityGroup
+					if index := properties.SubnetIndex(subnet.Name); index >= 0 {
+						current := properties.Subnets[index].Properties
+						if subnet.Properties.NetworkSecurityGroup == nil {
+							subnet.Properties.NetworkSecurityGroup = current.NetworkSecurityGroup
+						}
+						if subnet.Properties.NATGateway == nil {
+							subnet.Properties.NATGateway = current.NATGateway
+						}
 					}
 					if err := upsertSubnet(&properties, canonical.ID(scope), subnet); err != nil {
 						return nil, err
@@ -298,30 +304,27 @@ func (s Server) changeNetwork(ctx context.Context, w http.ResponseWriter, r *htt
 func normalizeNetworkReferences(scope SubscriptionScope, group string, subnets []network.Subnet) ([]ResourceAddress, error) {
 	seen := make(map[string]bool)
 	var references []ResourceAddress
-	prefix := (ResourceAddress{Group: group, Path: securityGroupType}).ID(scope) + "/"
 	for index := range subnets {
-		subnet := &subnets[index]
-		if subnet.Properties.NetworkSecurityGroup == nil {
-			continue
-		}
-		id := subnet.Properties.NetworkSecurityGroup.ID
-		if len(id) < len(prefix) || !strings.EqualFold(id[:len(prefix)], prefix) {
-			return nil, errInvalidNetworkReference
-		}
-		name := id[len(prefix):]
-		// Azure CLI expands an empty group name to the collection ID with
-		// a trailing slash when detaching a security group.
-		if name == "" {
-			subnet.Properties.NetworkSecurityGroup = nil
-			continue
-		}
-		if !network.ValidName(name) {
-			return nil, errInvalidNetworkReference
-		}
-		ref := ResourceAddress{Group: group, Path: securityGroupType + "/" + strings.ToLower(name)}
-		if !seen[ref.Key()] {
-			seen[ref.Key()] = true
-			references = append(references, ref)
+		properties := &subnets[index].Properties
+		for _, linked := range []struct {
+			kind  string
+			value **network.ResourceReference
+		}{{securityGroupType, &properties.NetworkSecurityGroup}, {network.NATGatewayType, &properties.NATGateway}} {
+			if *linked.value == nil {
+				continue
+			}
+			ref, err := networkReference(scope, group, linked.kind, *linked.value, true)
+			if err != nil {
+				return nil, err
+			}
+			if ref.Path == "" {
+				*linked.value = nil
+				continue
+			}
+			if !seen[ref.Key()] {
+				seen[ref.Key()] = true
+				references = append(references, ref)
+			}
 		}
 	}
 	if len(references) > MaxResourceReferences {
@@ -329,6 +332,24 @@ func normalizeNetworkReferences(scope SubscriptionScope, group string, subnets [
 	}
 	slices.SortFunc(references, func(a, b ResourceAddress) int { return strings.Compare(a.Path, b.Path) })
 	return references, nil
+}
+
+func networkReference(scope SubscriptionScope, group, kind string, value *network.ResourceReference, allowDetach bool) (ResourceAddress, error) {
+	prefix := (ResourceAddress{Group: group, Path: kind}).ID(scope) + "/"
+	id := value.ID
+	if len(id) < len(prefix) || !strings.EqualFold(id[:len(prefix)], prefix) {
+		return ResourceAddress{}, errInvalidNetworkReference
+	}
+	name := id[len(prefix):]
+	// Azure CLI expands an empty name to the collection ID with a trailing
+	// slash when detaching a network resource from a subnet.
+	if name == "" && allowDetach {
+		return ResourceAddress{}, nil
+	}
+	if !network.ValidName(name) {
+		return ResourceAddress{}, errInvalidNetworkReference
+	}
+	return ResourceAddress{Group: group, Path: kind + "/" + strings.ToLower(name)}, nil
 }
 
 func createdStatus(created bool) int {

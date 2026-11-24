@@ -30,3 +30,12 @@ NETWORK-01	nsg-rule-create	2.93.0	none	2022-01-01	network nsg rule create --reso
 NETWORK-01	nsg-rule-show	2.93.0	none	2022-01-01	network nsg rule show --resource-group {group} --nsg-name {nsg} --name {rule} -o json
 NETWORK-01	nsg-rule-list	2.93.0	none	2022-01-01	network nsg rule list --resource-group {group} --nsg-name {nsg} --include-default -o json
 NETWORK-01	nsg-rule-delete	2.93.0	none	2022-01-01	network nsg rule delete --resource-group {group} --nsg-name {nsg} --name {rule} -o none
+NETWORK-03	public-ip-create	2.93.0	none	2025-09-01	network public-ip create --resource-group {group} --name {ip} --location {location} --sku Standard --tier Regional --version IPv4 --allocation-method Static -o json
+NETWORK-03	public-ip-show	2.93.0	none	2025-09-01	network public-ip show --resource-group {group} --name {ip} -o json
+NETWORK-03	public-ip-list	2.93.0	none	2025-09-01	network public-ip list --resource-group {group} -o json
+NETWORK-03	public-ip-delete	2.93.0	none	2025-09-01	network public-ip delete --resource-group {group} --name {ip} -o none
+NETWORK-03	nat-create	2.93.0	none	2025-07-01	network nat gateway create --resource-group {group} --name {nat} --location {location} --sku Standard --idle-timeout 4 --public-ip-addresses {ip} -o json
+NETWORK-03	nat-show	2.93.0	none	2025-07-01	network nat gateway show --resource-group {group} --name {nat} -o json
+NETWORK-03	nat-list	2.93.0	none	2025-07-01	network nat gateway list --resource-group {group} -o json
+NETWORK-03	nat-delete	2.93.0	none	2025-07-01	network nat gateway delete --resource-group {group} --name {nat} -o none
+NETWORK-03	subnet-nat	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --nat-gateway {nat} -o json

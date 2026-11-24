@@ -41,6 +41,8 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 			{ResourceType: "virtualNetworks/subnets", Locations: []string{s.Location}, APIVersions: []string{network.SubnetAPIVersion}},
 			{ResourceType: "networkSecurityGroups", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
 			{ResourceType: "networkSecurityGroups/securityRules", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
+			{ResourceType: "publicIPAddresses", Locations: []string{s.Location}, APIVersions: []string{network.PublicIPAPIVersion}},
+			{ResourceType: "natGateways", Locations: []string{s.Location}, APIVersions: []string{network.NATAPIVersion}},
 		}
 	case "microsoft.authorization":
 		namespace = "Microsoft.Authorization"

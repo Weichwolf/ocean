@@ -193,6 +193,21 @@ Attach or detach a security group with `az network vnet subnet update --network-
 
 Add `--firewall-node farm-1-node-05` to the verifier command to run the packet tests in a disposable Debian KVM guest. The host running the verifier uses Python 3 with PyYAML. The guest needs the installed node agent, nftables, curl, Python 3, and access to the pinned BusyBox fixture. The test exports the configured Azure CLI rules from the ARM view, attaches a rootless Podman fixture to an isolated router namespace, and applies the rules through an atomic nftables transaction. It checks that rule priority controls ingress and egress, unassigned addresses and protected management prefixes are blocked, and overlapping tenant networks stay isolated. Find the results in `evidence/routed-podman-firewall.log`. [nftables manual](https://www.netfilter.org/projects/nftables/manpage.html)
 
+## Static IPv4 and NAT gateway
+
+Configure the same `region.publicIPv4Addresses` entries on each regional API replica. Supply up to 256 distinct IPv4 addresses approved for the region. The first startup commits the regional pool. Later startups require the same set so every replica makes decisions against one inventory. Upgrade the API replicas before enabling the pool when rolling forward from a release without public IP support.
+
+Azure CLI 2.93.0 uses API version `2025-09-01` for regional Standard static IPv4 addresses and `2025-07-01` for Standard NAT gateways with one public address. Allocation commits with resource creation, stays fixed across retries, and returns to the pool when the resource or its resource group is deleted. A public address can have one owning association at a time. Subnets attach or detach a same-group gateway through `az network vnet subnet update --nat-gateway` on API version `2024-07-01`. A subnet attachment keeps the NAT gateway in use, and the gateway keeps its public address in use. [Public IP template schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2025-09-01/publicipaddresses) · [NAT gateway template schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2025-07-01/natgateways)
+
+```sh
+python3 lab/enrollment.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 \
+  --public-ipv4 198.51.100.20 --public-ipv4 198.51.100.21
+python3 lab/verify_egress.py --state "$OCEAN_LAB_STATE" --pool 198.51.100.20 198.51.100.21 \
+  --gateway-node farm-1-node-05
+```
+
+Use a dedicated lab with an empty two-address pool for this verifier. The optional packet stage needs nftables and Keepalived alongside the node agent, curl, Python, and the pinned BusyBox fixture. It runs two gateway namespaces on one disposable KVM guest, with separate tenant and external links. The external HTTP observer reports the source address of a fresh TCP connection before and after the active gateway loses its uplink. The test gives the standby eight seconds to recover and records the measured time. The verifier writes `evidence/public-ip-nat-arm.json` and `evidence/fixed-egress-packet.log`. Gateway fencing, automatic workload attachment, and the Functions egress case need their deployment-level runs.
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.

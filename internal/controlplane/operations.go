@@ -161,6 +161,12 @@ func (r *Region) completeGroupDeletion(ctx context.Context, scope arm.Subscripti
 		}
 		conditions = append(conditions, clientv3.Compare(clientv3.ModRevision(groupKey), "=", groupEntry.ModRevision))
 		if group.DeleteOperation == op.ID {
+			poolConditions, poolChanges, err := r.releaseGroupPublicIPs(ctx, scope, op.Group)
+			if err != nil {
+				return err
+			}
+			conditions = append(conditions, poolConditions...)
+			mutations = append(mutations, poolChanges...)
 			op.Status = arm.OperationSucceeded
 			mutations = append(mutations, clientv3.OpDelete(groupKey),
 				clientv3.OpDelete(r.groupInventoryPrefix(scope, op.Group), clientv3.WithPrefix()),

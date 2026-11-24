@@ -188,7 +188,7 @@ def verify(config, matrix_path):
         require_error(primary.request("GET", vnet_url, query="api-version=2000-01-01"), 400, "InvalidApiVersionParameter")
         invalid = [({"properties": {"addressPrefix": "10.73.4.0/24"}}, "InvalidAddressPrefix"),
                    ({"properties": {"addressPrefix": "10.72.3.0/25"}}, "InvalidAddressPrefix"),
-                   ({"properties": {"addressPrefix": "10.72.4.0/24", "natGateway": {"id": "invalid"}}}, "InvalidRequestContent")]
+                   ({"properties": {"addressPrefix": "10.72.4.0/24", "natGateway": {"id": "invalid"}}}, "InvalidResourceReference")]
         for payload, code in invalid:
             require_error(primary.request("PUT", vnet_url + "/subnets/invalid", payload, subnet_version), 400, code)
         spoofed = {"id": foreign_id + "/subnets/standalone", "properties": {"addressPrefix": "10.72.4.0/24"}}

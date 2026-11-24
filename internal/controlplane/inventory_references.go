@@ -39,6 +39,14 @@ func (r *Region) inventoryReferenceChanges(ctx context.Context, scope arm.Subscr
 	if len(reads) == 0 {
 		return nil, mutations, nil
 	}
+	exclusive := make(map[int]int)
+	for index, ref := range additions {
+		if isPublicIPAddress(ref) {
+			exclusive[index] = len(reads)
+			reads = append(reads, clientv3.OpGet(r.dependentsPrefix(scope, ref), clientv3.WithPrefix(),
+				clientv3.WithLimit(1), clientv3.WithRev(revision), clientv3.WithKeysOnly()))
+		}
+	}
 	targets, err := r.client.Txn(ctx).Then(reads...).Commit()
 	if err != nil {
 		return nil, nil, err
@@ -51,7 +59,14 @@ func (r *Region) inventoryReferenceChanges(ctx context.Context, scope arm.Subscr
 		}
 		target := keys[0]
 		conditions = append(conditions, clientv3.Compare(clientv3.CreateRevision(string(target.Key)), "=", target.CreateRevision))
-		mutations = append(mutations, clientv3.OpPut(r.dependentsPrefix(scope, ref)+suffix, ""))
+		indexPrefix := r.dependentsPrefix(scope, ref)
+		if offset, ok := exclusive[index]; ok {
+			if len(targets.Responses[offset].GetResponseRange().Kvs) != 0 {
+				return nil, nil, arm.ErrPublicIPInUse
+			}
+			conditions = append(conditions, clientv3.Compare(clientv3.Version(indexPrefix), "=", 0).WithPrefix())
+		}
+		mutations = append(mutations, clientv3.OpPut(indexPrefix+suffix, ""))
 	}
 	return conditions, mutations, nil
 }

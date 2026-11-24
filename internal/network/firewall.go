@@ -29,17 +29,21 @@ type WorkloadFirewall struct {
 // Apply installs a complete policy in an existing isolated routing namespace.
 // A failed nft transaction leaves the previous policy in place.
 func (f WorkloadFirewall) Apply(ctx context.Context, namespace string) error {
-	if !linkName.MatchString(namespace) {
-		return errors.New("invalid routing namespace")
-	}
 	ruleset, err := f.ruleset()
 	if err != nil {
 		return err
 	}
+	return applyNftRules(ctx, namespace, ruleset)
+}
+
+func applyNftRules(ctx context.Context, namespace, ruleset string) error {
+	if !linkName.MatchString(namespace) {
+		return errors.New("invalid routing namespace")
+	}
 	command := exec.CommandContext(ctx, "/usr/bin/ip", "netns", "exec", namespace, "/usr/sbin/nft", "-f", "-")
 	command.Stdin = strings.NewReader(ruleset)
 	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("apply firewall to %s: %w: %s", namespace, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("apply nftables policy to %s: %w: %s", namespace, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

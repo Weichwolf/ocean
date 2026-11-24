@@ -109,6 +109,8 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 		route.collection = "network"
 	case "networksecuritygroups":
 		route.collection = "securityGroup"
+	case "publicipaddresses", "natgateways":
+		route.collection = "egress"
 	default:
 		return route, false
 	}
@@ -157,6 +159,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "securityGroup":
 			s.securityGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "egress":
+			s.egressResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "resource":
 			s.showResource(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
 		case "invalidGroup":
@@ -169,7 +173,7 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
-	networkResource := route.collection == "network" || route.collection == "securityGroup"
+	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress"
 	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || networkResource ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
@@ -208,6 +212,9 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 		if route.collection == "securityGroup" {
 			path, _ := parseSecurityGroupPath(route.name)
 			action = securityGroupAction(r.Method, path)
+		}
+		if route.collection == "egress" {
+			action = egressAction(r.Method, egressResourceType(strings.Split(route.name, "/")[1]))
 		}
 		event := AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action, Target: r.URL.Path, Outcome: "Denied"}
 		if err := s.Roles.RecordAudit(ctx, scope, event); err != nil {

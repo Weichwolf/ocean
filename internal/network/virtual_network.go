@@ -49,6 +49,7 @@ type SubnetProperties struct {
 	PrivateLinkServiceNetworkPolicies string             `json:"privateLinkServiceNetworkPolicies,omitempty"`
 	DefaultOutboundAccess             *bool              `json:"defaultOutboundAccess,omitempty"`
 	NetworkSecurityGroup              *ResourceReference `json:"networkSecurityGroup,omitempty"`
+	NATGateway                        *ResourceReference `json:"natGateway,omitempty"`
 	ProvisioningState                 string             `json:"provisioningState,omitempty"`
 }
 

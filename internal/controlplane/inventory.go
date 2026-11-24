@@ -167,10 +167,14 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 		}
 		if saved != nil && resource != nil && saved.APIVersion == resource.APIVersion && saved.Location == resource.Location &&
 			saved.ProvisioningState == resource.ProvisioningState && maps.Equal(saved.Tags, resource.Tags) && bytes.Equal(saved.Properties, resource.Properties) &&
-			slices.Equal(saved.References, resource.References) {
+			saved.SKU == resource.SKU && slices.Equal(saved.References, resource.References) {
 			return saved, false, nil
 		}
 		referenceConditions, referenceChanges, err := r.inventoryReferenceChanges(ctx, scope, canonical, saved, resource, result.Header.Revision)
+		if err != nil {
+			return nil, false, err
+		}
+		poolConditions, poolChanges, err := r.publicIPChange(ctx, key, canonical, saved, resource, result.Header.Revision)
 		if err != nil {
 			return nil, false, err
 		}
@@ -188,13 +192,15 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 			data, _ := json.Marshal(resource)
 			mutation = clientv3.OpPut(key, string(data))
 		}
-		mutations := append(referenceChanges, mutation)
+		mutations := append(referenceChanges, poolChanges...)
+		mutations = append(mutations, mutation)
 		if actor != "" {
 			mutations = append(mutations, r.auditOp(scope, arm.AuditEvent{Time: now, Actor: actor, Action: action,
 				Target: canonical.ID(scope) + auditSuffix, Outcome: "Succeeded"}))
 		}
 		conditions := append(referenceConditions, clientv3.Compare(clientv3.ModRevision(groupKey), "=", record.ModRevision),
 			clientv3.Compare(clientv3.ModRevision(key), "=", revision))
+		conditions = append(conditions, poolConditions...)
 		var onConflict []clientv3.Op
 		if resource == nil {
 			prefix := r.dependentsPrefix(scope, canonical)
