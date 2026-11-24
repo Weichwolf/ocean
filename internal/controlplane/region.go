@@ -13,13 +13,15 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type settings struct {
 	config.Server
-	Region *regionConfig `json:"region"`
+	Region   *regionConfig    `json:"region"`
+	Identity *identity.Config `json:"identity"`
 }
 
 type regionConfig struct {
@@ -46,14 +48,24 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if err := cfg.Server.Validate(); err != nil {
 		return config.Server{}, service.Hooks{}, err
 	}
-	if cfg.Region == nil {
-		return cfg.Server, service.Hooks{}, nil
+	var hooks service.Hooks
+	if cfg.Identity != nil {
+		compatibility, err := cfg.Identity.OpenCompatibility()
+		if err != nil {
+			return config.Server{}, service.Hooks{}, err
+		}
+		hooks.Handler = compatibility.Handler()
 	}
-	region, err := openRegion(*cfg.Region)
-	if err != nil {
-		return config.Server{}, service.Hooks{}, err
+	if cfg.Region != nil {
+		region, err := openRegion(*cfg.Region)
+		if err != nil {
+			return config.Server{}, service.Hooks{}, err
+		}
+		hooks.Startup = region.bootstrap
+		hooks.Readiness = region.ready
+		hooks.Close = region.client.Close
 	}
-	return cfg.Server, service.Hooks{Startup: region.bootstrap, Readiness: region.ready, Close: region.client.Close}, nil
+	return cfg.Server, hooks, nil
 }
 
 // Region owns the initial metadata for one region. Resource providers use their

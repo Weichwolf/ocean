@@ -23,6 +23,7 @@ type Hooks struct {
 	Startup   func(context.Context) error
 	Readiness func(context.Context) error
 	Close     func() error
+	Handler   http.Handler
 }
 
 // Main parses service options and serves until the process is stopped.
@@ -63,7 +64,7 @@ func Main(component string, load func(string) (config.Server, Hooks, error)) int
 
 func serve(ctx context.Context, settings config.Server, hooks Hooks, logger *slog.Logger) error {
 	server := &http.Server{
-		Handler:           healthHandler(ctx, hooks.Readiness),
+		Handler:           serviceHandler(ctx, hooks),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
@@ -133,8 +134,11 @@ func serve(ctx context.Context, settings config.Server, hooks Hooks, logger *slo
 	}
 }
 
-func healthHandler(ctx context.Context, ready func(context.Context) error) http.Handler {
+func serviceHandler(ctx context.Context, hooks Hooks) http.Handler {
 	mux := http.NewServeMux()
+	if hooks.Handler != nil {
+		mux.Handle("/", hooks.Handler)
+	}
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNoContent)
@@ -145,10 +149,10 @@ func healthHandler(ctx context.Context, ready func(context.Context) error) http.
 			http.Error(w, "Service is stopping", http.StatusServiceUnavailable)
 			return
 		}
-		if ready != nil {
+		if hooks.Readiness != nil {
 			probe, cancel := context.WithTimeout(request.Context(), time.Second)
 			defer cancel()
-			if err := ready(probe); err != nil {
+			if err := hooks.Readiness(probe); err != nil {
 				http.Error(w, "Service is not ready", http.StatusServiceUnavailable)
 				return
 			}
