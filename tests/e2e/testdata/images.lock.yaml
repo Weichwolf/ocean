@@ -1,0 +1,39 @@
+version: 1
+platform: linux/amd64
+images:
+  busybox:
+    repository: docker.io/library/busybox
+    tag: 1.37.0-musl
+    digest: sha256:5624bb6777cf469b1fb50ae3f981b15d2715ee2fffaf20b9998cfb7843726835
+  nginx:
+    repository: docker.io/library/nginx
+    tag: alpine-slim
+    digest: sha256:836c5af5a07dbff704e8ba7971d20dd55bc96d5748a03129f02bd4ce25836e0d
+  curl:
+    repository: docker.io/curlimages/curl
+    tag: latest
+    digest: sha256:3b8fde20978e330b401837f24b871ebe2c8d14ff7f07b87990bcd832588a1a75
+  valkey:
+    repository: docker.io/valkey/valkey
+    tag: 8-alpine
+    digest: sha256:bba7a8ff03d38e61a98c3ce3d37ababcff29ff73b8e0ee06a1b14a22a1fa1005
+  aci-helloworld:
+    repository: mcr.microsoft.com/azuredocs/aci-helloworld
+    tag: latest
+    digest: sha256:b9cec4d6b50c6bf25e3f7f93bdc1628e5dca972cf132d38ed8f5bc955bb179c3
+  functions-java:
+    repository: mcr.microsoft.com/azure-functions/java
+    tag: 4-java21
+    digest: sha256:f49601ed0a16a3356fb30bd97c378d83993279c07474b55c4749c430dc898781
+  functions-dotnet:
+    repository: mcr.microsoft.com/azure-functions/dotnet-isolated
+    tag: 4-dotnet-isolated10.0-chiseled
+    digest: sha256:086260ee1c2cab89311fda113cf884aa61b5cdfaac146c4b5c70459a514509e3
+  functions-node:
+    repository: mcr.microsoft.com/azure-functions/node
+    tag: 4-node22
+    digest: sha256:76b0a2318403992100bdc72f2698e9d938e1a3b1e210c28c11aaaeb57221a6c1
+  functions-go:
+    repository: mcr.microsoft.com/azure-functions/base
+    tag: "4"
+    digest: sha256:afde22c6a8966c652fc56420535a24dd4775d02f8e56991134f221946f46e1b7
