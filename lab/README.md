@@ -187,6 +187,8 @@ Address spaces use canonical private IPv4 prefixes. A subnet prefix must fit ins
 
 Run `python3 lab/verify_network.py --state "$OCEAN_LAB_STATE"` from the host after deploying the control plane and the pinned CLI. It checks the ARM lifecycle with fresh tenants, competing subnet reservations, inventory, and resource group cleanup. It writes `evidence/virtual-network-arm.json`. Workload attachment, packet filtering, and egress failover are verified by their own acceptance scenarios.
 
+The verifier also exercises security groups and named rules through `az network nsg` on API version `2022-01-01`. The supported custom rules use inbound or outbound priority, allow or deny, IPv4 or wildcard address selectors, and TCP, UDP, ICMP, or wildcard protocols. Port constraints apply to TCP and UDP. The group returns the six read-only default rules alongside custom rules when requested. [Security rules resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/networksecuritygroups/securityrules) · [Network security group defaults](https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview)
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.

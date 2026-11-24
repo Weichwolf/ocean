@@ -21,3 +21,11 @@ NETWORK-01	subnet-show	2.93.0	none	2024-07-01	network vnet subnet show --resourc
 NETWORK-01	subnet-update	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --address-prefixes {subnet_prefix} -o json
 NETWORK-01	subnet-list	2.93.0	none	2024-07-01	network vnet subnet list --resource-group {group} --vnet-name {vnet} -o json
 NETWORK-01	subnet-delete	2.93.0	none	2024-07-01	network vnet subnet delete --resource-group {group} --vnet-name {vnet} --name {subnet} -o none
+NETWORK-01	nsg-create	2.93.0	none	2022-01-01	network nsg create --resource-group {group} --name {nsg} --location {location} -o json
+NETWORK-01	nsg-show	2.93.0	none	2022-01-01	network nsg show --resource-group {group} --name {nsg} -o json
+NETWORK-01	nsg-list	2.93.0	none	2022-01-01	network nsg list --resource-group {group} -o json
+NETWORK-01	nsg-delete	2.93.0	none	2022-01-01	network nsg delete --resource-group {group} --name {nsg} -o none
+NETWORK-01	nsg-rule-create	2.93.0	none	2022-01-01	network nsg rule create --resource-group {group} --nsg-name {nsg} --name {rule} --protocol Tcp --priority {priority} --source-address-prefixes {source} --destination-port-ranges {port} --direction {direction} --access {access} -o json
+NETWORK-01	nsg-rule-show	2.93.0	none	2022-01-01	network nsg rule show --resource-group {group} --nsg-name {nsg} --name {rule} -o json
+NETWORK-01	nsg-rule-list	2.93.0	none	2022-01-01	network nsg rule list --resource-group {group} --nsg-name {nsg} --include-default -o json
+NETWORK-01	nsg-rule-delete	2.93.0	none	2022-01-01	network nsg rule delete --resource-group {group} --nsg-name {nsg} --name {rule} -o none

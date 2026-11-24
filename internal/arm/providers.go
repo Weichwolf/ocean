@@ -39,6 +39,8 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		types = []providerResourceType{
 			{ResourceType: "virtualNetworks", Locations: []string{s.Location}, APIVersions: []string{network.VNetAPIVersion}},
 			{ResourceType: "virtualNetworks/subnets", Locations: []string{s.Location}, APIVersions: []string{network.SubnetAPIVersion}},
+			{ResourceType: "networkSecurityGroups", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
+			{ResourceType: "networkSecurityGroups/securityRules", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
 		}
 	case "microsoft.authorization":
 		namespace = "Microsoft.Authorization"

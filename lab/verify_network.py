@@ -22,7 +22,7 @@ def main():
     output = state / "evidence"
     output.mkdir(mode=0o700, exist_ok=True)
     (output / "virtual-network-arm.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    print(f"Azure CLI {evidence['azureCLI']} verified VNet and subnet lifecycle, atomic overlap rejection, and tenant isolation.")
+    print(f"Azure CLI {evidence['azureCLI']} verified VNet, subnet, and security group lifecycle, atomic overlap rejection, and tenant isolation.")
 
 
 if __name__ == "__main__":

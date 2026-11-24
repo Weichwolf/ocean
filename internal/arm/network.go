@@ -87,7 +87,7 @@ func (s Server) network(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if path.VNet == "" {
-		s.listVirtualNetworks(ctx, w, scope, reader, group, query)
+		s.listNetworkResources(ctx, w, scope, reader, group, virtualNetworkType, query)
 		return
 	}
 	address := ResourceAddress{Group: group, Path: virtualNetworkType + "/" + path.VNet}
@@ -127,13 +127,13 @@ func (s Server) network(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (s Server) listVirtualNetworks(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, reader, group string, query url.Values) {
+func (s Server) listNetworkResources(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, reader, group, resourceType string, query url.Values) {
 	search, ok := inventoryQuery(query, group)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "InvalidQueryParameter", "The virtual network continuation is invalid.")
+		writeError(w, http.StatusBadRequest, "InvalidQueryParameter", "The network continuation is invalid.")
 		return
 	}
-	search.Type = virtualNetworkType
+	search.Type = resourceType
 	resources, err := s.Inventory.ListInventoryResources(ctx, scope, reader, search, inventoryPageSize+1)
 	if err != nil {
 		inventoryError(w, err)
@@ -151,7 +151,7 @@ func (s Server) listVirtualNetworks(ctx context.Context, w http.ResponseWriter, 
 		if group != "" {
 			path += "/resourceGroups/" + url.PathEscape(group)
 		}
-		response["nextLink"] = s.Origin + path + "/providers/" + virtualNetworkType + "?" + query.Encode()
+		response["nextLink"] = s.Origin + path + "/providers/" + resourceType + "?" + query.Encode()
 	}
 	writeJSON(w, http.StatusOK, response)
 }
