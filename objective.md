@@ -60,6 +60,12 @@ Offer fixed counts and local autoscaling in phase one. Qualify geo placement and
 - **Workload network.** Carry Linux container, Functions, and guest VM traffic on a separate segment. Route tenant subnets through enforced isolation and firewall rules. Gateway interfaces connect the relevant networks and forward only permitted traffic.
 - **On-premises network.** Connect a separate customer network through two WireGuard gateways. Route only the authorized tenant prefixes through the tunnels. Test reachability and routing failover from the customer side.
 
+### DNS and service entry points
+
+Publish node names from the provisioning inventory. Use redundant authoritative DNS for management, identity, service names, and discoverable federation endpoints. Regional names point to the regional virtual IP or an equivalent redundant frontend. Federation uses DNS to find approved peers and mTLS to authenticate them.
+
+Geo-redundant services need a reachable ingress path through loss of a farm. Use health-checked endpoints and an ingress design that meets the client deadline with both fresh and cached DNS responses. Include connection recovery and configured DNS cache lifetimes in the observed service behavior. Distribute authoritative DNS and ingress across independent failure domains.
+
 ### Geo-redundant farms
 
 Connect participating sites through a WireGuard mesh of site gateways. Start with two gateways and independent uplinks per farm. Provide at least two independent tunnel paths between paired farms. Distribute only approved prefixes and monitor path health so routing can withdraw a failed path. BGP with BFD is a candidate for dynamic routing and failure detection.
