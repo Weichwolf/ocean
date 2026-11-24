@@ -258,6 +258,42 @@ Preview and validation read a single regional revision without writing resource 
 
 Install Bicep CLI 0.49.2 and Debian's `libicu76` in the operator guest. Run `python3 lab/verify_deployment.py --state "$OCEAN_LAB_STATE"` with the empty two-address lab pool configured above. Pass `--bicep` if the compiler is installed outside `/home/ocean/.local/bin`. The verifier runs what-if on a populated group, checks for resource mutations, rejects an invalid deployment, deploys the template, verifies rollback when the pool is exhausted, and reconciles a changed subnet. Find the results in `evidence/network-deployment-arm.json`. [Network fixture](../tests/e2e/testdata/bicep/network.bicep) · [Bicep release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
 
+## Routed WireGuard gateway
+
+The `ocean-gateway` command accepts one `wireguard` configuration for a dedicated routing namespace. Attach an underlay link with a route to the peer's IPv4 endpoint and an inside link for its approved local networks. Supply a private /31 for the tunnel, one peer public key, and a root-owned private key file with owner-only permissions. The tunnel addresses and approved local, remote, and protected networks must be disjoint. Each peer needs its own private key. [WireGuard quick start](https://www.wireguard.com/quickstart/)
+
+```json
+{
+  "namespace": "tenant-vpn",
+  "wireguard": {
+    "tunnel": "wg0",
+    "underlay": "wan0",
+    "inside": "lan0",
+    "localTunnel": "10.99.1.0/31",
+    "peerTunnel": "10.99.1.1",
+    "listenPort": 51820,
+    "peerEndpoint": "198.18.24.2:51820",
+    "peerPublicKey": "<WireGuard public key>",
+    "privateKeyFile": "/etc/ocean-gateway/tenant-vpn.key",
+    "localPrefixes": ["10.91.1.0/24"],
+    "remotePrefixes": ["10.92.1.0/24"],
+    "protectedPrefixes": ["10.231.1.0/24"]
+  }
+}
+```
+
+Use `ocean-gateway -config /etc/ocean-gateway/tenant-vpn.json -mode apply` with `iproute2`, `nftables`, and `wireguard-tools` in the gateway guest. The command blocks namespace forwarding while it reconciles the tunnel and routes. It enables only the approved prefix pairs and permits ICMP peer probes on the tunnel addresses. Use `-mode remove` to close forwarding and remove the tunnel and its routes. Keep the management interface in its own network namespace. [WireGuard network namespaces](https://www.wireguard.com/netns/)
+
+Run the packet check on a disposable Debian KVM guest with `wireguard-tools`, `nftables`, and `iputils-ping`. It creates and removes four isolated namespaces and uses disposable peer keys. The test exercises encrypted forwarding in both directions, blocked paths, prefix changes, failed configuration, and teardown.
+
+```sh
+vpn_test=$(mktemp /tmp/ocean-wireguard-test.XXXXXXXX)
+CGO_ENABLED=0 go test -mod=readonly -tags=e2e -c -o "$vpn_test" ./internal/network
+./bin/ocean-lab ssh -state "$OCEAN_LAB_STATE" farm-1-node-05 -- \
+  'file=$(mktemp); trap "unlink \"$file\"" EXIT; cat > "$file"; chmod 0700 "$file"; sudo env OCEAN_E2E_WIREGUARD=1 "$file" -test.v -test.run=^TestRoutedWireGuard$' \
+  < "$vpn_test"
+```
+
 ## Debian node-agent package
 
 Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build a different Debian package version. Install the resulting `.deb` with `apt` inside the Debian guest so its Podman and systemd dependencies are resolved.
