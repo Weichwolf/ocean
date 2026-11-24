@@ -186,3 +186,18 @@ Run `make deb-agent` to build the package in `bin/`. Pass `DEB_VERSION` to build
 The package creates the `ocean-agent` system account with subordinate UID and GID ranges. It enables the unit in that account's systemd user manager on a running systemd installation. The agent checks Podman rootless mode before serving readiness at `http://127.0.0.1:8081/readyz`. The configuration file is `/etc/ocean-agent/config.json`. [Debian subordinate IDs for system accounts](https://manpages.debian.org/trixie/passwd/useradd.8.en.html)
 
 Run `python3 lab/verify_agent_package.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 --package bin/ocean-agent_0.1.0~dev1_amd64.deb` to install the package on a disposable lab node and check the service, rootless Podman cgroups, and readiness. The result is written to `evidence/agent-package.json`.
+
+## Host identity enrollment
+
+An approved inventory entry identifies a host, its management MAC and IPv4 reservation, its cell, operator pool, profile, and allowed roles. It also sets minimum CPU and memory, an optional KVM requirement, and an expiry and SHA-256 digest for the host's bootstrap credential. Entries and their MAC, address, and credential indexes are stored in the regional quorum. Control-plane voter membership follows the regional configuration.
+
+The node agent reads the enrollment origin and management interface from its local configuration and the credential from an owner-only file supplied during provisioning. It generates an Ed25519 private key and stores it before making the first enrollment request. The server checks the credential, the signed certificate request, the approved network identity, and the host's reported Debian and runtime capabilities. The host record and the redemption marker commit together. A retry with the same private key returns the first issued certificate, including after a discarded response. The node confirms that certificate with a mutual TLS request before reporting readiness. Host requests consult the current regional identity record, so revocation also applies to an existing client connection.
+
+After building the control plane and installing the enrollment-enabled agent package on a disposable lab guest, run the following local checks on an unused host enrollment fixture.
+
+```sh
+python3 lab/enrollment.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03
+python3 lab/verify_enrollment.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03
+```
+
+The check verifies capability rejection, a discarded enrollment response, reuse of the committed certificate by the packaged service, rejection of a different key with the redeemed credential, and rejection after revocation. It writes `evidence/host-enrollment.json`. The test leaves the disposable identity revoked.
