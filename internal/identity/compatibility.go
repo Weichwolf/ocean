@@ -9,7 +9,10 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 const (
@@ -25,10 +28,34 @@ var (
 // Compatibility serves the tenant-specific discovery and device response formats
 // consumed by Azure CLI. Keycloak owns the OAuth grants and signs the tokens.
 type Compatibility struct {
-	authority string
-	provider  string
-	client    *http.Client
-	cloud     CloudEndpoints
+	authority      string
+	provider       string
+	client         *http.Client
+	cloud          CloudEndpoints
+	exchangeSecret func(string) (string, error)
+	signingKeys    sync.Map
+}
+
+// verifyAccessToken checks tokens against the known tenant issuer and its
+// signing keys. The issuer must come from a configured or provisioned tenant.
+func (c *Compatibility) verifyAccessToken(ctx context.Context, raw, issuer, audience string) (*oidc.IDToken, error) {
+	keys, ok := c.signingKeys.Load(issuer)
+	if !ok {
+		keyset := oidc.NewRemoteKeySet(oidc.ClientContext(context.Background(), c.client),
+			issuer+"/protocol/openid-connect/certs")
+		keys, _ = c.signingKeys.LoadOrStore(issuer, keyset)
+	}
+	verifier := oidc.NewVerifier(issuer, keys.(*oidc.RemoteKeySet), &oidc.Config{
+		ClientID: audience, SupportedSigningAlgs: []string{oidc.RS256},
+	})
+	token, err := verifier.Verify(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	if token.Subject == "" || len(token.Audience) != 1 || token.Audience[0] != audience {
+		return nil, errors.New("token has an invalid subject or audience")
+	}
+	return token, nil
 }
 
 // NewCompatibility pins the public origins used by the client and the provider.
@@ -55,8 +82,7 @@ func httpsOrigin(raw string) bool {
 		raw == "https://"+value.Host
 }
 
-// Handler exposes only the compatibility routes. Native authorization, token,
-// and key endpoints remain on the provider origin.
+// Handler exposes the compatibility routes. Keycloak owns authorization and keys.
 func (c *Compatibility) Handler() http.Handler {
 	mux := http.NewServeMux()
 	if c.cloud.ResourceManager != "" {
@@ -64,6 +90,9 @@ func (c *Compatibility) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /{tenant}/v2.0/.well-known/openid-configuration", c.discover)
 	mux.HandleFunc("POST /{tenant}/oauth2/v2.0/devicecode", c.device)
+	if c.exchangeSecret != nil {
+		mux.HandleFunc("POST /{tenant}/oauth2/v2.0/token", c.token)
+	}
 	return mux
 }
 
@@ -90,6 +119,9 @@ func (c *Compatibility) discover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data["device_authorization_endpoint"], _ = json.Marshal(c.authority + "/" + tenant + "/oauth2/v2.0/devicecode")
+	if c.exchangeSecret != nil {
+		data["token_endpoint"], _ = json.Marshal(c.authority + "/" + tenant + "/oauth2/v2.0/token")
+	}
 	writeJSON(w, http.StatusOK, data)
 }
 
@@ -110,6 +142,14 @@ func (c *Compatibility) device(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
+	}
+	if c.exchangeSecret != nil {
+		audience, providerScope, err := c.splitScopes(r.PostForm.Get("scope"))
+		if err != nil || audience != c.cloud.ResourceManager {
+			oauthError(w, http.StatusBadRequest, "invalid_scope")
+			return
+		}
+		r.PostForm.Set("scope", providerScope)
 	}
 	issuer := c.provider + "/realms/" + tenant
 	data, status, err := c.upstream(r.Context(), http.MethodPost, issuer+"/protocol/openid-connect/auth/device", strings.NewReader(r.PostForm.Encode()))
@@ -141,11 +181,18 @@ func (c *Compatibility) device(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Compatibility) upstream(ctx context.Context, method, endpoint string, body io.Reader) (map[string]json.RawMessage, int, error) {
+	return c.providerJSON(ctx, method, endpoint, body, "")
+}
+
+func (c *Compatibility) providerJSON(ctx context.Context, method, endpoint string, body io.Reader, authorization string) (map[string]json.RawMessage, int, error) {
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, 0, err
 	}
 	request.Header.Set("Accept", "application/json")
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
