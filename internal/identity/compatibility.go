@@ -35,6 +35,7 @@ type Compatibility struct {
 	exchangeSecret func(string) (string, error)
 	signingKeys    sync.Map
 	subscriptions  *subscriptionReader
+	onboarding     *onboarding
 }
 
 // verifyAccessToken checks tokens against the known tenant issuer and its
@@ -98,6 +99,9 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /subscriptions", c.readSubscription)
 		mux.HandleFunc("GET /subscriptions/{subscription}", c.readSubscription)
 		mux.HandleFunc("GET /subscriptions/{subscription}/locations", c.readSubscription)
+	}
+	if c.onboarding != nil {
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}", c.onboardTenant)
 	}
 	return mux
 }

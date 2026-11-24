@@ -81,7 +81,10 @@ class AzureCLI:
         self.run("cloud", "set", "--name", "ocean", "-o", "none")
 
     def run(self, *args, reject=False):
-        result = subprocess.run(["az", *args], env=self.env, capture_output=True, text=True, timeout=25)
+        try:
+            result = subprocess.run(["az", *args], env=self.env, capture_output=True, text=True, timeout=32)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"az {args[0]} {args[1]} exceeded the command deadline") from None
         if reject and result.returncode != 0:
             return ""
         if reject or result.returncode != 0:

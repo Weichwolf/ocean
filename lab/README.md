@@ -112,3 +112,21 @@ Configure the public client's access token mapper to give its native grant the s
 The CLI device flow starts with the ARM scope. The compatibility endpoint obtains a native Keycloak grant and asks Keycloak to exchange the native access token for the requested resource. On refresh it can request ARM or Graph using the same Keycloak session. The response keeps the user's native session and includes the exchanged access token. The endpoint requires the same issuer and subject and exactly one resource audience. Keycloak handles user consent, token lifetimes, and signing. [Keycloak standard token exchange](https://www.keycloak.org/securing-apps/token-exchange)
 
 ARM subscription discovery uses API version `2022-12-01`. It verifies the access token's signature, tenant issuer, expiry, and ARM audience. It reads the tenant's subscription membership from the regional quorum and returns the assigned region for the locations request. The lab seeds a subscription for the two fixture subjects after authenticating them, so the fault runs exercise the subscription API.
+
+## Tenant onboarding
+
+The lab deployment adds a dedicated operator realm and Automation client. The control plane requires a signed ARM access token from that realm and client for `PUT /ocean/tenants/{tenantId}?api-version=2026-11-01`. Register the cloud and sign in using the operator's application ID and secret. An operator can acquire the token without subscription discovery using `--allow-no-subscriptions --skip-subscription-discovery`.
+
+Put `displayName`, `administratorUserPrincipalName`, and `administratorPassword` in a private JSON request file. Choose a tenant UUID before sending the first request. Retain the same UUID and request for retries.
+
+```sh
+az rest --method put \
+  --url "https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID?api-version=2026-11-01" \
+  --body @tenant-request.json
+```
+
+The response contains `tenantId`, `subscriptionId`, and `administratorId`. The control plane reserves the allocation in etcd, imports and confirms the Keycloak realm and administrator, and then publishes the subscription. An identical request returns the same IDs. A conflicting request returns HTTP 409. After a transient HTTP 503, repeat the request with the original inputs. The allocation fingerprint is keyed and the password stays out of etcd.
+
+The `identity.onboarding` configuration contains the operator tenant and client IDs, the private Keycloak admin origins, the lab admin client and its credential file, and a regional key file. Each API replica uses the same regional key to derive the exchange credential for a tenant. Keep this key with the region's recoverable credentials and provision the files with owner-only access.
+
+Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE"` after the identity deployment and CLI installation. The test discards a successful response body, retries through `az rest`, creates a second tenant, and verifies independent administrator sign-ins and cross-tenant denials. It records the resulting IDs and assertions in `evidence/tenant-onboarding.json` under the disposable lab state.

@@ -11,11 +11,12 @@ import (
 
 // Config locates the public identity endpoints and configures provider trust.
 type Config struct {
-	Authority               string          `json:"authority"`
-	Provider                string          `json:"provider"`
-	ProviderCAFile          string          `json:"providerCAFile"`
-	Cloud                   *CloudEndpoints `json:"cloud"`
-	ExchangeSecretDirectory string          `json:"exchangeSecretDirectory"`
+	Authority               string            `json:"authority"`
+	Provider                string            `json:"provider"`
+	ProviderCAFile          string            `json:"providerCAFile"`
+	Cloud                   *CloudEndpoints   `json:"cloud"`
+	ExchangeSecretDirectory string            `json:"exchangeSecretDirectory"`
+	Onboarding              *OnboardingConfig `json:"onboarding"`
 }
 
 // OpenCompatibility configures the control plane's OAuth compatibility routes.

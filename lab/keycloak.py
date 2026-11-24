@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -26,6 +27,8 @@ DISABLED_APP = "e60f7c71-8c98-40eb-8e3c-d2a38141cb09"
 USER = "customer@lab.ocean.test"
 CLI = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
 EXCHANGE = "ocean-token-exchange"
+OPERATOR_TENANT = "4fd57c3e-f49c-4b52-a834-7ef394451db6"
+OPERATOR_APP = "b356c1b7-18e4-43e8-957d-d964f5f8aa63"
 
 
 def mapper(name, kind, **config):
@@ -136,6 +139,55 @@ def provider_health(state, node):
                f"--resolve {OAUTH}:9000:{address} https://{OAUTH}:9000/health/ready")
 
 
+def prepare_operator(state, passwords):
+    arm = f"https://{ARM}"
+    realm = {
+        "realm": OPERATOR_TENANT, "enabled": True, "sslRequired": "all", "accessTokenLifespan": 300,
+        "attributes": {"oceanOperatorFixture": OPERATOR_APP},
+        "clientScopes": [
+            scope("basic", mapper("subject", "sub", **{"access.token.claim": "true"}), visible=False),
+            scope(arm + "/.default", mapper("arm", "audience", **{
+                "included.custom.audience": arm, "access.token.claim": "true", "id.token.claim": "false",
+            })),
+        ],
+        "clients": [{
+            "clientId": OPERATOR_APP, "enabled": True, "publicClient": False, "protocol": "openid-connect",
+            "fullScopeAllowed": False, "standardFlowEnabled": False, "directAccessGrantsEnabled": False,
+            "serviceAccountsEnabled": True, "clientAuthenticatorType": "client-secret", "secret": passwords["operator"],
+            "defaultClientScopes": ["basic"], "optionalClientScopes": [arm + "/.default"],
+        }],
+    }
+    node, address = next(iter(REPLICAS.items()))
+    program = """
+import json, ssl, sys
+from urllib import error, parse, request
+config = json.load(sys.stdin)
+origin = config["origin"]
+realm = config["realm"]
+tls = ssl.create_default_context(cafile=config["ca"])
+body = parse.urlencode({"grant_type":"client_credentials","client_id":"ocean-bootstrap","client_secret":config["admin"]}).encode()
+with request.urlopen(origin + "/realms/master/protocol/openid-connect/token", body, context=tls, timeout=12) as reply:
+    token = json.load(reply)["access_token"]
+headers = {"Authorization": "Bearer "+token, "Content-Type": "application/json"}
+url = origin + "/admin/realms/" + realm["realm"]
+try:
+    with request.urlopen(request.Request(url, headers=headers), context=tls, timeout=12) as reply:
+        if json.load(reply).get("attributes",{}).get("oceanOperatorFixture") != config["client"]:
+            raise RuntimeError("the operator realm is already in use")
+except error.HTTPError as exc:
+    if exc.code != 404:
+        raise
+    with request.urlopen(request.Request(origin + "/admin/realms", json.dumps(realm).encode(), headers),
+                         context=tls, timeout=60) as reply:
+        if reply.status != 201:
+            raise RuntimeError("failed to create the lab operator realm")
+"""
+    ssh(state, node, shlex.join(["python3", "-c", program]), json.dumps({
+        "origin": f"https://{address}:8444", "ca": f"{REGION}/pki/ingress-ca.pem",
+        "admin": passwords["bootstrap"], "realm": realm, "client": OPERATOR_APP,
+    }).encode())
+
+
 def configure_gateways(state, pki, ingress):
     for index, (node, address) in enumerate(REPLICAS.items()):
         files = gateway_files(index + 1, address, list(REPLICAS.values())[1 - index], identity=True)
@@ -147,7 +199,7 @@ def configure_gateways(state, pki, ingress):
             "sudo systemctl restart ocean-gateway.service ocean-dns.service")
 
 
-def configure_api(state, pki, ingress, exchange):
+def configure_api(state, pki, ingress, passwords):
     for node, address in NODES.items():
         name = node + "-api-identity"
         config = json.loads(ssh(state, node, f"cat {REGION}/api.json"))
@@ -156,10 +208,17 @@ def configure_api(state, pki, ingress, exchange):
             "authority": f"https://{IDENTITY}", "provider": f"https://{OAUTH}",
             "providerCAFile": f"{REGION}/pki/ingress-ca.pem", "exchangeSecretDirectory": f"{REGION}/exchange",
             "cloud": {"resourceManager": f"https://{ARM}", "microsoftGraph": f"https://{GRAPH}"},
+            "onboarding": {
+                "operatorTenant": OPERATOR_TENANT, "operatorClient": OPERATOR_APP,
+                "adminEndpoints": [f"https://{member}:8444" for member in REPLICAS.values()],
+                "adminClient": "ocean-bootstrap", "adminSecretFile": f"{REGION}/identity-admin.secret",
+                "regionalKeyFile": f"{REGION}/identity-regional.secret",
+            },
         }
         files = leaf(pki, name, ingress, "serverAuth", f"DNS:{ARM},DNS:{IDENTITY},DNS:{GRAPH},IP:{address}")
         files.update({
-            "api.json": json.dumps(config).encode(), f"exchange/{TENANT}.secret": exchange.encode(),
+            "api.json": json.dumps(config).encode(), f"exchange/{TENANT}.secret": passwords["exchange"].encode(),
+            "identity-admin.secret": passwords["bootstrap"].encode(), "identity-regional.secret": passwords["regional"].encode(),
             "bin/ocean-control-plane.next": (ROOT / "bin/ocean-control-plane").read_bytes(),
             "pki/ingress-ca.pem": ingress[0].read_bytes(),
             "units/ocean-resolver.service": resolver_unit(),
@@ -183,7 +242,7 @@ def deploy(state, archive):
     pki.mkdir(mode=0o700, exist_ok=True)
     ingress = ca(state / "region-pki", "ingress-ca")
     database_ca = state / "postgres-pki/postgres-rsa-ca.pem"
-    passwords = {label: credential(pki, label) for label in ("bootstrap", "exchange", "user", "app", "disabled-app")}
+    passwords = {label: credential(pki, label) for label in ("bootstrap", "exchange", "user", "app", "disabled-app", "operator", "regional")}
     fixture = json.dumps(tenant_fixture(passwords)).encode()
     database = ",".join(f"{address}:5432" for address in NODES.values())
     jobs = []
@@ -212,8 +271,9 @@ def deploy(state, archive):
     for node in REPLICAS:
         ssh(state, node, f"sudo systemctl enable --now --no-block {SERVICE}")
         eventually(lambda node=node: provider_health(state, node), 240)
+    eventually(lambda: prepare_operator(state, passwords), 90)
     configure_gateways(state, pki, ingress)
-    configure_api(state, pki, ingress, passwords["exchange"])
+    configure_api(state, pki, ingress, passwords)
     upload(state, OPERATOR, {"pki/ingress-ca.pem": ingress[0].read_bytes()})
     eventually(lambda: ssh(state, OPERATOR, f"curl -fsS --max-time 3 --cacert {REGION}/pki/ingress-ca.pem "
                f"https://{IDENTITY}/{TENANT}/v2.0/.well-known/openid-configuration"), 35)

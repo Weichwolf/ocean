@@ -51,6 +51,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	var hooks service.Hooks
 	var compatibility *identity.Compatibility
 	if cfg.Identity != nil {
+		if cfg.Identity.Onboarding != nil && cfg.Region == nil {
+			return config.Server{}, service.Hooks{}, errors.New("tenant onboarding requires a regional store")
+		}
 		compatibility, err = cfg.Identity.OpenCompatibility()
 		if err != nil {
 			return config.Server{}, service.Hooks{}, err
@@ -66,6 +69,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Close = region.client.Close
 		if compatibility != nil {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
+			if cfg.Identity.Onboarding != nil {
+				if err := compatibility.EnableOnboarding(*cfg.Identity.Onboarding, region); err != nil {
+					_ = region.client.Close()
+					return config.Server{}, service.Hooks{}, err
+				}
+			}
 		}
 	}
 	if compatibility != nil {
