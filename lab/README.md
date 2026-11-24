@@ -15,7 +15,7 @@ OCEAN_LAB_IMAGE="$HOME/.cache/ocean/images/debian-13-generic-amd64.qcow2"
 ./bin/ocean-lab ssh -state "$OCEAN_LAB_STATE" farm-1-node-01 -- 'cloud-init status --wait'
 ```
 
-`status` reports the QEMU process state. Use the guest's cloud-init status for boot readiness. The launcher generates an SSH key for the lab and supplies it through a private NoCloud seed. SSH forwarding is bound to the host loopback address. Use `down` to stop QEMU and the VDE switches while retaining the state and guest disks.
+`status` reports the QEMU process state. Use the guest's cloud-init status for boot readiness. The launcher generates an SSH key for the lab and supplies it through a private NoCloud seed. SSH forwarding is bound to the host loopback address. Use `stop` with an inventoried guest name to simulate sudden loss of one guest. Use `down` to stop QEMU and the VDE switches while retaining the state and guest disks. [QEMU monitor command](https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html#qapidoc-89)
 
 ```sh
 ./bin/ocean-lab down -state "$OCEAN_LAB_STATE"
@@ -178,6 +178,85 @@ The subscription and resource-group inventory endpoints use `2024-11-01`. The CL
 Provider implementations publish their public resource projections to the regional store. Inventory reads and the scope grants used to authorize them share an etcd revision. A resource group delete removes its inventory entries and role grants with the terminal operation state. Provider-specific controllers own data-plane cleanup and capacity release.
 
 Run `python3 lab/verify_inventory.py --state "$OCEAN_LAB_STATE"` to exercise the selected CLI inventory commands. The lab publishes tagged test projections through the internal resource store and reads a real role assignment by its ARM ID. It checks paging, nested IDs, unsupported API requests, Reader scope, revocation, and group cleanup. The result is stored in `evidence/arm-inventory.json`. Provider acceptance runs exercise inventory against live workloads and reservations as those providers are enabled.
+
+## ARM virtual networks and subnets
+
+Azure CLI 2.93.0 uses `2025-07-01` for `az network vnet` and `2024-07-01` for `az network vnet subnet`. The selected commands create, show, list, and delete networks and subnets. A subnet can be declared with its virtual network or added by a separate request. The supported subnet update changes its address prefixes. [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) · [Virtual network REST API](https://learn.microsoft.com/en-us/rest/api/virtualnetwork/virtual-networks/create-or-update) · [Subnet resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2024-07-01/virtualnetworks/subnets)
+
+Address spaces use canonical private IPv4 prefixes. A subnet prefix must fit inside the network's address space and contain at least eight addresses. Subnet address ranges within the same virtual network are disjoint. A network and its subnets share one revision so concurrent writes check those constraints against a consistent configuration. The same address range can be used in independent tenant networks.
+
+Run `python3 lab/verify_network.py --state "$OCEAN_LAB_STATE"` from the host after deploying the control plane and the pinned CLI. It checks the ARM lifecycle with fresh tenants, competing subnet reservations, inventory, and resource group cleanup. It writes `evidence/virtual-network-arm.json`. Workload attachment, packet filtering, and egress failover are verified by their own acceptance scenarios.
+
+The verifier also exercises security groups and named rules through `az network nsg` on API version `2022-01-01`. The supported custom rules use inbound or outbound priority, allow or deny, IPv4 or wildcard address selectors, and TCP, UDP, ICMP, or wildcard protocols. Port constraints apply to TCP and UDP. The group returns the six read-only default rules alongside custom rules when requested. [Security rules resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/networksecuritygroups/securityrules) · [Network security group defaults](https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview)
+
+Attach or detach a security group with `az network vnet subnet update --network-security-group`. The security group must exist in the VNet's resource group and subscription. Each VNet can reference up to sixteen distinct security groups. The regional store commits the attachment, reverse link, and audit together. A group with a live subnet reference cannot be deleted through the security group endpoint. Resource group cleanup removes both sides of the association.
+
+Add `--firewall-node farm-1-node-05` to the verifier command to run the packet tests in a disposable Debian KVM guest. The host running the verifier uses Python 3 with PyYAML. The guest needs the installed node agent, nftables, curl, Python 3, and access to the pinned BusyBox fixture. The test exports the configured Azure CLI rules from the ARM view, attaches a rootless Podman fixture to an isolated router namespace, and applies the rules through an atomic nftables transaction. It checks that rule priority controls ingress and egress, unassigned addresses and protected management prefixes are blocked, and overlapping tenant networks stay isolated. Find the results in `evidence/routed-podman-firewall.log`. [nftables manual](https://www.netfilter.org/projects/nftables/manpage.html)
+
+## Static IPv4 and NAT gateway
+
+Configure the same `region.publicIPv4Addresses` entries on each regional API replica. Supply up to 256 distinct IPv4 addresses approved for the region. The first startup commits the regional pool. Later startups require the same set so every replica makes decisions against one inventory. Upgrade the API replicas before enabling the pool when rolling forward from a release without public IP support.
+
+Azure CLI 2.93.0 uses API version `2025-09-01` for regional Standard static IPv4 addresses and `2025-07-01` for Standard NAT gateways with one public address. Allocation commits with resource creation, stays fixed across retries, and returns to the pool when the resource or its resource group is deleted. A public address can have one owning association at a time. Subnets attach or detach a same-group gateway through `az network vnet subnet update --nat-gateway` on API version `2024-07-01`. A subnet attachment keeps the NAT gateway in use, and the gateway keeps its public address in use. [Public IP template schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2025-09-01/publicipaddresses) · [NAT gateway template schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.network/2025-07-01/natgateways)
+
+```sh
+python3 lab/enrollment.py --state "$OCEAN_LAB_STATE" --node farm-1-node-03 \
+  --public-ipv4 198.51.100.20 --public-ipv4 198.51.100.21
+python3 lab/verify_egress.py --state "$OCEAN_LAB_STATE" --pool 198.51.100.20 198.51.100.21 \
+  --gateway-node farm-1-node-05
+```
+
+Use a dedicated lab with an empty two-address pool for this verifier. The optional packet stage needs nftables and Keepalived alongside the node agent, curl, Python, and the pinned BusyBox fixture. It runs two gateway namespaces on one disposable KVM guest, with separate tenant and external links. The external HTTP observer reports the source address of a fresh TCP connection before and after the active gateway loses its uplink. The test gives the standby eight seconds to recover and records the measured time. The verifier writes `evidence/public-ip-nat-arm.json` and `evidence/fixed-egress-packet.log`. Gateway fencing, automatic workload attachment, and the Functions egress case need their deployment-level runs.
+
+The `egress-ha` profile adds a separate external VDE segment. Two gateway guests and the source observer are attached to it. The third node hosts the pinned rootless Podman workload. Prepare both gateway guests with Debian's `nftables` and `keepalived` packages. Install the packaged ocean agent on the worker and use the same pinned fixture and host Python dependencies as the single-guest verifier.
+
+```sh
+OCEAN_EGRESS_STATE=$(mktemp -d /tmp/ocean-egress-ha.XXXXXX)
+./bin/ocean-lab up -state "$OCEAN_EGRESS_STATE" -profile lab/profiles/egress-ha.yaml -image "$OCEAN_LAB_IMAGE"
+# Prepare the gateway and worker packages in the new guests before the test.
+python3 lab/verify_egress_hosts.py --state "$OCEAN_EGRESS_STATE" \
+  --reservation "$OCEAN_LAB_STATE/evidence/public-ip-nat-arm.json"
+```
+
+The verifier installs the compiled `ocean-gateway` role command and a lab Keepalived service. Each gateway begins with a closed nftables forwarding set. The Keepalived owner activates forwarding after the external address is installed. The test checks the standby's NAT counter during a probe routed directly to it, confirms that tenant traffic cannot reach a live management-only fixture, and powers off the active KVM guest. It then checks the source address and counts attempts against the eight-second recovery budget. The original gateway reboots and rejoins as standby. This run covers sudden guest loss on a shared lab virtual switch. Network-partition fencing and Function App egress are separate acceptance scenarios. Evidence is written to `evidence/fixed-egress-hosts.json`. Use `--reset` to restart the test guests before repeating this verifier in the same disposable profile.
+
+## Network placement and host assignment policy
+
+A compute placement can name a subnet in its own subscription. The region reserves a private IPv4 address, tenant and host capacity, and one placement generation in the same transaction. Address selection skips the first four and last address of each IPv4 prefix. A repeated placement request returns its original address and generation. Release requires the current generation and comes after the caller has stopped the workload. Subnet address changes and deletion are blocked while the subnet has placements. Resource group deletion observes the same guard. [Azure IPv4 address allocation](https://learn.microsoft.com/en-us/azure/virtual-network/private-ip-addresses)
+
+The enrolled host reads its network policy over the existing mTLS assignments endpoint. The assignment, owning generation, VNet address space, subnet gateway, current security rules, and optional NAT address share one regional read revision. If an assignment loses ownership of its address, the endpoint returns its assignment with `networkUnavailable` and omits its network policy.
+
+The Debian package provides a system service, `ocean-network-agent.service`, for router-side firewall reconciliation. The operator provides a root-owned `/etc/ocean-agent/network.json` with no group or other write permissions and starts the service. Each endpoint entry names a routing namespace and veth plus the tenant, subscription, placement ID, and placement generation. The routing setup must give each workload a point-to-point link and keep forwarding disabled until the service has installed the link's policy. The service uses the enrolled host certificate to read assignments. Podman continues to run under the unprivileged `ocean-agent` account.
+
+```json
+{
+  "protectedPrefixes": ["10.231.1.0/24"],
+  "endpoints": [
+    {
+      "namespace": "tenant-router",
+      "interface": "work0",
+      "tenantId": "<tenant-id>",
+      "subscriptionId": "<subscription-id>",
+      "id": "<placement-id>",
+      "generation": "<placement-generation>"
+    }
+  ]
+}
+```
+
+The service applies policy in an atomic nftables transaction and renews an eight-second kernel deadline from valid assignments. A missing or revoked assignment replaces the endpoint's rules with a drop policy. The kernel also blocks forwarded traffic in both directions if the process stalls and the deadline expires. Operators can set `internetPrefixes` for reachable external destinations when a placement has an assigned NAT gateway. Remove an endpoint from the registry and retire its workload link before reusing that endpoint for another placement. [nftables element timeouts](https://wiki.nftables.org/wiki-nftables/index.php/Element_timeouts)
+
+Run `python3 lab/verify_network_placement.py --state "$OCEAN_LAB_STATE" --pool 198.51.100.20 198.51.100.21` in the dedicated regional lab with two enrolled compute guests and the test public IP pool. The verifier checks concurrent assignment to a /29, exhaustion without quota loss, protected deletion and prefix changes, certificate scope, network rule refresh, and release with generation checks. It also withholds policy from a fixture assignment whose ownership record has been invalidated. Results appear in `evidence/network-placement.json`.
+
+Add `--packets` after installing the current Debian agent package on the first compute guest. The verifier attaches a pinned BusyBox fixture running in rootless Podman with nice +10. It checks real HTTP ingress after ownership is revoked and restored, after an NSG edit, after the policy process is paused and resumed, and after a replacement generation reuses the private IP address. It records the observed kernel expiry time and removes the disposable links and registry.
+
+## Resource group network deployments
+
+Azure CLI 2.93.0 uses `2025-04-01` for `az deployment group what-if`, `create`, and `show`. The supported template is inline and incremental, with at most eight resources. It accepts virtual networks, child subnets, regional Standard static IPv4 addresses, and Standard NAT gateways at the provider versions listed in the command matrix. Supported expressions are `parameters`, positional `format`, same-group `resourceId`, and `resourceGroup().location`. Parameters and outputs use strings. The API rejects linked templates, unsupported types and expressions, and dependency cycles. [What-if API](https://learn.microsoft.com/en-us/rest/api/resources/deployments/what-if?view=rest-resources-2025-04-01) · [Deployments API](https://learn.microsoft.com/en-us/rest/api/resources/deployments/create-or-update?view=rest-resources-2025-04-01)
+
+Preview and validation read a single regional revision without writing resource or operation records. The resource graph, public IPv4 reservation, deployment record, and audit commit together. An incremental deployment preserves unmanaged resources. A repeated deployment preserves the assigned public address and reconciles supported changes.
+
+Install Bicep CLI 0.49.2 and Debian's `libicu76` in the operator guest. Run `python3 lab/verify_deployment.py --state "$OCEAN_LAB_STATE"` with the empty two-address lab pool configured above. Pass `--bicep` if the compiler is installed outside `/home/ocean/.local/bin`. The verifier runs what-if on a populated group, checks for resource mutations, rejects an invalid deployment, deploys the template, verifies rollback when the pool is exhausted, and reconciles a changed subnet. Find the results in `evidence/network-deployment-arm.json`. [Network fixture](../tests/e2e/testdata/bicep/network.bicep) · [Bicep release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
 
 ## Debian node-agent package
 

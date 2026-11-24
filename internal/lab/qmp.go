@@ -2,7 +2,9 @@ package lab
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 )
@@ -66,5 +68,9 @@ func qmp(path, name, command string) error {
 	if command == "" {
 		return nil
 	}
-	return request(command, nil)
+	err = request(command, nil)
+	if command == "quit" && errors.Is(err, io.EOF) {
+		return nil // QEMU can close the monitor before acknowledging quit.
+	}
+	return err
 }

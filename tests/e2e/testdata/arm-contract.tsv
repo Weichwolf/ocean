@@ -11,3 +11,34 @@ CONTRACT-02	inventory-show	2.93.0	none	provider	resource show --ids {id} --api-v
 IDENTITY-04	role-create	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment create --scope {scope} --role Reader --name {name} --assignee-object-id {principal} --assignee-principal-type {kind} -o json
 IDENTITY-04	role-list	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment list --scope {scope} --fill-principal-name false -o json
 IDENTITY-04	role-delete	2.93.0	none	2022-04-01	role assignment delete --ids {id} -o none
+NETWORK-01	vnet-create	2.93.0	none	2025-07-01	network vnet create --resource-group {group} --name {vnet} --location {location} --address-prefixes {vnet_prefix} --subnet-name {subnet} --subnet-prefixes {subnet_prefix} -o json
+NETWORK-01	vnet-show	2.93.0	none	2025-07-01	network vnet show --resource-group {group} --name {vnet} -o json
+NETWORK-01	vnet-list	2.93.0	none	2025-07-01	network vnet list --resource-group {group} -o json
+NETWORK-01	vnet-list-subscription	2.93.0	none	2025-07-01	network vnet list -o json
+NETWORK-01	vnet-delete	2.93.0	none	2025-07-01	network vnet delete --resource-group {group} --name {vnet} -o none
+NETWORK-01	subnet-create	2.93.0	none	2024-07-01	network vnet subnet create --resource-group {group} --vnet-name {vnet} --name {subnet} --address-prefixes {subnet_prefix} -o json
+NETWORK-01	subnet-show	2.93.0	none	2024-07-01	network vnet subnet show --resource-group {group} --vnet-name {vnet} --name {subnet} -o json
+NETWORK-01	subnet-update	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --address-prefixes {subnet_prefix} -o json
+NETWORK-01	subnet-security-group	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --network-security-group {nsg} -o json
+NETWORK-01	subnet-list	2.93.0	none	2024-07-01	network vnet subnet list --resource-group {group} --vnet-name {vnet} -o json
+NETWORK-01	subnet-delete	2.93.0	none	2024-07-01	network vnet subnet delete --resource-group {group} --vnet-name {vnet} --name {subnet} -o none
+NETWORK-01	nsg-create	2.93.0	none	2022-01-01	network nsg create --resource-group {group} --name {nsg} --location {location} -o json
+NETWORK-01	nsg-show	2.93.0	none	2022-01-01	network nsg show --resource-group {group} --name {nsg} -o json
+NETWORK-01	nsg-list	2.93.0	none	2022-01-01	network nsg list --resource-group {group} -o json
+NETWORK-01	nsg-delete	2.93.0	none	2022-01-01	network nsg delete --resource-group {group} --name {nsg} -o none
+NETWORK-01	nsg-rule-create	2.93.0	none	2022-01-01	network nsg rule create --resource-group {group} --nsg-name {nsg} --name {rule} --protocol Tcp --priority {priority} --source-address-prefixes {source} --destination-port-ranges {port} --direction {direction} --access {access} -o json
+NETWORK-01	nsg-rule-show	2.93.0	none	2022-01-01	network nsg rule show --resource-group {group} --nsg-name {nsg} --name {rule} -o json
+NETWORK-01	nsg-rule-list	2.93.0	none	2022-01-01	network nsg rule list --resource-group {group} --nsg-name {nsg} --include-default -o json
+NETWORK-01	nsg-rule-delete	2.93.0	none	2022-01-01	network nsg rule delete --resource-group {group} --nsg-name {nsg} --name {rule} -o none
+NETWORK-03	public-ip-create	2.93.0	none	2025-09-01	network public-ip create --resource-group {group} --name {ip} --location {location} --sku Standard --tier Regional --version IPv4 --allocation-method Static -o json
+NETWORK-03	public-ip-show	2.93.0	none	2025-09-01	network public-ip show --resource-group {group} --name {ip} -o json
+NETWORK-03	public-ip-list	2.93.0	none	2025-09-01	network public-ip list --resource-group {group} -o json
+NETWORK-03	public-ip-delete	2.93.0	none	2025-09-01	network public-ip delete --resource-group {group} --name {ip} -o none
+NETWORK-03	nat-create	2.93.0	none	2025-07-01	network nat gateway create --resource-group {group} --name {nat} --location {location} --sku Standard --idle-timeout 4 --public-ip-addresses {ip} -o json
+NETWORK-03	nat-show	2.93.0	none	2025-07-01	network nat gateway show --resource-group {group} --name {nat} -o json
+NETWORK-03	nat-list	2.93.0	none	2025-07-01	network nat gateway list --resource-group {group} -o json
+NETWORK-03	nat-delete	2.93.0	none	2025-07-01	network nat gateway delete --resource-group {group} --name {nat} -o none
+NETWORK-03	subnet-nat	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --nat-gateway {nat} -o json
+NETWORK-04	deployment-preview	2.93.0	none	2025-04-01	deployment group what-if --resource-group {group} --name {deployment} --template-file {template} --parameters namePrefix={prefix} subnetPrefix={subnet_prefix} --no-pretty-print -o json
+NETWORK-04	deployment-create	2.93.0	none	2025-04-01	deployment group create --resource-group {group} --name {deployment} --template-file {template} --parameters namePrefix={prefix} subnetPrefix={subnet_prefix} -o json
+NETWORK-04	deployment-show	2.93.0	none	2025-04-01	deployment group show --resource-group {group} --name {deployment} -o json

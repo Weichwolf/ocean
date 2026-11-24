@@ -65,6 +65,25 @@ func TestGeoInventorySeparatesSegmentsAndRoles(t *testing.T) {
 	}
 }
 
+func TestEgressObserverHasOnlyTheExternalSegment(t *testing.T) {
+	plan := loadTestProfile(t, "egress-ha")
+	var attached []string
+	for _, guest := range plan.Guests {
+		for _, intf := range guest.Interfaces {
+			if intf.Segment == "f1-external" {
+				attached = append(attached, guest.Name)
+			}
+		}
+		if guest.Name == "farm-1-observer" && len(guest.Interfaces) != 1 {
+			t.Fatal("the source observer can access more than the external segment")
+		}
+	}
+	want := []string{"farm-1-node-01", "farm-1-node-02", "farm-1-observer"}
+	if !slices.Equal(attached, want) {
+		t.Fatalf("external segment attachments = %v, want %v", attached, want)
+	}
+}
+
 func TestProfileOverridesNodeResourcesIndependently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mixed.yaml")
 	contents := []byte("farms: 1\nnodesPerFarm: 3\noverrides:\n  farm-1-node-01:\n    memoryMiB: 1536\n  farm-1-node-03:\n    vcpus: 2\n")

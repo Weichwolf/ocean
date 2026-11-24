@@ -3,6 +3,8 @@ package arm
 import (
 	"net/http"
 	"strings"
+
+	"github.com/Weichwolf/ocean/internal/network"
 )
 
 type providerResourceType struct {
@@ -31,7 +33,20 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 	switch strings.ToLower(namespace) {
 	case "microsoft.resources":
 		namespace = "Microsoft.Resources"
-		types = []providerResourceType{{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}}}
+		types = []providerResourceType{
+			{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}},
+			{ResourceType: "deployments", Locations: []string{s.Location}, APIVersions: []string{deploymentAPIVersion}},
+		}
+	case "microsoft.network":
+		namespace = "Microsoft.Network"
+		types = []providerResourceType{
+			{ResourceType: "virtualNetworks", Locations: []string{s.Location}, APIVersions: []string{network.VNetAPIVersion}},
+			{ResourceType: "virtualNetworks/subnets", Locations: []string{s.Location}, APIVersions: []string{network.SubnetAPIVersion}},
+			{ResourceType: "networkSecurityGroups", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
+			{ResourceType: "networkSecurityGroups/securityRules", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
+			{ResourceType: "publicIPAddresses", Locations: []string{s.Location}, APIVersions: []string{network.PublicIPAPIVersion}},
+			{ResourceType: "natGateways", Locations: []string{s.Location}, APIVersions: []string{network.NATAPIVersion}},
+		}
 	case "microsoft.authorization":
 		namespace = "Microsoft.Authorization"
 		types = []providerResourceType{

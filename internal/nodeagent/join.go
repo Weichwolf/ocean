@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/config"
@@ -111,6 +112,19 @@ func (j *joinClient) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := j.useIdentity(cert, key); err != nil {
+		return err
+	}
+	if err := j.confirm(ctx); err != nil {
+		return err
+	}
+	if err := publishFile(path, cert); err != nil {
+		return err
+	}
+	return j.heartbeat(ctx)
+}
+
+func (j *joinClient) useIdentity(cert []byte, key ed25519.PrivateKey) error {
 	leaf, err := x509.ParseCertificate(cert)
 	if err != nil || leaf.PublicKeyAlgorithm != x509.Ed25519 {
 		return errors.New("the host identity certificate is invalid")
@@ -120,13 +134,7 @@ func (j *joinClient) start(ctx context.Context) error {
 		return errors.New("the certificate does not match the local host key")
 	}
 	j.client = j.httpClient([]tls.Certificate{{Certificate: [][]byte{cert}, PrivateKey: key, Leaf: leaf}})
-	if err := j.confirm(ctx); err != nil {
-		return err
-	}
-	if err := publishFile(path, cert); err != nil {
-		return err
-	}
-	return j.heartbeat(ctx)
+	return nil
 }
 
 func (j *joinClient) httpClient(certificates []tls.Certificate) *http.Client {
@@ -193,7 +201,7 @@ func (j *joinClient) confirm(ctx context.Context) error {
 }
 
 func privateData(path string) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +214,7 @@ func privateData(path string) ([]byte, error) {
 }
 
 func readOrCreateKey(path string) (ed25519.PrivateKey, error) {
-	data, err := privateData(path)
+	key, err := readIdentityKey(path)
 	if errors.Is(err, os.ErrNotExist) {
 		_, key, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
@@ -219,8 +227,13 @@ func readOrCreateKey(path string) (ed25519.PrivateKey, error) {
 		if err := publishFile(path, data); err != nil {
 			return nil, err
 		}
-		return readOrCreateKey(path)
+		return readIdentityKey(path)
 	}
+	return key, err
+}
+
+func readIdentityKey(path string) (ed25519.PrivateKey, error) {
+	data, err := privateData(path)
 	if err != nil {
 		return nil, err
 	}

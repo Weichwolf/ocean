@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -107,60 +108,128 @@ func (r *Region) PutInventoryResource(ctx context.Context, scope arm.Subscriptio
 	if !resource.Valid() {
 		return errors.New("invalid resource projection")
 	}
-	group := strings.ToLower(resource.Address.Group)
+	_, _, err := r.ChangeInventoryResource(ctx, scope, resource.Address, "", "", "", func(_ *arm.InventoryResource, address arm.ResourceAddress) (*arm.InventoryResource, error) {
+		resource.Address = address
+		return &resource, nil
+	})
+	return err
+}
+
+// ChangeInventoryResource commits a provider mutation against the group and
+// resource revisions. The callback receives a read-only projection and can run
+// again after a concurrent change. The audit suffix identifies a nested target.
+func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress, actor, action, auditSuffix string,
+	change func(*arm.InventoryResource, arm.ResourceAddress) (*arm.InventoryResource, error)) (*arm.InventoryResource, bool, error) {
+	group := strings.ToLower(address.Group)
 	groupKey := r.groupPrefix(scope) + group
-	key := r.inventoryPrefix(scope) + resource.Address.Key()
+	key := r.inventoryPrefix(scope) + address.Key()
 	var groupGeneration int64
 	for range 8 {
 		result, err := r.client.Txn(ctx).Then(clientv3.OpGet(groupKey), clientv3.OpGet(key)).Commit()
 		if err != nil {
-			return err
+			return nil, false, err
 		}
 		groups := result.Responses[0].GetResponseRange().Kvs
 		if len(groups) == 0 {
-			return arm.ErrGroupMissing
+			return nil, false, arm.ErrGroupMissing
 		}
 		record := groups[0]
 		if groupGeneration != 0 && groupGeneration != record.CreateRevision {
-			return arm.ErrGroupMissing
+			return nil, false, arm.ErrGroupMissing
 		}
 		groupGeneration = record.CreateRevision
 		current, err := decodeGroup(record.Value, group)
 		if err != nil {
-			return err
+			return nil, false, err
 		}
 		if current.DeleteOperation != "" {
-			return arm.ErrGroupDeleting
+			return nil, false, arm.ErrGroupDeleting
 		}
-		resource.Address.Group = current.Name
-		resource.CreatedAt = time.Now().UTC()
-		resource.ChangedAt = resource.CreatedAt
+		canonical := address
+		canonical.Group = current.Name
+		var saved *arm.InventoryResource
 		var revision int64
 		if previous := result.Responses[1].GetResponseRange().Kvs; len(previous) == 1 {
-			old, err := decodeInventoryResource(previous[0].Value, resource.Address.Key())
+			old, err := decodeInventoryResource(previous[0].Value, address.Key())
 			if err != nil {
-				return err
+				return nil, false, err
 			}
-			if old.APIVersion == resource.APIVersion && old.Location == resource.Location &&
-				old.ProvisioningState == resource.ProvisioningState && maps.Equal(old.Tags, resource.Tags) && bytes.Equal(old.Properties, resource.Properties) {
-				return nil
-			}
-			resource.Address = old.Address
-			resource.CreatedAt = old.CreatedAt
-			if resource.ChangedAt.Before(old.ChangedAt) {
-				resource.ChangedAt = old.ChangedAt
-			}
+			saved = &old
+			canonical = old.Address
 			revision = previous[0].ModRevision
 		}
-		data, _ := json.Marshal(resource)
-		write, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(groupKey), "=", record.ModRevision),
-			clientv3.Compare(clientv3.ModRevision(key), "=", revision)).
-			Then(clientv3.OpPut(key, string(data))).Commit()
-		if err != nil || write.Succeeded {
-			return err
+		resource, err := change(saved, canonical)
+		if err != nil || resource == nil && saved == nil {
+			return nil, false, err
+		}
+		if resource != nil && (!resource.Valid() || resource.Address != canonical) {
+			return nil, false, errors.New("invalid resource projection")
+		}
+		if saved != nil && resource != nil && inventoryEqual(*saved, *resource) {
+			return saved, false, nil
+		}
+		referenceConditions, referenceChanges, err := r.inventoryReferenceChanges(ctx, scope, canonical, saved, resource, result.Header.Revision, nil)
+		if err != nil {
+			return nil, false, err
+		}
+		placementConditions, err := r.networkPlacementGuards(ctx, scope, saved, resource, result.Header.Revision)
+		if err != nil {
+			return nil, false, err
+		}
+		poolConditions, poolChanges, err := r.publicIPChange(ctx, key, canonical, saved, resource, result.Header.Revision)
+		if err != nil {
+			return nil, false, err
+		}
+		now := time.Now().UTC()
+		mutation := clientv3.OpDelete(key)
+		if resource != nil {
+			mutation = inventoryPut(key, saved, resource, now)
+		}
+		mutations := append(referenceChanges, poolChanges...)
+		mutations = append(mutations, mutation)
+		if actor != "" {
+			mutations = append(mutations, r.auditOp(scope, arm.AuditEvent{Time: now, Actor: actor, Action: action,
+				Target: canonical.ID(scope) + auditSuffix, Outcome: "Succeeded"}))
+		}
+		conditions := append(referenceConditions, clientv3.Compare(clientv3.ModRevision(groupKey), "=", record.ModRevision),
+			clientv3.Compare(clientv3.ModRevision(key), "=", revision))
+		conditions = append(conditions, poolConditions...)
+		conditions = append(conditions, placementConditions...)
+		var onConflict []clientv3.Op
+		if resource == nil {
+			prefix := r.dependentsPrefix(scope, canonical)
+			conditions = append(conditions, clientv3.Compare(clientv3.Version(prefix), "=", 0).WithPrefix())
+			onConflict = append(onConflict, clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithLimit(1)))
+		}
+		write, err := r.client.Txn(ctx).If(conditions...).Then(mutations...).Else(onConflict...).Commit()
+		if err != nil {
+			return nil, false, err
+		}
+		if write.Succeeded {
+			return resource, saved == nil, nil
+		}
+		if resource == nil && len(write.Responses[0].GetResponseRange().Kvs) != 0 {
+			return nil, false, arm.ErrLinkedResourceInUse
 		}
 	}
-	return errors.New("resource group changed during inventory publication")
+	return nil, false, errors.New("resource group changed during inventory publication")
+}
+
+func inventoryEqual(a, b arm.InventoryResource) bool {
+	return a.APIVersion == b.APIVersion && a.Location == b.Location && a.ProvisioningState == b.ProvisioningState &&
+		maps.Equal(a.Tags, b.Tags) && bytes.Equal(a.Properties, b.Properties) && a.SKU == b.SKU && slices.Equal(a.References, b.References)
+}
+
+func inventoryPut(key string, previous, next *arm.InventoryResource, timestamp time.Time) clientv3.Op {
+	next.CreatedAt, next.ChangedAt = timestamp, timestamp
+	if previous != nil {
+		next.CreatedAt = previous.CreatedAt
+		if next.ChangedAt.Before(previous.ChangedAt) {
+			next.ChangedAt = previous.ChangedAt
+		}
+	}
+	data, _ := json.Marshal(next)
+	return clientv3.OpPut(key, string(data))
 }
 
 func decodeInventoryResource(data []byte, key string) (arm.InventoryResource, error) {

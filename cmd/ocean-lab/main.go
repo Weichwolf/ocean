@@ -18,6 +18,7 @@ const usage = `usage: ocean-lab <command> [options]
   up     -state DIR -profile FILE [-image QCOW2] [-reserve-mib 2048] [-enrollment-file FILE]
   status -state DIR
   ssh    -state DIR GUEST [-- COMMAND]
+  stop   -state DIR GUEST
   down   -state DIR`
 
 func main() {
@@ -45,7 +46,7 @@ func run(ctx context.Context, args []string) error {
 	switch operation {
 	case "plan", "up":
 		flags.StringVar(&profilePath, "profile", "", "path to a YAML lab profile")
-	case "status", "ssh", "down":
+	case "status", "ssh", "stop", "down":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", operation, usage)
 	}
@@ -63,7 +64,8 @@ func run(ctx context.Context, args []string) error {
 		}
 		return err
 	}
-	if (operation == "ssh" && flags.NArg() < 1) || (operation != "ssh" && flags.NArg() != 0) {
+	if operation == "ssh" && flags.NArg() < 1 || operation == "stop" && flags.NArg() != 1 ||
+		operation != "ssh" && operation != "stop" && flags.NArg() != 0 {
 		return fmt.Errorf("%s", usage)
 	}
 	var plan lab.Plan
@@ -95,6 +97,8 @@ func run(ctx context.Context, args []string) error {
 		return printJSON(guests)
 	case "down":
 		return workspace.Down()
+	case "stop":
+		return workspace.Stop(flags.Arg(0))
 	case "ssh":
 		remote := flags.Args()[1:]
 		if len(remote) > 0 && remote[0] == "--" {

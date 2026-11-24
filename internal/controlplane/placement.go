@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -30,13 +31,15 @@ type PlacementRequest struct {
 	Cell      string              `json:"cell"`
 	Role      string              `json:"role"`
 	Resources enrollment.Capacity `json:"resources"`
+	SubnetID  string              `json:"subnetId,omitempty"`
 }
 
 type Reservation struct {
 	PlacementRequest
-	Generation string `json:"generation"`
-	HostID     string `json:"hostId"`
-	Pool       string `json:"pool"`
+	Generation  string     `json:"generation"`
+	HostID      string     `json:"hostId"`
+	Pool        string     `json:"pool"`
+	PrivateIPv4 netip.Addr `json:"privateIPv4,omitzero"`
 }
 
 type capacityCounter struct {
@@ -121,6 +124,18 @@ func (r *Region) HostAssignments(ctx context.Context, id string, certificate []b
 		if json.Unmarshal(item.Value, &assignment) != nil {
 			return enrollment.AssignmentPage{}, errors.New("invalid host assignment")
 		}
+		scope := arm.SubscriptionScope{TenantID: assignment.TenantID, SubscriptionID: assignment.SubscriptionID}
+		if !validScope(scope) || !identifier.MatchString(assignment.ID) || !identifier.MatchString(assignment.Generation) ||
+			string(item.Key) != r.hostReservationKey(scope, id, assignment.ID) {
+			return enrollment.AssignmentPage{}, errors.New("host assignment does not match its key")
+		}
+		if assignment.SubnetID != "" {
+			policy, err := r.assignedNetworkPolicy(ctx, scope, assignment, snapshot.Header.Revision)
+			if err != nil && !errors.Is(err, ErrPlacementSubnetUnavailable) {
+				return enrollment.AssignmentPage{}, err
+			}
+			assignment.Network, assignment.NetworkUnavailable = policy, err != nil
+		}
 		page.Assignments = append(page.Assignments, assignment)
 	}
 	if len(items) > count {
@@ -176,9 +191,13 @@ func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionSco
 		!slices.Contains([]string{"compute", "storage", "gateway"}, wanted.Role) || !validCapacity(wanted.Resources) {
 		return Reservation{}, ErrReservationChanged
 	}
+	if wanted.SubnetID != "" && wanted.Role != "compute" {
+		return Reservation{}, ErrPlacementSubnetUnavailable
+	}
 	base := r.armPrefix(scope)
 	key := base + "placement-requests/" + wanted.ID
 	cellKey := r.reservationKey(scope, wanted.Cell, wanted.ID)
+	var groupGeneration int64
 	for range 12 {
 		if saved, found, err := r.placementRetry(ctx, key, wanted); found || err != nil {
 			return saved, err
@@ -215,14 +234,33 @@ func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionSco
 			clientv3.Compare(clientv3.Version(cellKey), "=", 0),
 			clientv3.Compare(clientv3.ModRevision(policyKey), "=", policies.Kvs[0].ModRevision))
 		reservation := Reservation{PlacementRequest: wanted, Generation: operationID(), HostID: candidate.host.HostID, Pool: candidate.host.Pool}
-		data, _ := json.Marshal(reservation)
 		hostKey := r.hostReservationKey(scope, reservation.HostID, reservation.ID)
 		expected = append(expected, clientv3.Compare(clientv3.Version(hostKey), "=", 0))
+		var bindings []clientv3.Op
+		if wanted.SubnetID != "" {
+			allocation, err := r.allocateSubnet(ctx, scope, wanted.SubnetID)
+			if err != nil {
+				if saved, found, retryErr := r.placementRetry(ctx, key, wanted); found || retryErr != nil {
+					return saved, retryErr
+				}
+				return Reservation{}, err
+			}
+			if groupGeneration != 0 && allocation.groupGeneration != groupGeneration {
+				return Reservation{}, ErrPlacementSubnetUnavailable
+			}
+			groupGeneration = allocation.groupGeneration
+			reservation.PrivateIPv4 = allocation.address
+			expected = append(expected, allocation.guards...)
+			bindings = append(bindings, clientv3.OpPut(allocation.key, reservation.Generation))
+		}
+		data, _ := json.Marshal(reservation)
 		assignment, _ := json.Marshal(enrollment.Assignment{ID: reservation.ID, Generation: reservation.Generation, Cell: reservation.Cell,
-			TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources})
-		result, err := r.client.Txn(ctx).If(expected...).Then(clientv3.OpPut(key, string(data)), clientv3.OpPut(cellKey, string(data)),
+			TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources,
+			SubnetID: wanted.SubnetID, PrivateIPv4: reservation.PrivateIPv4})
+		writes := append(bindings, clientv3.OpPut(key, string(data)), clientv3.OpPut(cellKey, string(data)),
 			clientv3.OpPut(hostKey, string(assignment)),
-			tenant.write(wanted.Resources), candidate.usage.write(wanted.Resources)).Commit()
+			tenant.write(wanted.Resources), candidate.usage.write(wanted.Resources))
+		result, err := r.client.Txn(ctx).If(expected...).Then(writes...).Commit()
 		if err != nil || result.Succeeded {
 			return reservation, err
 		}
@@ -319,9 +357,19 @@ func (r *Region) ReleasePlacement(ctx context.Context, scope arm.SubscriptionSco
 			return errors.New("inconsistent reservation accounting")
 		}
 		delta := enrollment.Capacity{CPUMillis: -saved.Resources.CPUMillis, MemoryMiB: -saved.Resources.MemoryMiB}
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision), tenant.compare(), host.compare()).
-			Then(clientv3.OpDelete(key), clientv3.OpDelete(cellKey), clientv3.OpDelete(r.hostReservationKey(scope, saved.HostID, id)),
-				tenant.write(delta), host.write(delta)).Commit()
+		guards := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision), tenant.compare(), host.compare()}
+		writes := []clientv3.Op{clientv3.OpDelete(key), clientv3.OpDelete(cellKey), clientv3.OpDelete(r.hostReservationKey(scope, saved.HostID, id)),
+			tenant.write(delta), host.write(delta)}
+		if saved.SubnetID != "" {
+			parent, name, ok := arm.SubnetParent(scope, saved.SubnetID)
+			if !ok || !saved.PrivateIPv4.Is4() {
+				return ErrReservationChanged
+			}
+			allocation := r.subnetNetworkPlacements(scope, parent, name) + saved.PrivateIPv4.String()
+			guards = append(guards, clientv3.Compare(clientv3.Value(allocation), "=", generation))
+			writes = append(writes, clientv3.OpDelete(allocation))
+		}
+		result, err := r.client.Txn(ctx).If(guards...).Then(writes...).Commit()
 		if err != nil || result.Succeeded {
 			return err
 		}

@@ -24,6 +24,8 @@ type Server struct {
 	Roles           RoleStore
 	Operations      OperationStore
 	Inventory       InventoryStore
+	Networks        NetworkStore
+	Deployments     NetworkDeploymentStore
 	PrincipalExists func(context.Context, string, string, string) (bool, error)
 }
 
@@ -42,6 +44,11 @@ func parseRoute(segments []string) armRoute {
 	}
 	if len(segments) == 3 && strings.EqualFold(segments[2], "resources") {
 		return armRoute{collection: "inventory"}
+	}
+	if len(segments) == 5 && strings.EqualFold(segments[2], "providers") {
+		if route, ok := networkRoute("", segments[3:]); ok {
+			return route
+		}
 	}
 	if len(segments) == 6 && strings.EqualFold(segments[2], "providers") && strings.EqualFold(segments[3], "Microsoft.Resources") {
 		collection := strings.ToLower(segments[4])
@@ -65,6 +72,19 @@ func parseRoute(segments []string) armRoute {
 		if len(segments) == 5 && strings.EqualFold(segments[4], "resources") {
 			return armRoute{collection: "inventory", group: group}
 		}
+		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
+			if route, ok := networkRoute(group, segments[5:]); ok {
+				return route
+			}
+			if (len(segments) == 8 || len(segments) == 9) &&
+				strings.EqualFold(segments[5]+"/"+segments[6], deploymentType) {
+				name := segments[7]
+				if len(segments) == 9 {
+					name += "/" + strings.ToLower(segments[8])
+				}
+				return armRoute{collection: "deployment", group: group, name: name}
+			}
+		}
 		start = 4
 	}
 	if (len(segments) != start+3 && len(segments) != start+4) || !strings.EqualFold(segments[start], "providers") ||
@@ -86,6 +106,25 @@ func parseRoute(segments []string) armRoute {
 		}
 	}
 	return route
+}
+
+func networkRoute(group string, path []string) (armRoute, bool) {
+	route := armRoute{group: group}
+	if !strings.EqualFold(path[0], "Microsoft.Network") {
+		return route, false
+	}
+	switch strings.ToLower(path[1]) {
+	case "virtualnetworks":
+		route.collection = "network"
+	case "networksecuritygroups":
+		route.collection = "securityGroup"
+	case "publicipaddresses", "natgateways":
+		route.collection = "egress"
+	default:
+		return route, false
+	}
+	route.name = strings.Join(path, "/")
+	return route, true
 }
 
 // Handler serves ARM routes over the same ingress as identity and discovery.
@@ -125,6 +164,14 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.operation(ctx, w, r, scope, route.collection, route.name)
 		case "inventory":
 			s.listResources(ctx, w, r, scope, reader, route.group)
+		case "network":
+			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "securityGroup":
+			s.securityGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "egress":
+			s.egressResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "deployment":
+			s.deployment(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "resource":
 			s.showResource(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
 		case "invalidGroup":
@@ -137,7 +184,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
-	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" ||
+	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress"
+	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}
@@ -157,7 +205,19 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 			return true
 		}
 	}
-	if (r.Method == http.MethodPut || r.Method == http.MethodDelete) && (route.collection == "groups" || route.collection == "roleassignments") {
+	if route.collection == "deployment" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
+		action := deploymentType + "/write"
+		if _, op, ok := strings.Cut(route.name, "/"); ok {
+			action = deploymentType + "/" + op + "/action"
+		}
+		if err := s.Roles.RecordAudit(ctx, scope, AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action,
+			Target: r.URL.Path, Outcome: "Denied"}); err != nil {
+			unavailable(w)
+			return false
+		}
+	}
+	if (r.Method == http.MethodPut || r.Method == http.MethodDelete) &&
+		(route.collection == "groups" || route.collection == "roleassignments" || networkResource) {
 		action := "Microsoft.Resources/subscriptions/resourceGroups/"
 		if route.collection == "roleassignments" {
 			action = "Microsoft.Authorization/roleAssignments/"
@@ -166,6 +226,17 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 			action += "delete"
 		} else {
 			action += "write"
+		}
+		if route.collection == "network" {
+			path, _ := parseNetworkPath(route.name)
+			action = networkAction(r.Method, path)
+		}
+		if route.collection == "securityGroup" {
+			path, _ := parseSecurityGroupPath(route.name)
+			action = securityGroupAction(r.Method, path)
+		}
+		if route.collection == "egress" {
+			action = egressAction(r.Method, egressResourceType(strings.Split(route.name, "/")[1]))
 		}
 		event := AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action, Target: r.URL.Path, Outcome: "Denied"}
 		if err := s.Roles.RecordAudit(ctx, scope, event); err != nil {

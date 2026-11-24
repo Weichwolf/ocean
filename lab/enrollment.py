@@ -38,18 +38,20 @@ def approval(state, node, *, mac=None, address=None, profile="identity-support")
     return directory, credential, inventory
 
 
-def deploy(state, node):
+def deploy(state, node, public_ips=None):
     approval(state, node)
-    publish(state)
+    publish(state, public_ips)
 
 
-def publish(state):
+def publish(state, public_ips=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
     cert, key = ca(directory, "host-enrollment")
     for member in NODES:
         config = json.loads(ssh(state, member, f"cat {DEST}/api.json"))
+        if public_ips is not None:
+            config["region"]["publicIPv4Addresses"] = public_ips
         config["tls"]["clientCAFile"] = f"{DEST}/pki/host-enrollment.pem"
         config["tls"]["optionalClientCA"] = True
         config["hostEnrollment"] = {"certificateFile": f"{DEST}/pki/host-enrollment.pem",
@@ -68,8 +70,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--node", choices=NODES, required=True)
+    parser.add_argument("--public-ipv4", action="append", help="approved regional public IP address; repeat for each pool entry")
     args = parser.parse_args()
-    deploy(args.state.resolve(), args.node)
+    deploy(args.state.resolve(), args.node, args.public_ipv4)
 
 
 if __name__ == "__main__":

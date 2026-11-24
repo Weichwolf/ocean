@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Weichwolf/ocean/internal/network"
 )
 
 var hostName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -79,13 +81,17 @@ type Availability struct {
 }
 
 type Assignment struct {
-	ID             string   `json:"id"`
-	Generation     string   `json:"generation"`
-	Cell           string   `json:"cell"`
-	TenantID       string   `json:"tenantId"`
-	SubscriptionID string   `json:"subscriptionId"`
-	Role           string   `json:"role"`
-	Resources      Capacity `json:"resources"`
+	ID                 string                `json:"id"`
+	Generation         string                `json:"generation"`
+	Cell               string                `json:"cell"`
+	TenantID           string                `json:"tenantId"`
+	SubscriptionID     string                `json:"subscriptionId"`
+	Role               string                `json:"role"`
+	Resources          Capacity              `json:"resources"`
+	SubnetID           string                `json:"subnetId,omitempty"`
+	PrivateIPv4        netip.Addr            `json:"privateIPv4,omitzero"`
+	Network            *network.SubnetPolicy `json:"network,omitempty"`
+	NetworkUnavailable bool                  `json:"networkUnavailable,omitempty"`
 }
 
 type AssignmentPage struct {

@@ -22,10 +22,11 @@ type overrides struct {
 }
 
 type profile struct {
-	Farms        int                  `yaml:"farms"`
-	NodesPerFarm int                  `yaml:"nodesPerFarm"`
-	Defaults     Resources            `yaml:"defaults"`
-	Overrides    map[string]overrides `yaml:"overrides"`
+	Farms         int                  `yaml:"farms"`
+	NodesPerFarm  int                  `yaml:"nodesPerFarm"`
+	ExternalProbe bool                 `yaml:"externalProbe"`
+	Defaults      Resources            `yaml:"defaults"`
+	Overrides     map[string]overrides `yaml:"overrides"`
 }
 
 // Interface connects a guest to one private lab segment.
@@ -86,6 +87,10 @@ func (settings profile) plan() (Plan, error) {
 	for farm := 1; farm <= settings.Farms; farm++ {
 		management, workload, customer := localSegments(farm)
 		plan.Segments = append(plan.Segments, management, workload, customer)
+		external := fmt.Sprintf("f%d-external", farm)
+		if settings.ExternalProbe {
+			plan.Segments = append(plan.Segments, external)
+		}
 		for number := 1; number <= settings.NodesPerFarm; number++ {
 			guest := Guest{
 				Name:      fmt.Sprintf("farm-%d-node-%02d", farm, number),
@@ -103,6 +108,9 @@ func (settings profile) plan() (Plan, error) {
 			if number <= 2 {
 				guest.Roles = append(guest.Roles, "gateway")
 				guest.Interfaces = append(guest.Interfaces, privateInterface("customer0", customer, 233, farm, number))
+				if settings.ExternalProbe {
+					guest.Interfaces = append(guest.Interfaces, externalInterface(external, farm, number+1))
+				}
 				if settings.Farms > 1 {
 					guest.Interfaces = append(guest.Interfaces, wanInterface(farm, number))
 				}
@@ -124,6 +132,9 @@ func (settings profile) plan() (Plan, error) {
 			client(farm, "operator", privateInterface("mgmt0", management, 231, farm, 90)),
 			client(farm, "customer", privateInterface("customer0", customer, 233, farm, 91)),
 		)
+		if settings.ExternalProbe {
+			plan.Guests = append(plan.Guests, client(farm, "observer", externalInterface(external, farm, 30)))
+		}
 	}
 	for name := range settings.Overrides {
 		if !known[name] {
@@ -131,6 +142,14 @@ func (settings profile) plan() (Plan, error) {
 		}
 	}
 	return plan, nil
+}
+
+func externalInterface(segment string, farm, address int) Interface {
+	return Interface{
+		Name: "external0", Segment: segment,
+		MAC:     fmt.Sprintf("02:4f:00:eb:%02x:%02x", farm, address),
+		Address: netip.PrefixFrom(netip.AddrFrom4([4]byte{198, 51, 100, byte(address + 48*(farm-1))}), 24),
+	}
 }
 
 func localSegments(farm int) (management, workload, customer string) {

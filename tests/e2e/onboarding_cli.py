@@ -40,7 +40,7 @@ def send_token(config, token, method, url, data=None, discard=False, include_hea
             payload = json.dumps(data).encode()
         connection.request(method, route, payload, headers)
         with connection.getresponse() as reply:
-            result = (reply.status, None if discard else json.load(reply))
+            result = (reply.status, None if discard or reply.status == 204 else json.load(reply))
             return (*result, {key.lower(): value for key, value in reply.getheaders()}) if include_headers else result
     finally:
         connection.close()

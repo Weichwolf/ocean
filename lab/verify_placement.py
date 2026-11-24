@@ -28,7 +28,7 @@ def record_capacity(state, node):
     return snapshot, int(live["lease"]), registered["mod_revision"]
 
 
-def verify_host_endpoint(state, small, large):
+def host_assignment_requests(state, certificate_host, *targets):
     script = r'''
 set -eu
 files=$(mktemp -d)
@@ -41,10 +41,17 @@ for url do
         --key "$files/key.pem" -w '\n%{http_code}\n' "$url"
 done
 '''
-    urls = [f"https://{ARM}/ocean/hosts/{node}/placements" for node in (small, large)]
-    result = agent_command(state, small, "sh", "-c", script, "assignment-check", *urls).decode().splitlines()
+    urls = [f"https://{ARM}/ocean/hosts/{node}/placements" for node in targets]
+    result = agent_command(state, certificate_host, "sh", "-c", script, "assignment-check", *urls).decode().splitlines()
     values = [line for line in result if line]
-    if len(values) != 4 or values[1] != "200" or values[3] != "403" or json.loads(values[0]) != {"assignments": []}:
+    if len(values) != 2 * len(targets):
+        raise RuntimeError("unexpected response from the host assignment endpoint")
+    return [(int(values[index + 1]), json.loads(values[index])) for index in range(0, len(values), 2)]
+
+
+def verify_host_endpoint(state, small, large):
+    own, foreign = host_assignment_requests(state, small, small, large)
+    if own != (200, {"assignments": []}) or foreign[0] != 403:
         raise RuntimeError("the host assignment endpoint did not enforce certificate scope")
 
 

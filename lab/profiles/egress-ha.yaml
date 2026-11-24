@@ -1,0 +1,6 @@
+farms: 1
+nodesPerFarm: 3
+externalProbe: true
+defaults:
+  memoryMiB: 1024
+  vcpus: 1

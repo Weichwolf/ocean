@@ -67,6 +67,10 @@ Resolve public images as `repository@digest` using [images.lock.yaml](testdata/i
 
 Build each Function fixture on its locked public runtime base. Generate Function Keys at run time and deploy fixtures with those keys. Run Functions runtime cases sequentially in the small profile. Reserve capacity for simultaneous replicas in availability tests.
 
+## Network template fixture
+
+Use Bicep CLI 0.49.2 with Azure CLI 2.93.0 for the network template run. The fixture declares a VNet, an independently managed subnet, a regional Standard static IPv4 address, and a Standard NAT gateway. `namePrefix` gives each run its own resource IDs. The subnet declares the gateway reference and disables implicit outbound access. Record the compiler version and compiled template with the deployment evidence. [Network Bicep fixture](testdata/bicep/network.bicep) · [Bicep CLI release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
+
 ## Execution and evidence
 
 1. Record the source revision, platform and CLI versions, API versions, selected cases, image digests, topology, resource budgets, and pass limits before running the suite. Give the run its own Azure CLI configuration directory and its own test resources.

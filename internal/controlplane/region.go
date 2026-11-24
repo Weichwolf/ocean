@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -28,10 +29,11 @@ type settings struct {
 }
 
 type regionConfig struct {
-	Name                string     `json:"name"`
-	InitialCell         string     `json:"initialCell"`
-	OperationController *bool      `json:"operationController"`
-	Etcd                etcdConfig `json:"etcd"`
+	Name                string       `json:"name"`
+	InitialCell         string       `json:"initialCell"`
+	OperationController *bool        `json:"operationController"`
+	Etcd                etcdConfig   `json:"etcd"`
+	PublicIPv4Addresses []netip.Addr `json:"publicIPv4Addresses"`
 }
 
 type etcdConfig struct {
@@ -103,7 +105,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			if cfg.Identity.Cloud != nil {
 				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
-					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region,
+					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region, Networks: region, Deployments: region,
 					PrincipalExists: compatibility.RolePrincipalExists}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}
@@ -121,15 +123,20 @@ func Load(path string) (config.Server, service.Hooks, error) {
 // Region owns the initial metadata for one region. Resource providers use their
 // own key prefixes for operations and reservations under the same region root.
 type Region struct {
-	client *clientv3.Client
-	root   string
-	keys   [2]string
-	values [2]string
+	client     *clientv3.Client
+	root       string
+	keys       [2]string
+	values     [2]string
+	publicIPv4 []netip.Addr
 }
 
 func openRegion(cfg regionConfig) (*Region, error) {
 	if !identifier.MatchString(cfg.Name) || !identifier.MatchString(cfg.InitialCell) {
 		return nil, errors.New("region name and initialCell must be lowercase identifiers")
+	}
+	publicIPv4, err := configuredPublicIPs(cfg.PublicIPv4Addresses)
+	if err != nil {
+		return nil, err
 	}
 	connection, err := cfg.Etcd.clientConfig()
 	if err != nil {
@@ -141,7 +148,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
-	return &Region{client: client, root: root, keys: keys, values: values}, nil
+	return &Region{client: client, root: root, keys: keys, values: values, publicIPv4: publicIPv4}, nil
 }
 
 func initialRecords(root, name, cell string) ([2]string, [2]string) {
@@ -166,10 +173,12 @@ func (region *Region) bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bootstrap region: %w", err)
 	}
-	if result.Succeeded {
-		return nil
+	if !result.Succeeded {
+		if err := region.verify(result); err != nil {
+			return err
+		}
 	}
-	return region.verify(result)
+	return region.bootstrapPublicIPPool(ctx)
 }
 
 func (region *Region) ready(ctx context.Context) error {
