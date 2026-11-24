@@ -40,17 +40,67 @@ flowchart TD
 - Distribute identity service replicas and PostgreSQL instances across failure domains. PostgreSQL has one writable primary and standby replicas, with controlled promotion and fencing of the previous primary. The database and consensus services use private network paths. Start the management and storage control services independently of the tenant scheduler and guest storage.
 - Place redundant replicas of a stateless workload on different hosts. Recover a single-writer workload on a permitted spare host after fencing. Reserve sufficient capacity to absorb a host failure at the declared load. Workload ingress, NAT, and VPN use redundant gateway roles, with their own reachability and failover tests.
 
+### Availability and autoscaling
+
+Choose a service availability tier per deployment. The tier sets the minimum placement and the failure the service must tolerate under its documented load and client policy.
+
+| Service tier | Placement and continuity |
+| --- | --- |
+| Non-redundant | One active placement is sufficient. Persistent data follows its own storage protection policy. |
+| Locally redundant | Maintain live placements on separate nodes in one farm and serve through loss of any one node. |
+| Geo-redundant | Maintain live placements in independent authorized farms and serve through loss of any one farm. |
+
+Use the same reconciler for replacement and autoscaling. Replacement restores the desired count and placement after a failure. Autoscaling adjusts the desired count within declared bounds using workload signals. Disabled autoscaling maintains a configured count. Local autoscaling adjusts capacity within the chosen farm or within each assigned farm. Geo autoscaling can allocate capacity across authorized farms. Preserve the availability tier's minimum placement while scaling in, and account for tenant quotas and reserved failover capacity when scaling out.
+
+Offer fixed counts and local autoscaling in phase one. Qualify geo placement and geo autoscaling through the federation profile. Specify tier and scaling support per resource type and API version, including the mapping for any supported Azure provider parameters. Publish availability evidence for the complete service path, including ingress and data dependencies. Track storage replication and recovery objectives independently of the compute tier.
+
+### Network paths
+
+- **Management network.** Give ocean nodes private IPv4 addresses on a dedicated segment. Use mTLS for etcd peer traffic and node-agent connections to the control plane. The lab management gateways share this segment and transfer the virtual management IP when the active gateway fails. Give the CLI test client access to this segment so it can probe the same HTTPS endpoint before and after failover.
+- **Workload network.** Carry Linux container, Functions, and guest VM traffic on a separate segment. Route tenant subnets through enforced isolation and firewall rules. Gateway interfaces connect the relevant networks and forward only permitted traffic.
+- **On-premises network.** Connect a separate customer network through two WireGuard gateways. Route only the authorized tenant prefixes through the tunnels. Test reachability and routing failover from the customer side.
+
+### Geo-redundant farms
+
+Connect participating sites through a WireGuard mesh of site gateways. Start with two gateways and independent uplinks per farm. Provide at least two independent tunnel paths between paired farms. Distribute only approved prefixes and monitor path health so routing can withdraw a failed path. BGP with BFD is a candidate for dynamic routing and failure detection.
+
+Once a tunnel is reachable, pre-authorized farms discover each other's federation endpoint, authenticate with mTLS, and reconcile one durable pairing per farm pair. A retry or tunnel flap resumes the same pairing. Exchange permitted routing, health, capacity, and placement metadata according to the federation policy. Each farm runs its own control-plane, identity, and storage quorums and can continue local operations during a WAN partition.
+
+Assign each federated resource an authoritative farm. Cross-site placement and replication require tenant authorization and an approved target. For a stateful failover, verify the replicated recovery point and fence the previous writer before enabling a replacement writer. Pause ownership transfers when coordination or effective fencing is unavailable.
+
+Begin the geo simulation with four farms of three ocean nodes each. Add one node per farm through automated enrollment for the four-by-four acceptance run. Keep three control-plane voters per farm. Run the two WireGuard gateway roles on separate nodes in each farm. In the lab mesh, pair all four farms and provide two separate tunnel paths for each pair. A test client outside the farms probes service endpoints through the declared redundant access path. The geo profile also requires independent-site recovery evidence.
+
+### Host provisioning and enrollment
+
+Maintain a declarative inventory of approved hosts. Each record specifies the management interface MAC address, hostname, address reservation, provisioning profile, cell, operator pool, and eligible roles. The MAC address selects the network and provisioning profile. The host authenticates independently using a short-lived, single-use enrollment credential delivered through a trusted provisioning channel.
+
+In the lab, generate the KVM guest configuration and a private cloud-init NoCloud seed from the inventory. At first boot, the agent generates a local key and proves possession during enrollment. Issue its individual mTLS certificate after successful enrollment. Commit credential redemption and the host record together. Recover an interrupted enrollment using proof of the same host key. Check capabilities and apply the approved role and pool policy before scheduling workloads. Keep control-plane voter membership separately configured.
+
+### Zero-touch rack provisioning
+
+Set up the rack provisioning network, out-of-band management network, and rack policies once. Import approved hardware identities and BMC access from a trusted purchasing or asset feed. Use that feed to populate the host inventory and derive the initial role and pool from the rack policy. The per-server workflow starts when an operator racks, cables, and powers on the machine.
+
+1. Discover the machine through the provisioning or out-of-band network. Match its authenticated hardware or BMC identity to the approved asset. Record the boot NIC MAC address and allocate the management address and DNS name. Keep unidentified or mismatched machines in the provisioning network for investigation.
+2. Use the site's bare-metal provisioning service to commission the machine and check hardware capabilities. Trigger a one-time network boot through Redfish where supported. Boot verified PXE or iPXE artifacts and install Debian and the ocean agent unattended according to the approved profile.
+3. Deliver the enrollment credential through the authenticated installer or an out-of-band channel. After the agent joins and passes qualification, allow placement in its assigned cell and pool. Subsequent boots use the installed system. An explicit reinstallation action authorizes imaging an already enrolled host.
+
+The production qualification includes a rack-to-ready run with a supported server and a preconfigured rack. The lab exercises the same inventory, join, and qualification flow using KVM and cloud-init.
+
 ## Reliability and trust
 
 A region starts with one cell. Assign each workload and persistent volume to a cell. Hosts join using authenticated, individually revocable identities and are placed into operator pools only after qualification. Honor the tenant's pool selection during placement and recovery. Protect tenant data and snapshots at rest, control key access, and keep secrets out of logs and telemetry. Use approved operator pools for the first release and apply the tenant's security policy again on recovery.
 
 Run redundant control-plane, identity, storage, and gateway roles. Maintain independent recovery paths for these dependencies. A loss of quorum must prevent new state-changing operations that require that quorum. Preserve existing workloads when their data paths remain available. Fence a previous volume writer before granting a replacement write access. Bound telemetry backlogs so telemetry failure cannot block provisioning or safety decisions. Verify backup and restore separately from replica failover.
 
+Keep every service offered as locally redundant available through loss of one node in its farm. Keep every service offered as geo-redundant available through loss of one farm. Define the client request deadline and permitted retries before testing. During each fault, require every test operation to complete within that policy and record individual attempt failures, connection resets, and latency separately. Reserve enough capacity for the surviving placements. Use active replicas on separate hosts or farms for the HTTP continuity fixture. Qualify single-writer recovery against the declared recovery time, data-loss limits, and fencing policy.
+
 Production claims require independent physical failure domains. Before a release run, record numerical limits for API and workload latency, supported load, failover and recovery time, acceptable data loss, and telemetry backlog. Use those limits for pass or fail decisions.
 
 ## Development lab on trixie
 
 Run Debian ocean servers as small KVM guests. Start with three ocean nodes for the quorum and management-endpoint tests. Scale to 16 real ocean nodes for join, inventory, placement, drain, and recovery tests. The 16-node baseline allocates 1 GiB of RAM per node. Keep the three control-plane voters fixed while adding gateway and compute capacity. Limit concurrent workload instances so the run exercises scheduling and failure handling on the six-core development host.
+
+Create separate user-space VDE switches for the management and workload segments. Attach each ocean guest to the switches it needs for its role. Give the simulated customer network and CLI test client distinct interfaces so the VPN and management failover tests exercise their intended paths.
 
 | Starting profile | Guest RAM | vCPUs | Typical use |
 | --- | ---: | ---: | --- |
@@ -64,6 +114,6 @@ Use small, representative fixtures. A public OCI HTTP image covers ordinary cont
 
 ## Additional compatibility profiles
 
-A release can also include Azure-compatible IPsec VPN commands, Functions ZIP deployment and slots, or monetary reporting through Cost Management. Each profile has its own acceptance gate. The phase-one release exercises WireGuard, Functions deployed from OCI images, and measured usage and quotas.
+A release can also include geo-redundant farm federation, Azure-compatible IPsec VPN commands, Functions ZIP deployment and slots, or monetary reporting through Cost Management. Each profile has its own acceptance gate. The phase-one release exercises on-premises WireGuard access, Functions deployed from OCI images, and measured usage and quotas.
 
 Use [acceptance.tsv](acceptance.tsv) as the release checklist. A phase-one sign-off requires every required row to pass. Production sign-off also requires the production rows to pass. Each enabled compatibility profile requires its conditional rows to pass. Record the build, CLI and API versions, test environment, expected limits, measured results, and evidence for each run.
