@@ -15,6 +15,12 @@ Use `az cloud register` and `az cloud set` to select ocean. Verify user and serv
 - **Networking.** Provision private IPv4 VNets and subnets, security group rules, public IPs, HTTPS ingress, and NAT gateways. Connect private workloads to on-premises networks through redundant WireGuard gateways managed through the ocean API. Support VNet integration and stable source IP egress for Function Apps, including after gateway failover. Use the network-only Bicep workflow to exercise `az deployment group what-if` and `az deployment group create` for the selected network resource types.
 - **Operations.** Expose tenant-scoped resource inventory, health, and an audit trail. Report instance and function metrics, container logs, request counts, error rates, latency percentiles, exceptions, and dependency telemetry. Expose measured resource consumption and quota usage. Enforce quotas during concurrent provisioning and distinguish reserved capacity from measured usage.
 
+## Repository layout
+
+Use a Go module at the repository root. Put the control-plane and node-agent entry points in `cmd/ocean-control-plane` and `cmd/ocean-agent`. Keep implementation packages in `internal/`, including the ARM API, identity, enrollment, reconciliation, node execution, networking, storage, federation, and observability. Add each package alongside the feature it implements.
+
+Keep development topology profiles in `lab/profiles` and the black-box suite and workload fixtures in `tests/e2e`. The [E2E protocol](tests/e2e/protocol.md) specifies the fixture matrix, test runs, and evidence format.
+
 ## Proposed deployment topology
 
 One ocean region consists of multiple Debian servers. Start with one workload cell and three designated control-plane servers. A server can host several roles. Additional servers join as compute, storage, or gateway capacity according to their qualification. Adding a workload server does not add another control-plane voter.
