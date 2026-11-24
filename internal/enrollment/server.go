@@ -87,6 +87,8 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("POST /ocean/hosts/{host}/enrollment", a.enroll)
 	mux.HandleFunc("POST /ocean/hosts/{host}/heartbeat", a.heartbeat)
 	mux.HandleFunc("GET /ocean/hosts/{host}/placements", a.placements)
+	mux.HandleFunc("GET /ocean/hosts/{host}/https-assignments", a.httpsAssignments)
+	mux.HandleFunc("POST /ocean/hosts/{host}/https-assignments/{slot}/status", a.reportHTTPSStatus)
 	mux.HandleFunc("GET /ocean/hosts/{host}", a.getHost)
 	mux.Handle("/", fallback)
 	return mux

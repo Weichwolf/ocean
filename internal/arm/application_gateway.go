@@ -17,13 +17,17 @@ import (
 
 const (
 	applicationGatewayType              = "Microsoft.Network/applicationGateways"
-	applicationGatewayAPIVersion        = "2026-01-01"
+	ApplicationGatewayResourceVersion   = "2026-01-01"
 	ApplicationGatewayDeploymentVersion = "2024-11-01"
 	gatewayTemplateAPIVersion           = "2022-05-01"
 	gatewayTemplateSchema               = "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#"
 )
 
-var ErrGatewayExecutionUnavailable = errors.New("gateway execution is unavailable")
+var (
+	ErrGatewayExecutionUnavailable = errors.New("gateway execution is unavailable")
+	ErrGatewayNameInUse            = errors.New("the Application Gateway already has a deployment")
+	ErrGatewaySubnetInUse          = errors.New("the subnet already contains an Application Gateway")
+)
 
 type ApplicationGatewayDeployment struct {
 	ResourceAddress ResourceAddress
@@ -41,6 +45,46 @@ type ApplicationGatewayDeployment struct {
 
 type ApplicationGatewayDeploymentStore interface {
 	DeployApplicationGateway(context.Context, SubscriptionScope, string, ApplicationGatewayDeployment, bool) (ApplicationGatewayDeploymentResult, error)
+	DeleteApplicationGateway(context.Context, SubscriptionScope, string, ResourceAddress) (*Operation, error)
+}
+
+func (s Server) applicationGatewayResource(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope,
+	actor, reader, group, path string) {
+	parts := strings.Split(path, "/")
+	if len(parts) != 3 || !network.ValidName(parts[2]) {
+		writeError(w, http.StatusBadRequest, "InvalidResourceId", "The Application Gateway identifier is invalid.")
+		return
+	}
+	if _, ok := readQuery(w, r, ApplicationGatewayResourceVersion, nil); !ok {
+		return
+	}
+	address := ResourceAddress{Group: group, Path: applicationGatewayType + "/" + parts[2]}
+	switch r.Method {
+	case http.MethodGet:
+		gateway, err := s.Inventory.GetInventoryResource(ctx, scope, reader, address)
+		if err != nil {
+			inventoryError(w, err)
+		} else if gateway == nil {
+			writeError(w, http.StatusNotFound, "ResourceNotFound", "The Application Gateway does not exist.")
+		} else {
+			writeJSON(w, http.StatusOK, gateway.view(scope))
+		}
+	case http.MethodDelete:
+		if s.GatewayDeployments == nil {
+			unavailable(w)
+			return
+		}
+		operation, err := s.GatewayDeployments.DeleteApplicationGateway(ctx, scope, actor, address)
+		if err != nil {
+			deploymentError(w, err)
+		} else if operation == nil {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			s.acceptOperation(w, scope, *operation)
+		}
+	default:
+		methodNotAllowed(w, "GET, DELETE")
+	}
 }
 
 type ApplicationGatewayDeploymentResult struct {

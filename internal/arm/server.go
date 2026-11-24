@@ -121,6 +121,11 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 		route.collection = "securityGroup"
 	case "publicipaddresses", "natgateways":
 		route.collection = "egress"
+	case "applicationgateways":
+		if group == "" {
+			return route, false
+		}
+		route.collection = "applicationGateway"
 	default:
 		return route, false
 	}
@@ -167,6 +172,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.listResources(ctx, w, r, scope, reader, route.group)
 		case "network":
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "applicationGateway":
+			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "securityGroup":
 			s.securityGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "egress":

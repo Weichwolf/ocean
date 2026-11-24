@@ -15,15 +15,21 @@ import (
 type applicationGatewayNetwork struct {
 	PublicIPv4 netip.Addr
 	Subnet     netip.Prefix
+	VNet       arm.ResourceAddress
+	Group      string
+	SubnetLock string
+	Revision   int64
+	Guards     []clientv3.Cmp
 }
 
 func (r *Region) DeployApplicationGateway(ctx context.Context, scope arm.SubscriptionScope, actor string,
 	desired arm.ApplicationGatewayDeployment, commit bool) (arm.ApplicationGatewayDeploymentResult, error) {
-	if _, err := r.readApplicationGatewayNetwork(ctx, scope, desired); err != nil {
+	target, err := r.readApplicationGatewayNetwork(ctx, scope, desired)
+	if err != nil {
 		return arm.ApplicationGatewayDeploymentResult{}, err
 	}
 	if commit {
-		return arm.ApplicationGatewayDeploymentResult{}, arm.ErrGatewayExecutionUnavailable
+		return r.beginApplicationGateway(ctx, scope, actor, desired, target)
 	}
 	properties := json.RawMessage(`{"provisioningState":"Succeeded","mode":"Incremental"}`)
 	return arm.ApplicationGatewayDeploymentResult{Resource: arm.InventoryResource{
@@ -88,25 +94,26 @@ func (r *Region) readApplicationGatewayNetwork(ctx context.Context, scope arm.Su
 		public.AllocationMethod != "Static" || public.IPVersion != "IPv4" {
 		return result, arm.InvalidDeployment{Cause: errors.New("the selected public address has not been allocated")}
 	}
-	virtualNetwork, err := decodeInventoryResource(vnetValues[0].Value, vnet.Key())
+	_, subnet, err := decodeSubnet(vnetValues[0].Value, vnet.Key(), subnetName)
+	if errors.Is(err, ErrPlacementSubnetUnavailable) {
+		return result, arm.ErrLinkedResourceMissing
+	}
 	if err != nil {
 		return result, err
 	}
-	var properties network.VNetProperties
-	if err := json.Unmarshal(virtualNetwork.Properties, &properties); err != nil {
-		return result, err
-	}
-	index := properties.SubnetIndex(subnetName)
-	if index < 0 {
-		return result, arm.ErrLinkedResourceMissing
-	}
-	prefixes, err := properties.Subnets[index].Properties.Prefixes()
+	prefixes, err := subnet.Properties.Prefixes()
 	if err != nil {
 		return result, err
 	}
 	for _, prefix := range prefixes {
 		if network.IsUsableSubnetAddress(prefix, desired.Backend.Addr()) && !prefix.Contains(publicIPv4) {
-			return applicationGatewayNetwork{PublicIPv4: publicIPv4, Subnet: prefix}, nil
+			return applicationGatewayNetwork{PublicIPv4: publicIPv4, Subnet: prefix, VNet: vnet, Group: current.Name,
+				SubnetLock: r.subnetNetworkPlacements(scope, vnet, subnetName) + "_application-gateway",
+				Revision:   read.Header.Revision, Guards: []clientv3.Cmp{
+					clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups[0].ModRevision),
+					clientv3.Compare(clientv3.ModRevision(ipKey), "=", ipValues[0].ModRevision),
+					clientv3.Compare(clientv3.ModRevision(vnetKey), "=", vnetValues[0].ModRevision),
+				}}, nil
 		}
 	}
 	return result, arm.InvalidDeployment{Cause: errors.New("the private backend address is outside the selected subnet")}
