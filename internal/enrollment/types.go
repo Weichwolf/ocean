@@ -80,6 +80,7 @@ type Availability struct {
 	Capacity         Capacity `json:"capacity"`
 	ContainerNetwork bool     `json:"containerNetwork,omitempty"`
 	DirectoryRuntime bool     `json:"directoryRuntime,omitempty"`
+	VMRuntime        bool     `json:"vmRuntime,omitempty"`
 }
 
 type Assignment struct {
@@ -132,6 +133,7 @@ type Report struct {
 	KVM              bool   `json:"kvm"`
 	ContainerNetwork bool   `json:"containerNetwork,omitempty"`
 	DirectoryRuntime bool   `json:"directoryRuntime,omitempty"`
+	VMRuntime        bool   `json:"vmRuntime,omitempty"`
 }
 
 func (a Approval) Qualifies(r Report) bool {

@@ -33,6 +33,7 @@ type WorkloadFirewall struct {
 	InternetPrefixes   []netip.Prefix
 	Rules              []SecurityRule
 	Lease              time.Duration
+	DHCPServer         netip.Addr
 }
 
 // Apply installs a complete policy in an existing isolated routing namespace.
@@ -107,6 +108,9 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 	if !validFirewallLease(f.Lease) {
 		return "", errors.New("invalid firewall lease duration")
 	}
+	if f.DHCPServer.IsValid() && (public || !f.DHCPServer.Is4() || !f.DHCPServer.IsPrivate() || f.DHCPServer == f.Address) {
+		return "", errors.New("DHCP requires a private IPv4 workload gateway")
+	}
 	for _, prefixes := range [][]netip.Prefix{f.VNetPrefixes, f.ProtectedPrefixes, f.InternetPrefixes} {
 		for _, prefix := range prefixes {
 			if !prefix.Addr().Is4() || prefix != prefix.Masked() {
@@ -131,6 +135,15 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 	policy.command("add chain inet %s egress", policy.table)
 	iface := strconv.Quote(f.Interface)
 	policy.rule("guard", "iifname "+iface+" meta nfproto != ipv4 counter drop")
+	if f.DHCPServer.IsValid() {
+		request := fmt.Sprintf("iifname %s ip saddr { 0.0.0.0, %s } ip daddr { 255.255.255.255, %s } udp sport 68 udp dport 67 counter return",
+			iface, f.Address, f.DHCPServer)
+		policy.rule("guard", request)
+		policy.rule("local_in", request)
+		policy.rule("local_out", fmt.Sprintf("oifname %s ip saddr %s ip daddr { 255.255.255.255, %s } udp sport 67 udp dport 68 counter return",
+			iface, f.DHCPServer, f.Address))
+		policy.rule("forwarded", fmt.Sprintf("iifname %s ip saddr != %s counter drop", iface, f.Address))
+	}
 	policy.rule("guard", fmt.Sprintf("iifname %s ip saddr != %s counter drop", iface, f.Address))
 	policy.rule("local_in", "iifname "+iface+" counter drop")
 	policy.rule("local_out", "oifname "+iface+" counter drop")

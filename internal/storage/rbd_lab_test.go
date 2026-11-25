@@ -15,7 +15,8 @@ import (
 	"time"
 )
 
-func TestEncryptedRBDDataPath(t *testing.T) {
+func rbdLabBackend(t *testing.T) (Backend, []byte, string) {
+	t.Helper()
 	config := os.Getenv("OCEAN_E2E_RBD_CONFIG")
 	if config == "" {
 		t.Skip("dedicated RBD lab is not configured")
@@ -36,12 +37,16 @@ func TestEncryptedRBDDataPath(t *testing.T) {
 	if err != nil || len(key) != KeySize {
 		t.Fatal("the lab encryption key is unavailable")
 	}
-	defer clear(key)
+	t.Cleanup(func() { clear(key) })
 	id := os.Getenv("OCEAN_E2E_RBD_ID")
 	if !ValidID(id) {
 		t.Fatal("invalid lab volume ID")
 	}
-	backup := os.Getenv("OCEAN_E2E_RBD_BACKUP")
+	return backend, key, id
+}
+
+func rbdLabWorker(t *testing.T) (int, int) {
+	t.Helper()
 	account, err := user.Lookup("ocean-agent")
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +56,13 @@ func TestEncryptedRBDDataPath(t *testing.T) {
 	if uidErr != nil || gidErr != nil {
 		t.Fatal("invalid lab runtime identity")
 	}
+	return uid, gid
+}
+
+func TestEncryptedRBDDataPath(t *testing.T) {
+	backend, key, id := rbdLabBackend(t)
+	uid, gid := rbdLabWorker(t)
+	backup := os.Getenv("OCEAN_E2E_RBD_BACKUP")
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Second)
 	defer cancel()
 	marker := []byte("ocean-encrypted-checkpoint-" + id + "\n")

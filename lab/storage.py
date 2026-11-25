@@ -135,13 +135,13 @@ sudo systemctl enable --now ceph-mgr@{node}.service
 """)
 
 
-def prepare_osd(state, node, fsid):
+def prepare_osd(state, node, fsid, capacity_mib):
     script = f"""set -eu
 disk=$(readlink -f {DEVICE})
 test -b "$disk"
 test "$(lsblk -dnro SERIAL "$disk")" = ocean-storage
 test "$(lsblk -rno TYPE "$disk")" = disk
-test "$(sudo blockdev --getsize64 "$disk")" -eq 8589934592
+test "$(sudo blockdev --getsize64 "$disk")" -eq {capacity_mib << 20}
 label=$(sudo ceph-volume raw list "$disk" --format json)
 if test "$label" = '{{}}'; then
     test -z "$(sudo wipefs -n --noheadings "$disk")"
@@ -173,6 +173,10 @@ def pool_ready(state):
 
 
 def prepare(state, install):
+    machines = json.loads((state / "state.json").read_text())["machines"]
+    capacities = {machine["guest"]["name"]: machine["guest"]["resources"].get("dataDiskMiB") for machine in machines}
+    if any(type(capacities.get(node)) is not int or capacities[node] <= 0 for node in NODES):
+        raise RuntimeError("the lab plan must assign each Ceph host its dedicated data disk")
     with ThreadPoolExecutor(max_workers=3) as pool:
         for node in NODES:
             eventually(lambda: ssh(state, node, f"test -b {DEVICE}"), 60)
@@ -182,7 +186,7 @@ def prepare(state, install):
         list(pool.map(lambda node: prepare_monitor(state, node, material), NODES))
         peers = eventually(lambda: quorum(state), 80)
         list(pool.map(lambda node: prepare_manager(state, node), NODES))
-        osds = list(pool.map(lambda node: prepare_osd(state, node, fsid), NODES))
+        osds = list(pool.map(lambda node: prepare_osd(state, node, fsid, capacities[node]), NODES))
     pools = json.loads(command(state, ["ceph", "osd", "pool", "ls", "-f", "json"]))
     if POOL not in pools:
         command(state, ["ceph", "osd", "pool", "create", POOL, "16"])

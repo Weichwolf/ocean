@@ -104,6 +104,21 @@ az network vnet create --resource-group "$OCEAN_GROUP" --name app-net \
   --subnet-name workloads --subnet-prefixes 10.91.1.0/24 -o json
 ```
 
+### Operate a private Windows Server Core VM
+
+The optional tenant VM profile uses a prepared, digest-pinned image on Debian
+KVM workers. The supported `az rest` workflows cover the private NIC, OS disk
+and VM lifecycle. The region retains the VM's disk and private address across
+power cycles. With a VM ID in `OCEAN_VM_ID`, inspect its observed power state
+or request a graceful shutdown. See the [worker and acceptance guide](lab/README.md#debian-kvm-worker-service).
+
+```sh
+az rest --method get \
+  --url "${OCEAN_ARM_ENDPOINT}${OCEAN_VM_ID}/instanceView?api-version=2024-03-01"
+az rest --method post \
+  --url "${OCEAN_ARM_ENDPOINT}${OCEAN_VM_ID}/powerOff?api-version=2024-03-01"
+```
+
 ### Deploy a Linux HTTP Function
 
 Set `OCEAN_FUNCTION_APP` and `OCEAN_STORAGE_ACCOUNT` to available names and

@@ -31,6 +31,7 @@ type Server struct {
 	GatewayDeployments ApplicationGatewayDeploymentStore
 	SiteConnections    SiteConnectionStore
 	Containers         ContainerGroupStore
+	VirtualMachines    VirtualMachineStore
 	ReplicaSets        ReplicaSetStore
 	Storage            StorageStore
 	FunctionPlans      bool
@@ -97,6 +98,9 @@ func parseRoute(segments []string) armRoute {
 			return armRoute{collection: "inventory", group: group}
 		}
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
+			if route, ok := virtualMachineRoute(group, segments[5:]); ok {
+				return route
+			}
 			if len(segments) == 8 && strings.EqualFold(strings.Join(segments[5:7], "/"), workload.ReplicaSetType) {
 				return armRoute{collection: "replicaSet", group: group, name: segments[7]}
 			}
@@ -256,6 +260,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.replicaSet(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "containerGroup":
 			s.containerGroup(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "virtualMachine":
+			s.virtualMachineResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "siteConnection":
 			s.siteConnection(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "securityGroup":
@@ -285,7 +291,7 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 		return true // Log queries apply the group grant in the same store read.
 	}
 	if read && (route.collection == "replicaSet" || route.collection == "workloadMetrics" || route.collection == "resourceHealth" || route.collection == "activityLog" ||
-		route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||
+		route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "virtualMachine" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}

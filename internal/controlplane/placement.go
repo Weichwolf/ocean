@@ -35,6 +35,7 @@ type PlacementRequest struct {
 	NeedsContainerNetwork bool                `json:"needsContainerNetwork,omitempty"`
 	NeedsDirectoryRuntime bool                `json:"needsDirectoryRuntime,omitempty"`
 	NeedsStorage          bool                `json:"needsStorage,omitempty"`
+	NeedsVMRuntime        bool                `json:"needsVMRuntime,omitempty"`
 	SpreadSet             string              `json:"spreadSet,omitempty"`
 }
 
@@ -312,17 +313,20 @@ func (r *Region) placementWrites(scope arm.SubscriptionScope, reservation Reserv
 	cell := r.reservationKey(scope, reservation.Cell, reservation.ID)
 	host := r.hostReservationKey(scope, reservation.HostID, reservation.ID)
 	data, _ := json.Marshal(reservation)
-	assignment, _ := json.Marshal(enrollment.Assignment{ID: reservation.ID, Generation: reservation.Generation, Cell: reservation.Cell,
-		TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources,
-		SubnetID: reservation.SubnetID, PrivateIPv4: reservation.PrivateIPv4, Directory: directory})
 	guards := append(candidate.guards, clientv3.Compare(clientv3.Version(key), "=", 0),
 		clientv3.Compare(clientv3.Version(cell), "=", 0), clientv3.Compare(clientv3.Version(host), "=", 0))
 	writes := []clientv3.Op{clientv3.OpPut(key, string(data)), clientv3.OpPut(cell, string(data)),
-		clientv3.OpPut(host, string(assignment)), candidate.usage.write(reservation.Resources)}
+		putJSON(host, placementAssignment(scope, reservation, directory)), candidate.usage.write(reservation.Resources)}
 	if reservation.SpreadSet != "" {
 		writes = append(writes, clientv3.OpPut(r.spreadHostKey(scope, reservation.SpreadSet, reservation.HostID), reservation.Generation))
 	}
 	return guards, writes
+}
+
+func placementAssignment(scope arm.SubscriptionScope, reservation Reservation, directory *enrollment.DirectoryAssignment) enrollment.Assignment {
+	return enrollment.Assignment{ID: reservation.ID, Generation: reservation.Generation, Cell: reservation.Cell,
+		TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources,
+		SubnetID: reservation.SubnetID, PrivateIPv4: reservation.PrivateIPv4, Directory: directory}
 }
 
 func (r *Region) placementRetry(ctx context.Context, key string, wanted PlacementRequest) (Reservation, bool, error) {
@@ -347,7 +351,7 @@ func (r *Region) spreadHostKey(scope arm.SubscriptionScope, set, host string) st
 	return r.armPrefix(scope) + "placement-spread/" + set + "/" + host
 }
 
-func (r *Region) chooseHosts(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest, pools []string, count int) ([]placementHost, error) {
+func (r *Region) chooseHosts(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest, pools []string, count int, excluded ...string) ([]placementHost, error) {
 	available, err := r.client.Get(ctx, r.hostKey("live", ""), clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
@@ -358,8 +362,9 @@ func (r *Region) chooseHosts(ctx context.Context, scope arm.SubscriptionScope, w
 		if json.Unmarshal(item.Value, &host) != nil || !identifier.MatchString(host.HostID) || string(item.Key) != r.hostKey("live", host.HostID) || item.Lease == 0 {
 			return nil, errors.New("invalid available host record")
 		}
-		if host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) ||
+		if slices.Contains(excluded, host.HostID) || host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) ||
 			wanted.NeedsContainerNetwork && !host.ContainerNetwork || wanted.NeedsDirectoryRuntime && !host.DirectoryRuntime ||
+			wanted.NeedsVMRuntime && !host.VMRuntime ||
 			wanted.NeedsStorage && (r.storage == nil || !slices.Contains(r.storage.workers, host.HostID)) {
 			continue
 		}

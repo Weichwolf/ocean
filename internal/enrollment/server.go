@@ -106,6 +106,8 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 		a.containerTasks(w, r, true)
 	})
 	mux.HandleFunc("POST /ocean/hosts/{host}/container-tasks/status", a.containerStatus)
+	mux.HandleFunc("GET /ocean/hosts/{host}/vm-tasks", a.virtualMachineTasks)
+	mux.HandleFunc("POST /ocean/hosts/{host}/vm-tasks/status", a.virtualMachineStatus)
 	mux.HandleFunc("POST /ocean/hosts/{host}/telemetry", a.telemetry)
 	mux.HandleFunc("GET /ocean/hosts/{host}/https-assignments", func(w http.ResponseWriter, r *http.Request) {
 		a.gatewayAssignments(w, r, false)

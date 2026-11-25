@@ -166,6 +166,215 @@ Shut down the Windows guests from the guest console, then run
 `bin/ocean-lab shutdown -state "$OCEAN_AD_STATE"` to stop the Debian
 guests and their switches.
 
+## KVM tenant guest runtime probe
+
+The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`
+machine, OVMF UEFI, an AHCI boot disk and the `e1000e` Ethernet device.
+`Standard_B1ms` requests one vCPU and 2 GiB, and `Standard_B2s` requests
+two vCPUs and 4 GiB. Each guest has a persistent firmware UUID, a MAC derived
+from that UUID and its own writable firmware variables. The only host control
+socket is a local QMP socket in a private directory. The runtime starts QEMU
+with niceness 10 and carries an exclusive local writer lock in that process.
+[QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html)
+
+The reference guest was installed from Microsoft Windows Server 2025
+evaluation media with SHA-256
+`7b052573ba7894c9924e3e87ba732ccd354d18cb75a883efa9b900ea125bfd51`.
+The native guest probe reported Server Standard Evaluation, Server Core,
+build `26100.32230`, Microsoft Standard SATA AHCI driver `10.0.26100.7309`
+and Microsoft Intel 82574L Ethernet driver `12.19.1.32`. The Debian lab used
+QEMU package `1:10.0.13+ds-0+deb13u1` and OVMF `2025.02-8+deb13u1`.
+Record the raw image and firmware-variable digests for each prepared fixture
+because its Windows configuration changes both files.
+
+Use a powered-off Server 2025 Core fixture installed from operator-supplied
+media. Supply its disk and OVMF variables as `WINDOWS_PREPARED_QCOW2` and
+`WINDOWS_PREPARED_VARS`. This example uses a fixture with static IPv4 address
+`10.232.1.20/24`, BusyBox `arping`, `/dev/kvm` and `/dev/net/tun`. The test
+touches the disposable copies in its state directory and runs on a private
+TAP segment inside a user and network namespace.
+
+```sh
+umask 077
+OCEAN_KVM_SMOKE_STATE=$(mktemp -d /tmp/ocean-kvm.XXXXXX)
+export OCEAN_KVM_SMOKE_STATE
+export OCEAN_KVM_SMOKE_PRIVATE_IP=10.232.1.20
+qemu-img convert -f qcow2 -O raw "$WINDOWS_PREPARED_QCOW2" "$OCEAN_KVM_SMOKE_STATE/disk.raw"
+install -m 0600 "$WINDOWS_PREPARED_VARS" "$OCEAN_KVM_SMOKE_STATE/OVMF_VARS.fd"
+go test -mod=readonly -tags=e2e -c -o "$OCEAN_KVM_SMOKE_STATE/runtime.test" ./internal/qemu
+unshare --user --map-root-user --net --pid --fork --mount-proc sh -ec '
+  ip tuntap add dev oceanvmtest mode tap
+  ip addr add 10.232.1.254/24 dev oceanvmtest
+  ip link set oceanvmtest up
+  exec "$OCEAN_KVM_SMOKE_STATE/runtime.test" -test.v -test.run "^TestKVMGuestPowerLifecycle$"
+'
+```
+
+The probe checks KVM acceleration, replays the start, rejects a different
+generation, and verifies that a missing QMP socket leaves the writer lock in
+effect. It times the ACPI shutdown and resolves the private guest address to
+the same MAC on both boots. Use a fixture whose guest power-button policy
+permits ACPI shutdown. `OCEAN_KVM_SMOKE_STOP_MODE=force` exercises immediate
+QEMU exit and restart, and records the selected stop mode. Capture the
+installation media and prepared disk chain digests with the result. Regional
+ARM operations, tenant isolation and cross-host fencing are separate
+acceptance steps. [Tenant VM issue](https://github.com/Weichwolf/ocean/issues/51)
+
+### Replicated VM backing disk
+
+Stage the fully materialized raw OS disk and its 4 MiB OVMF variable store as
+private root-owned catalog files. Record the logical disk size and SHA-256 of
+both files. The backend imports sparse disks of 32–128 GiB into an exclusively
+mapped RBD volume. The LUKS2-encrypted volume contains ext4 with separate OS
+and UEFI state files. The worker commits the preparation receipt after both
+files are durable. The runtime account can write the two backing files. The
+receipt and directory stay under storage service ownership. The preparation
+receipt makes exact import retries preserve the guest's subsequent writes.
+[Ceph exclusive locks](https://docs.ceph.com/en/reef/rbd/rbd-exclusive-locks/)
+
+With the storage lab running, exercise the backing store on two disposable
+Debian workers. The probe uses a sparse synthetic 32 GiB disk and validates
+digest and key rejection, import replay, open-file protection on detach,
+encrypted snapshot contents, and the disk and UEFI writes on the second
+worker after a confirmed detach.
+
+```sh
+python3 lab/verify_vm_disk.py --state "$LAB_STATE"
+```
+
+The storage probe writes `vm-disk.json` and the worker logs under the lab
+state's `evidence` directory. It exercises the backing files directly. The
+VM-provider acceptance exercises Windows writes and confirms the fence before
+placing a failed worker's VM on another host.
+
+### Debian KVM worker service
+
+Install the agent package on the selected compute hosts and install
+`qemu-system-x86`, `qemu-utils`, `ovmf`, `ceph-common`, `cryptsetup-bin`,
+`dnsmasq-base`, `iputils-arping` and `e2fsprogs`. Give the host enrollment
+account `ocean-agent` and the dedicated hypervisor account `ocean-vm` access
+to `/dev/kvm`, then restart the enrollment account's user manager so it receives
+its current supplementary groups. Approve each compute host with
+`requireKVM: true` and configure it as a regional storage worker.
+
+In addition to the enrollment configuration, set up
+`/etc/ocean-agent/storage.json` with the worker's RBD client and mount root,
+and `/etc/ocean-agent/workload-network.json` with its private fabric and
+protected prefixes. In `/etc/ocean-agent/vm.json`, set `imageDirectory` to the
+worker's private root-owned catalog directory. Its raw disk and OVMF variable
+files are named by their pinned SHA-256 digests, followed by `.raw` and `.fd`,
+respectively. `firmwareCode` defaults to the Debian 4 MiB OVMF image. Optional
+`dnsServers` provides IPv4 guest DNS values. Enable `ocean-vm-agent.service`
+after configuring these files and enrolling the host.
+
+The worker opens the assigned encrypted disk, installs a leased private
+firewall and starts QEMU as `ocean-vm` at niceness 10. One DHCP allocation on
+the private TAP matches the assigned guest MAC and IP. The running receipt
+requires a QEMU running state and a reply from that private MAC. A power-off
+receipt follows QEMU exit and local disk detach. VM deletion checks the
+current assignment again before removing the backing image. Missing task
+authorization withdraws the local instance and preserves its backing image.
+[dnsmasq configuration](https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html)
+
+The `vm-ha` lab profile gives each Nested KVM compute host three vCPUs, 6 GiB
+of RAM and a 32 GiB root disk to hold a private prepared image. The three
+separate Ceph guests use 24 GiB dedicated data disks. Both disk capacities
+are sparse allocations on the development host. To conserve memory, start
+only the required compute and storage hosts with `ocean-lab up -only`.
+
+For a private-network regression check, compile `./internal/nodeagent` with
+`go test -tags=e2e -c`. On a disposable Debian worker with `curl` and the
+private `work0` fabric, run `TestVMNetworkOnDebianWorker` under root with
+`OCEAN_E2E_VM_TAP=1`. The test verifies routing to the TAP, observes a denied
+TCP connection in the ingress drop counter, and releases the fabric MAC on
+cleanup.
+
+The packaged lifecycle probe uses a disposable `vm-ha` lab with compute host
+`farm-1-node-05`, the replicated Ceph pool, and an isolated loopback etcd
+endpoint. Stage the private image files as `root:root` with mode `0600` on
+that host. Configure the worker storage and workload fabric before the test.
+The test enrolls the real worker and uses its host certificate for assignment
+and status traffic. The pinned Azure CLI uses a test bearer identity for the
+ARM operations. Use a Server Core fixture configured for `10.232.1.20`.
+
+```sh
+OCEAN_E2E_VM_WORKER_STATE="$LAB_STATE" \
+  OCEAN_E2E_VM_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
+  OCEAN_E2E_VM_DISK_PIN="$WINDOWS_DISK_SHA256" \
+  OCEAN_E2E_VM_VARS_PIN="$WINDOWS_VARS_SHA256" \
+  OCEAN_E2E_VM_AZ="$(command -v az)" \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=20m -v \
+    -run '^TestPackagedVMWorker$' ./internal/controlplane
+```
+
+For a native storage checkpoint, run `prepare_windows_vm_checkpoint.ps1`
+from an elevated PowerShell session inside a disposable Server Core fixture.
+Use a unique test password. The script opens an encrypted SMB share on the
+private NIC for the lab client at `10.232.1.21`. The probe account can write
+under `data` and read the guest identity record. Windows refreshes that
+record on startup with the system UUID, Windows machine GUID, hostname,
+build and boot timestamp. Keep the image and test credentials private.
+[Windows Server SMB shares](https://learn.microsoft.com/powershell/module/smbshare/new-smbshare?view=windowsserver2025-ps)
+
+For the full `vm-worker` acceptance profile, also prepare `farm-1-node-06`
+with the packaged service, storage configuration and `smbclient`. The test
+will start this worker after initial provisioning and use it as the private
+SMB client and the eligible replacement. Place the SMB username, password
+and Windows computer name in the `smbclient` authentication file as
+`username`, `password` and `domain`, respectively. Restrict it to mode `0600`.
+The lab storage authority must have its existing Ed25519 key pair in
+`$LAB_STATE/storage-pki`. Set `OCEAN_E2E_VM_FENCE_PROFILE` to the original
+profile used to start the lab so the test can reboot the retired worker.
+
+Use the same image and CLI variables as the single-worker probe, plus the
+following inputs. The acceptance harness writes Markdown and TSV reports and
+captures the cold boot, restart and fenced recovery durations.
+
+```sh
+OCEAN_E2E_PROFILE=vm-worker \
+  OCEAN_E2E_VM_SMB_AUTH="$PRIVATE_SMB_AUTH_FILE" \
+  OCEAN_E2E_VM_FENCE_PROFILE="$ORIGINAL_LAB_PROFILE" \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=30m -v \
+    -run '^TestAcceptance$' ./tests/e2e
+```
+
+### Regional VM store probe
+
+The optional `region.virtualMachines` configuration registers the catalog
+for the regional ARM routes. Each `images` entry specifies `tenantId`,
+`subscriptionId`, `blobUri`, `sizeGiB`, `imageSha256` and `firmwareSha256`.
+The HTTPS URI identifies an operator-prepared image in that subscription.
+Catalog lookups use the URI as an identifier. Workers use the paired digests
+to verify the files staged by the operator. The optional `diskQuotaGiB`
+sets the OS disk quota for each subscription in the region and defaults to
+128 GiB. CPU and RAM count against the subscription's workload placement
+policy. A VM retains these reservations while it is stopped.
+
+Creating a private network interface reserves its IPv4 address in an
+undelegated subnet. VM creation attaches the interface and reserves the OS
+disk, worker and quotas in one transaction. Acknowledged VM deletion frees
+the disk reservation and detaches the interface. Delete the interface to
+release its private address. The VM, image and NIC belong to the same
+resource group and subscription.
+
+The regional controller persists signed power-off evidence for the exact
+disk writer, withdraws the old assignment and waits for a ready KVM worker
+in an allowed pool if capacity is full. It replaces the writer generation
+and worker reservation together, preserving the disk, key, machine ID and
+private IPv4 address. Start the worker only after obtaining its current
+assignment. Lease expiry updates availability without moving the writer.
+
+Run the transaction probe against an isolated loopback etcd. Set
+`OCEAN_E2E_VM_AZ` to run the instance-view request with the pinned unmodified
+Azure CLI. The probe uses seeded host availability and reports, and the
+optional CLI request uses fixture authentication over TLS.
+
+```sh
+OCEAN_E2E_VM_ETCD=http://127.0.0.1:12379 OCEAN_E2E_VM_AZ="$(command -v az)" \
+  go test -mod=readonly -race -tags=e2e -count=1 \
+  -run '^TestRegionalVirtualMachineStore$' -v ./internal/controlplane
+```
+
 ## Azure CLI identity compatibility
 
 After starting the regional stack and the replicated database, deploy two Keycloak instances and run the sign-in fault check. The verification uses the isolated operator VM and the unmodified Microsoft Debian AMD64 package for Azure CLI 2.93.0. Use the package argument to install it if it is absent. The deploy and verification scripts check the SHA-256 of the supplied artifacts. [Keycloak 26.8.2](https://github.com/keycloak/keycloak/releases/tag/26.8.2) · [Microsoft Azure CLI packages](https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/)
