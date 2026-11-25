@@ -96,12 +96,42 @@ func (sessions *labSessions) running(ctx context.Context, state string) ([]strin
 }
 
 func (sessions *labSessions) up(ctx context.Context, lab labSession, names []string) error {
-	args := []string{"-profile", filepath.Join("lab", "profiles", lab.profile+".yaml")}
-	for _, name := range names {
-		args = append(args, "-only", name)
+	profile := filepath.Join("lab", "profiles", lab.profile+".yaml")
+	start := func(cohort []string) error {
+		args := []string{"-profile", profile}
+		for _, name := range cohort {
+			args = append(args, "-only", name)
+		}
+		_, err := sessions.command(ctx, "up", lab.state, args...)
+		return err
 	}
-	_, err := sessions.command(ctx, "up", lab.state, args...)
-	return err
+	if lab.profile != "storage-ha" {
+		return start(names)
+	}
+	if len(names) == 0 {
+		command := exec.CommandContext(ctx, filepath.Join(sessions.root, "bin", "ocean-lab"), "plan", "-profile", profile)
+		command.Dir = sessions.root
+		output, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("read regional lab plan: %w", err)
+		}
+		var plan struct {
+			Guests []struct{ Name string } `json:"guests"`
+		}
+		if err := json.Unmarshal(output, &plan); err != nil {
+			return err
+		}
+		for _, guest := range plan.Guests {
+			names = append(names, guest.Name)
+		}
+	}
+	// Each launch checks host headroom before starting the next three guests.
+	for cohort := range slices.Chunk(names, 3) {
+		if err := start(cohort); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (sessions *labSessions) use(ctx context.Context, state string) error {

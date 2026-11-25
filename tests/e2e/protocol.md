@@ -154,7 +154,8 @@ and `OCEAN_E2E_ETCD_ARCHIVE` to the pinned etcd release archive used for clean
 recovery. Allow enough test time for all selected probes. The regional,
 small and scale profiles can also run individually. The phase-one runner
 sequences the selected lab states and restores the guests that were running
-when it started. Keep unrelated guests within the host budget.
+when it started. The regional guests start in groups of three so each launch
+checks the available host memory. Keep unrelated guests within the host budget.
 
 Start with a fresh small enrollment state with a valid preapproved join.
 The runner exercises this short-lived credential first, and host
