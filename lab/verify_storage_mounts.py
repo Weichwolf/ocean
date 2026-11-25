@@ -67,7 +67,7 @@ def boot(state, host):
     wait_ready(state, host)
 
 
-def verify(state, observer, fence, archive=None):
+def verify(state, observer, fence, archive=None, drain_writer=False, fault_probe=None):
     prepare_operator_client(state, ("arm_cli.py", "storage_cli.py", "testdata/arm-contract.tsv"))
     fixture_script = ROOT / "tests/e2e/testdata/workloads/stateful-http/checkpoint.sh"
     upload(state, OPERATOR, {"checkpoint.sh": fixture_script.read_bytes()}, CLIENT)
@@ -85,6 +85,7 @@ def verify(state, observer, fence, archive=None):
 
     stopped_host = None
     isolated_host = None
+    drain_key = None
     try:
         ssh(state, observer, f"sudo test ! -e /run/netns/{PROBE} && sudo ip netns add {PROBE}\n" +
             macvlan(PROBE, "work0", "external0", "198.51.100.34/24"))
@@ -95,6 +96,8 @@ def verify(state, observer, fence, archive=None):
         value = eventually(lambda: request(state, observer, writer["address"], "checkpoint"), 12)
         require(value == share["checksum"], "the running workload returned the wrong durable checksum")
         fault = {}
+        if fault_probe is not None:
+            fault.update(fault_probe(state, host, runtime, writer, invoke, fixture))
         if fence:
             record = workload_record(state, writer)
             reservation = record["reservation"]
@@ -137,12 +140,22 @@ def verify(state, observer, fence, archive=None):
                      "invalidFenceDenied": True, "powerOffConfirmed": True, "recoveryMsIncludingAzureCLI": recovery_ms,
                      "fenceReplayedSafely": True, "oldVolumeMapAbsentAfterReboot": True, **refused}
         else:
+            if drain_writer:
+                key = f"/ocean/v1/regions/farm-1/hosts/drain/{host}"
+                if ssh(state, OPERATOR, etcdctl(f"get {key} --print-value-only")):
+                    raise RuntimeError("the storage writer was already draining")
+                ssh(state, OPERATOR, etcdctl(f"put {key} true"))
+                drain_key = key
             fault.update(invoke("deny-second"))
             volume = workload_record(state, writer)["volume"]["id"]
             fault.update(invoke("stop-writer"))
             if archive is not None:
                 fault.update(verify_recovery(state, share, volume, invoke, archive))
             recovery = invoke("recover")
+            if drain_writer:
+                replacement, _ = assignment(state, recovery)
+                require(replacement != host, "protected data was restored on the draining worker")
+                fault.update({"drainedWriterHost": host, "replacementHost": replacement})
         restored = eventually(lambda: request(state, observer, recovery["address"], "checkpoint"), 15)
         require(restored == share["checksum"], "the replacement returned different persistent data")
         denied = invoke("deny-foreign")
@@ -156,6 +169,8 @@ def verify(state, observer, fence, archive=None):
                 clear_partition(state, isolated_host)
             invoke("cleanup")
         finally:
+            if drain_key:
+                ssh(state, OPERATOR, etcdctl(f"del {drain_key}"))
             ssh(state, observer, f"if sudo test -e /run/netns/{PROBE}; then sudo ip netns delete {PROBE}; fi")
 
 

@@ -1,2 +1,9 @@
 farms: 1
 nodesPerFarm: 16
+overrides:
+  farm-1-node-07:
+    dataDiskMiB: 8192
+  farm-1-node-08:
+    dataDiskMiB: 8192
+  farm-1-node-09:
+    dataDiskMiB: 8192

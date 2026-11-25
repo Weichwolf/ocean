@@ -15,6 +15,9 @@ package_dir=$(mktemp -d /tmp/ocean-agent-package.XXXXXXXX)
 trap 'rm -rf -- "$package_dir"' EXIT
 chmod 0755 "$package_dir"
 cat > "$package_dir/ocean-agent.deb"
+if ! dpkg-query -W -f='${db:Status-Status}' podman 2>/dev/null | grep -qx installed; then
+    sudo apt-get -qq update
+fi
 if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get -yqq --no-install-recommends --reinstall \
     install "$package_dir/ocean-agent.deb" > "$package_dir/install.log" 2>&1; then
     tail -35 "$package_dir/install.log" >&2

@@ -99,3 +99,15 @@ SCALE-01	replica-set-show	2.93.0	none	2026-11-01	rest --method get --url {origin
 SCALE-01	replica-set-delete	2.93.0	none	2026-11-01	rest --method delete --url {origin}{id}?api-version=2026-11-01 -o none
 SCALE-01	replica-gateway-create	2.93.0	none	2024-11-01+2022-05-01	network application-gateway create --resource-group {group} --name {gateway} --location {location} --sku Standard_v2 --capacity 2 --public-ip-address {public_ip_id} --subnet {subnet_id} --frontend-port 443 --http-settings-port {backend_port} --http-settings-protocol Http --priority 100 --servers {backend1} {backend2} {backend3} {backend4} --cert-file {certificate_pfx} --cert-password={certificate_password} -o json
 SCALE-01	replica-subnet-delegate	2.93.0	none	2024-07-01	network vnet subnet update --resource-group {group} --vnet-name {vnet} --name {subnet} --delegations Microsoft.ContainerInstance/containerGroups -o json
+HA-03	quorum-container-put	2.93.0	none	2024-05-01-preview	rest --method put --url {origin}{id}?api-version=2024-05-01-preview --skip-authorization-header --headers @{headers} --body @{body} -o json
+HA-03	quorum-container-show	2.93.0	none	2024-05-01-preview	rest --method get --url {origin}{id}?api-version=2024-05-01-preview --skip-authorization-header --headers @{headers} -o json
+HA-03	quorum-container-delete	2.93.0	none	2024-05-01-preview	rest --method delete --url {origin}{id}?api-version=2024-05-01-preview --skip-authorization-header --headers @{headers} -o none
+HA-05	management-account-list	2.93.0	none	2022-12-01	account list --all -o json
+HA-05	management-group-create	2.93.0	none	2024-11-01	group create --name {group} --location {location} --tags ocean-fixture={tag} -o json
+HA-05	management-group-show	2.93.0	none	2024-11-01	group show --name {group} -o json
+HA-05	management-group-list	2.93.0	none	2024-11-01	group list -o json
+HA-05	management-group-delete	2.93.0	none	2024-11-01	group delete --name {group} --yes -o none
+HA-05	management-group-exists	2.93.0	none	2024-11-01	group exists --name {group} -o json
+HA-06	voter-container-create	2.93.0	none	2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Public --ports {port} --protocol TCP --os-type Linux --cpu 0.25 --memory 0.0625 --restart-policy Always -o json
+HA-06	voter-container-show	2.93.0	none	2024-05-01-preview	container show --resource-group {group} --name {name} -o json
+HA-06	voter-container-delete	2.93.0	none	2024-05-01-preview	container delete --resource-group {group} --name {name} --yes -o none

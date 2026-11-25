@@ -114,7 +114,7 @@ WantedBy=multi-user.target
 """.encode()
 
 
-def prepare_node(state, node, archive, files):
+def prepare_node(state, node, archive, files, java_options):
     ssh(state, node, "if ! test -x /usr/bin/java; then sudo apt-get -qq update && "
         "sudo env DEBIAN_FRONTEND=noninteractive apt-get -yqq --no-install-recommends install openjdk-21-jre-headless; fi; "
         f"if ! getent passwd {ACCOUNT} >/dev/null; then "
@@ -128,7 +128,7 @@ def prepare_node(state, node, archive, files):
     ssh(state, node, f"sudo install -m 0600 -o {ACCOUNT} {DEST}/realm.secret {RUNTIME}/data/import/{TENANT}-realm.json && "
         f"sudo install -m 0644 {DEST}/units/{SERVICE} /etc/systemd/system/{SERVICE} && sudo systemctl daemon-reload && "
         f"if ! test -e {RUNTIME}/.ocean-built; then "
-        f"sudo -u {ACCOUNT} env JAVA_OPTS_APPEND='-XX:ActiveProcessorCount=2 -Xms128m -Xmx768m' "
+        f"sudo -u {ACCOUNT} env JAVA_OPTS_APPEND={shlex.quote(java_options)} "
         f"{RUNTIME}/bin/kc.sh build --db=postgres --health-enabled=true --metrics-enabled=true && "
         f"sudo touch {RUNTIME}/.ocean-built; fi")
 
@@ -233,7 +233,10 @@ def configure_api(state, pki, ingress, passwords):
                    f"--resolve {ARM}:8443:{address} https://{ARM}:8443/readyz"))
 
 
-def deploy(state, archive):
+def deploy(state, archive, heap_mib=768):
+    if not 256 <= heap_mib <= 768:
+        raise ValueError("the lab Keycloak heap must be between 256 and 768 MiB")
+    java_options = f"-XX:ActiveProcessorCount=2 -Xms128m -Xmx{heap_mib}m"
     with archive.open("rb") as source:
         if hashlib.file_digest(source, "sha256").hexdigest() != SHA256:
             raise RuntimeError("Keycloak archive SHA-256 does not match the pinned release")
@@ -259,13 +262,13 @@ def deploy(state, archive):
             "KC_PROXY_HEADERS": "xforwarded", "KC_PROXY_TRUSTED_ADDRESSES": ",".join(REPLICAS.values()),
             "KC_CACHE_EMBEDDED_NETWORK_BIND_ADDRESS": address, "KC_CACHE_EMBEDDED_NODE_NAME": node,
             "KC_BOOTSTRAP_ADMIN_CLIENT_ID": "ocean-bootstrap", "KC_BOOTSTRAP_ADMIN_CLIENT_SECRET": passwords["bootstrap"],
-            "JAVA_OPTS_APPEND": '"-XX:ActiveProcessorCount=2 -Xms128m -Xmx768m"',
+            "JAVA_OPTS_APPEND": json.dumps(java_options),
         }
         files.update({
             "pki/postgres-ca.pem": database_ca.read_bytes(), "environment.secret": "".join(f"{k}={v}\n" for k, v in settings.items()).encode(),
             "realm.secret": fixture, f"units/{SERVICE}": provider_unit(),
         })
-        jobs.append((state, node, archive, files))
+        jobs.append((state, node, archive, files, java_options))
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(REPLICAS)) as pool:
         list(pool.map(lambda job: prepare_node(*job), jobs))
     for node in REPLICAS:
@@ -284,8 +287,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--keycloak-archive", type=Path, required=True)
+    parser.add_argument("--heap-mib", type=int, default=768)
     args = parser.parse_args()
-    deploy(args.state.resolve(), args.keycloak_archive)
+    deploy(args.state.resolve(), args.keycloak_archive, args.heap_mib)
 
 
 if __name__ == "__main__":

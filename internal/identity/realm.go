@@ -1,5 +1,9 @@
 package identity
 
+// MSAL refreshes cached tokens with less than five minutes remaining.
+// Ten minutes leaves a short window for cached ARM access during IdP failover.
+const tenantAccessTokenSeconds = 600
+
 type keycloakMapper struct {
 	Name     string            `json:"name"`
 	Protocol string            `json:"protocol"`
@@ -46,7 +50,7 @@ func tenantRealm(r TenantReservation, input onboardingRequest, cloud CloudEndpoi
 	return map[string]any{
 		"realm": r.TenantID, "displayName": input.DisplayName, "enabled": true, "sslRequired": "all",
 		"attributes":          map[string]string{"oceanRegistration": r.SubscriptionID},
-		"accessTokenLifespan": 300, "offlineSessionMaxLifespanEnabled": true,
+		"accessTokenLifespan": tenantAccessTokenSeconds, "offlineSessionMaxLifespanEnabled": true,
 		"offlineSessionMaxLifespan": 28800, "offlineSessionIdleTimeout": 3600,
 		"roles":         map[string]any{"realm": []map[string]string{{"name": "offline_access"}}},
 		"scopeMappings": []map[string]any{{"clientScope": "offline_access", "roles": []string{"offline_access"}}},

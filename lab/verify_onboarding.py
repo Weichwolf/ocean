@@ -32,7 +32,10 @@ def verify(state, directory_users=False, directory_apps=False):
     result = json.loads(ssh(state, OPERATOR, f"python3 {CLIENT}/onboarding_cli.py --settings {CLIENT}/operator.secret{options}"))
     directory = state / "evidence"
     directory.mkdir(mode=0o700, exist_ok=True)
-    name = "graph-applications.json" if directory_apps else "graph-users.json" if directory_users else "tenant-onboarding.json"
+    if directory_users and directory_apps:
+        name = "tenant-directory.json"
+    else:
+        name = "graph-applications.json" if directory_apps else "graph-users.json" if directory_users else "tenant-onboarding.json"
     (directory / name).write_text(json.dumps(result, indent=2) + "\n")
     print("Azure CLI verified two tenant allocations, a recovered response, and tenant authorization.", flush=True)
     if directory_users:

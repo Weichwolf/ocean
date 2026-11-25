@@ -2,7 +2,7 @@
 
 The suite exercises a running ocean deployment through its external interfaces. Use the pinned, unmodified Azure CLI for supported management commands and a client outside the workload path for reachability and availability checks. Associate every result with its case ID in the [acceptance matrix](../../acceptance.tsv). The [phase-one objective](../../objective.md) defines the release scope.
 
-## Planned layout
+## Repository layout
 
 ```text
 lab/
@@ -35,7 +35,7 @@ artifacts/e2e/<run-id>/
   evidence/
 ```
 
-Keep workload source and runtime configuration beside each Containerfile. Keep lab topology and node sizing in `lab/profiles`. The Go harness handles CLI calls, probes, fixture deployment, scoped fault injection, and cleanup. Use the `e2e` build tag and execute uncached runs. The planned runner interface is `OCEAN_E2E_PROFILE=<profile> go test -tags=e2e -count=1 -json ./tests/e2e/...`.
+Keep workload source and runtime configuration beside each Containerfile. Keep lab topology and node sizing in `lab/profiles`. The Go harness handles CLI calls, probes, fixture deployment, scoped fault injection, and cleanup. Use the `e2e` build tag and execute uncached runs. The runner interface is `OCEAN_E2E_PROFILE=<profile> go test -tags=e2e -count=1 -json ./tests/e2e/...`.
 
 ## Lab profiles
 
@@ -105,6 +105,17 @@ CPU utilization and decrease below 15 percent. Require each adjustment to
 reach its observed replica count within 65 seconds. Confirm that the serving
 set keeps the local minimum after scaling in.
 
+## Management availability
+
+Probe the authorized group through the regional DNS name and verified TLS
+listener throughout the gateway, API replica and consensus leader faults.
+Allow up to 12 seconds per logical HTTPS read, with two-second transport
+timeouts and retries. Require the existing Azure CLI cloud profile to read
+and mutate state within 60 seconds of each fault. Verify the original
+workload and a new write after the election, then check the former leader
+has replayed the write. Ensure the signed tenant token leaves time for the
+CLI's five-minute refresh window and the faults under test.
+
 ## Execution and evidence
 
 1. Record the source revision, platform and CLI versions, API versions, selected cases, image digests, topology, resource budgets, and pass limits before running the suite. Give the run its own Azure CLI configuration directory and its own test resources.
@@ -113,3 +124,42 @@ set keeps the local minimum after scaling in.
 4. Collect the evidence and clean up resources owned by the run. Write a Markdown summary and a TSV with `case_id`, `status`, `duration_ms`, `evidence`, and `detail` columns. Keep relevant sanitized CLI and probe output, logs, and measurements in `evidence/`.
 
 Report each selected case as `PASS`, `FAIL`, `BLOCKED`, or `SKIP`. Phase-one approval requires a `PASS` for every `required` case in the matrix. Production and enabled compatibility profiles also require their applicable cases to pass. Store or publish run evidence as build artifacts so the release can be verified from the recorded inputs, limits, and results.
+
+## Run the local suite
+
+Build the agent package and prepare the lab roles with the instructions in
+[the lab guide](../../lab/README.md). Run acceptance on the Debian host that
+owns the KVM guests. The harness uses the operator guest's isolated Azure CLI
+installation and the customer or fault-profile clients for network probes.
+It rebuilds the local Go binaries before starting the selected probes.
+
+```sh
+OCEAN_E2E_PROFILE=storage-ha \
+OCEAN_E2E_STATE="$LAB_STATE" \
+OCEAN_E2E_CASES=CONTRACT-01,CONTRACT-02,OBS-01,OBS-03 \
+go test -mod=readonly -tags=e2e -count=1 -timeout 30m -json ./tests/e2e/...
+```
+
+Use `phase-one` to select every required row. Supply the prepared regional
+state in `OCEAN_E2E_STATE`, the three-node enrollment lab in
+`OCEAN_E2E_SMALL_STATE` and the prepared three-voter scale base in
+`OCEAN_E2E_SCALE_STATE`. Set `OCEAN_E2E_PACKAGE` to the built Debian package
+and `OCEAN_E2E_ETCD_ARCHIVE` to the pinned etcd release archive used for clean
+recovery. Allow enough test time for all selected probes. The regional,
+small and scale profiles can also run individually. The phase-one runner
+sequences the selected lab states and restores the guests that were running
+when it started. Keep unrelated guests within the host budget.
+
+Start with a fresh small enrollment state because the host qualification
+test revokes its fixture certificate. Prepare the scale base with
+`python3 -B lab/prepare_scale16.py --help` and the same locally pinned
+Debian, etcd, Keycloak and Azure CLI inputs as the regional lab. The scale
+probe boots and enrolls the remaining thirteen guests when it runs.
+
+The default artifact directory is `artifacts/e2e/<run-id>/`. Set
+`OCEAN_E2E_RUN_ID` for a named run or `OCEAN_E2E_ARTIFACTS` for a different
+output root. Each CLI or fault test records its command and output. A case
+passes after all of its mapped probes succeed and produce their declared
+fresh evidence. Missing prerequisites and unmapped profiles produce
+`BLOCKED` rows. Selected failures or blocked cases make the Go test fail
+and still produce `report.md` and `results.tsv`.
