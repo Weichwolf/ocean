@@ -36,26 +36,25 @@ func RunSMB(ctx context.Context, storagePath, agentPath string, logger *slog.Log
 		return err
 	}
 	defer client.client.CloseIdleConnections()
-	if err := smb.Stop(ctx); err != nil {
+	if err := smb.Withdraw(ctx, backend); err != nil {
 		return err
 	}
 	defer func() {
 		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 12*time.Second)
 		defer cancel()
-		if err := smb.Stop(shutdown); err != nil {
+		if err := smb.Withdraw(shutdown, backend); err != nil {
 			logger.Error("failed to stop the dedicated SMB member", "error", err)
 		}
 	}()
-	var applied int64 = -1
-	var reported int64
+	var applied, reported smb.Receipt
 	interval := time.NewTicker(time.Second)
 	defer interval.Stop()
 	for ctx.Err() == nil {
 		err := client.syncSMB(ctx, backend, &applied, &reported)
 		if errors.Is(err, errSMBRevoked) {
-			applied, reported = -1, 0
+			applied, reported = smb.Receipt{}, smb.Receipt{}
 			stop, cancel := context.WithTimeout(ctx, 12*time.Second)
-			err = errors.Join(err, smb.Stop(stop))
+			err = smb.Withdraw(stop, backend)
 			cancel()
 		}
 		if err != nil && ctx.Err() == nil {
@@ -69,33 +68,35 @@ func RunSMB(ctx context.Context, storagePath, agentPath string, logger *slog.Log
 	return nil
 }
 
-func (j *joinClient) syncSMB(ctx context.Context, backend storage.Backend, applied, reported *int64) error {
+func (j *joinClient) syncSMB(ctx context.Context, backend storage.Backend, applied, reported *smb.Receipt) error {
 	plan, err := j.smbPlan(ctx)
 	if err != nil {
 		return err
 	}
 	defer plan.ClearKeys()
-	if *applied != plan.Revision {
+	receipt := smb.Receipt{Revision: plan.Revision, Generation: plan.Generation}
+	if *applied != receipt {
 		apply, cancel := context.WithTimeout(ctx, 90*time.Second)
 		err := smb.ApplyPlan(apply, backend, plan)
 		cancel()
 		if err != nil {
 			return err
 		}
-		*applied = plan.Revision
+		*applied = receipt
 	} else {
 		probe, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err := smb.EnsureActive(probe, plan.Member)
 		cancel()
 		if err != nil {
+			*applied = smb.Receipt{}
 			return err
 		}
 	}
-	if plan.Revision > 0 && *reported != plan.Revision {
-		if err := j.reportSMBPlan(ctx, plan.Revision); err != nil {
+	if receipt.Valid() && *reported != receipt {
+		if err := j.reportSMBPlan(ctx, receipt); err != nil {
 			return err
 		}
-		*reported = plan.Revision
+		*reported = receipt
 	}
 	return nil
 }
@@ -126,8 +127,8 @@ func (j *joinClient) smbPlan(ctx context.Context) (smb.Plan, error) {
 	return plan, nil
 }
 
-func (j *joinClient) reportSMBPlan(ctx context.Context, revision int64) error {
-	body, err := json.Marshal(map[string]int64{"revision": revision})
+func (j *joinClient) reportSMBPlan(ctx context.Context, receipt smb.Receipt) error {
+	body, err := json.Marshal(receipt)
 	if err != nil {
 		return err
 	}

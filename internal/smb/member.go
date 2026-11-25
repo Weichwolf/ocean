@@ -25,16 +25,19 @@ var (
 	dnsLabel    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	netbiosName = regexp.MustCompile(`^[A-Z]([A-Z0-9-]{0,13}[A-Z0-9])?$`)
 	domainSID   = regexp.MustCompile(`^S-1-5-21(-[0-9]{1,10}){3}$`)
+	serviceLink = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$`)
 )
 
 // Member binds a dedicated Samba instance to one AD domain and tenant address.
 type Member struct {
-	DNSDomain     string     `json:"dnsDomain"`
-	NetBIOSDomain string     `json:"netbiosDomain"`
-	DomainSID     string     `json:"domainSid"`
-	ServerName    string     `json:"serverName"`
-	Address       netip.Addr `json:"address"`
-	Shares        []Share    `json:"shares"`
+	DNSDomain        string     `json:"dnsDomain"`
+	NetBIOSDomain    string     `json:"netbiosDomain"`
+	DomainSID        string     `json:"domainSid"`
+	ServerName       string     `json:"serverName"`
+	Address          netip.Addr `json:"address"`
+	Shares           []Share    `json:"shares"`
+	StateVolumeID    string     `json:"stateVolumeId,omitempty"`
+	ServiceInterface string     `json:"serviceInterface,omitempty"`
 }
 
 // Share grants admission and write access to native AD security group SIDs.
@@ -54,6 +57,13 @@ func (m Member) Validate() error {
 		!netbiosName.MatchString(m.ServerName) || m.ServerName == m.NetBIOSDomain || !validDomainSID(m.DomainSID) ||
 		!m.Address.Is4() || !m.Address.IsPrivate() {
 		return errors.New("invalid Samba member domain, identity or private IPv4 address")
+	}
+	if m.StateVolumeID != "" {
+		if !storage.ValidSMBStateVolumeID(m.StateVolumeID) || !serviceLink.MatchString(m.ServiceInterface) {
+			return errors.New("encrypted member state requires a dedicated service interface")
+		}
+	} else if m.ServiceInterface != "" {
+		return errors.New("a floating SMB endpoint requires encrypted member state")
 	}
 	for _, label := range labels {
 		if !dnsLabel.MatchString(label) {
@@ -82,6 +92,13 @@ func (m Member) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (m Member) stateDirectory() string {
+	if m.StateVolumeID == "" {
+		return stateRoot
+	}
+	return filepath.Join(MountRoot, m.StateVolumeID, "member")
 }
 
 // ValidName accepts only ordinary SMB share names in the Ocean file service.
@@ -144,7 +161,7 @@ func configuration(m Member) []byte {
     logging = systemd
     log level = 1 auth_audit:3
 `, m.NetBIOSDomain, strings.ToUpper(m.DNSDomain), m.ServerName, m.Address,
-		stateRoot, stateRoot, m.NetBIOSDomain, m.NetBIOSDomain, domainBase, domainEnd)
+		m.stateDirectory(), m.stateDirectory(), m.NetBIOSDomain, m.NetBIOSDomain, domainBase, domainEnd)
 
 	for _, share := range m.Shares {
 		fmt.Fprintf(&output, `
@@ -156,6 +173,7 @@ func configuration(m Member) []byte {
     valid users = %s
     follow symlinks = no
     wide links = no
+    durable handles = no
     inherit acls = yes
     vfs objects = acl_xattr full_audit
     full_audit:prefix = %%D|%%U|%%I|%%S

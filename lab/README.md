@@ -172,8 +172,10 @@ Use a disposable domain-join lab with `dc01.ad.ocean.test`, the joined
 Debian client at `10.232.1.12`, and the separate farm's client. Add
 `farm-1-node-04` with a private `10.232.1.14` workload address and
 `files04.ad.ocean.test` in the lab directory DNS. Install Debian's
-Samba member server, Winbind, Kerberos, ACL utilities, and cryptsetup in
-the member guest. Install `smbclient` and MIT Kerberos on the joined client.
+Samba member server, Winbind, `libnss-winbind`, Kerberos, ACL utilities,
+and cryptsetup in the member guest. Add `winbind` to the `passwd` and
+`group` entries in `/etc/nsswitch.conf`. Install `smbclient` and MIT
+Kerberos on the joined client.
 
 Install `bin/ocean-smb-member` from `make build` on the member. Write a
 root-owned `/etc/ocean-smb/member.json` with `dnsDomain`, `netbiosDomain`,
@@ -246,7 +248,7 @@ configuration with `pool`, `client`, `cephConfig`, `keyring` and
 `mountRoot`. Set `mountRoot` to `/srv/ocean-smb/volumes`. Enable the
 `ocean-smb-agent.service` unit on this dedicated host. Keep the standalone
 Samba startup disabled so the reconciler owns publication when the host
-boots. The reconciler starts Winbind through its unit dependency.
+boots. The reconciler starts Winbind after it prepares the member state.
 
 Get the group SID through the managed Graph endpoint with
 `az ad group show --group "$OCEAN_GROUP_OBJECT_ID" --query onPremisesSecurityIdentifier -o tsv`.
@@ -325,6 +327,73 @@ recent guest serial evidence and obtains a separate Kerberos ticket from
 Debian for `smbwriter`. It checks the Windows file content and the member
 journal for both source addresses. Keep the nonce file until its Debian
 and journal checks have completed.
+
+### Fenced SMB failover
+
+Use two dedicated enrolled Debian members in one cell. Both need access to
+the same Ceph pool and tenant workload subnet. Add `standbyHostId` and an
+absolute owner-only `stateKeyFile` containing a 32-byte key to the SMB
+binding on each regional replica. Set `member.serviceInterface` to the
+private interface name and `member.stateVolumeId` to the existing
+`smb-state-…` image. Set `member.address` to a reserved floating IPv4
+address. Point the member's directory DNS record to that address and
+keep the original name and CIFS service principal. Configure
+`region.storage.fencePublicKeyFile` with the fencing authority's Ed25519
+public key. Use the same binding, key contents and authority on every
+regional replica.
+
+Initialize the member-state image as exclusively mapped LUKS2 and ext4.
+While the existing member's Samba and Winbind services are stopped, stage
+its joined `private` and `state` directories under `member/` on the
+encrypted filesystem. Keep both hosts' standalone Samba startup disabled.
+The member opens that existing identity, its share volumes and the
+floating address under one writer generation. It announces the address on
+the workload link using gratuitous ARP. A missing previously published
+share image leaves recovery pending.
+[Ceph RBD exclusive locks](https://docs.ceph.com/en/pacific/rbd/rbd-exclusive-locks/)
+
+Lease expiry leaves storage with its current writer. An independent
+fencing authority must confirm the old host is powered off and sign the
+UTF-8 JSON bytes with `tenantId`, `subscriptionId`, `hostId`,
+`generation`, `observation` set to `PoweredOff`, and `observedAt` in RFC 3339
+UTC. Post base64-encoded `attestation` and `signature` fields to
+`/ocean/storage/smb-fences`. A valid fresh proof and absence of the old
+host lease move the writer generation once. Standby or retired hosts
+cannot retrieve volume keys. Each share returns to `Succeeded` when
+the new worker confirms its local mount and listener.
+
+After failover, clients can establish a new Kerberos connection and
+reopen acknowledged data. Samba durable handles are disabled for this
+profile. Applications must be prepared to reopen files and reacquire
+byte-range locks. A CIFS client may retry a read transparently. Record the
+old descriptor's observed result alongside the verified new open.
+[Samba durable handles](https://www.samba.org/samba/docs/current/man-html/smb.conf.5#DURABLEHANDLES)
+
+For `WORKPLACE-29`, use `lab/profiles/smb-ha.yaml` with the directory
+guests, Samba primary `farm-1-node-04`, Ceph nodes 05–07, and standby
+`farm-1-node-08`. Install the node package, Samba, Winbind, `libnss-winbind`, Kerberos,
+ACL, quota, cryptsetup, Ceph, and `iputils-arping` on both members.
+Install `nftables` on the primary and the CIFS tools described for
+`WORKPLACE-26` on the joined client. After preparing the standalone
+member and its RBD configuration, run the fixture preparer. It keeps
+the existing member's local identity and copies its quiesced state to the
+encrypted image. The test connects to the floating address explicitly
+while preserving the fixture's original DNS record and Kerberos name.
+
+```sh
+python3 -B lab/prepare_smb_failover.py --state "$OCEAN_AD_STATE" --fixture "$OCEAN_SMB_FIXTURE"
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-29 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  OCEAN_E2E_SMB_FAILOVER_PROFILE="$PWD/lab/profiles/smb-ha.yaml" \
+  OCEAN_E2E_SMB_ETCD=http://127.0.0.1:42453 OCEAN_E2E_SMB_AZ="$(command -v az)" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The harness records lease expiry, power-off to verified reconnect, old
+descriptor behavior, and a renewed lock and flushed write. It cuts only
+the old worker's management API path, then uses QMP to verify its power-off
+before signing the lab fence. The production fencing authority requires
+independent power control and verification on physically separate hosts.
 
 ## KVM tenant guest runtime probe
 

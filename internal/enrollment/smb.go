@@ -15,7 +15,7 @@ var ErrSMBPlanChanged = errors.New("the SMB member plan has changed")
 
 type smbStore interface {
 	HostSMBPlan(context.Context, string, []byte) (smb.Plan, error)
-	CompleteSMBPlan(context.Context, string, []byte, int64) error
+	CompleteSMBPlan(context.Context, string, []byte, smb.Receipt) error
 }
 
 func (a *Authority) smbPlan(w http.ResponseWriter, r *http.Request) {
@@ -43,16 +43,14 @@ func (a *Authority) smbPlan(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusOK, plan)
 		return
 	}
-	var receipt struct {
-		Revision int64 `json:"revision"`
-	}
+	var receipt smb.Receipt
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&receipt) != nil || decoder.Decode(new(any)) != io.EOF || receipt.Revision < 1 {
+	if decoder.Decode(&receipt) != nil || decoder.Decode(new(any)) != io.EOF || !receipt.Valid() {
 		reject(w, http.StatusBadRequest, "InvalidSMBPlanReceipt")
 		return
 	}
-	if err := backend.CompleteSMBPlan(ctx, host, peer.Raw, receipt.Revision); err != nil {
+	if err := backend.CompleteSMBPlan(ctx, host, peer.Raw, receipt); err != nil {
 		replySMBPlanError(w, err)
 		return
 	}

@@ -188,6 +188,12 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 // Handler serves ARM routes over the same ingress as identity and discovery.
 func (s Server) Handler(fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ocean/storage/smb-fences" && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			s.smbFence(ctx, w, r)
+			return
+		}
 		if r.URL.Path == "/ocean/storage/fences" && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()

@@ -37,7 +37,7 @@ Section: admin
 Priority: optional
 Maintainer: ocean contributors <development@ocean.invalid>
 Depends: podman, uidmap, passt | slirp4netns, fuse-overlayfs, passwd (>= 1:4.15), systemd, dbus-user-session, iproute2, nftables
-Suggests: haproxy, dnsmasq-base, keepalived, curl, wireguard-tools, iputils-ping, iputils-arping, qemu-system-x86, qemu-utils, ovmf, ceph-common, cryptsetup-bin, samba, winbind, acl, quota
+Suggests: haproxy, dnsmasq-base, keepalived, curl, wireguard-tools, iputils-ping, iputils-arping, qemu-system-x86, qemu-utils, ovmf, ceph-common, cryptsetup-bin, samba, winbind, libnss-winbind, acl, quota
 Description: ocean node agent
  Runs the ocean node agent under a dedicated systemd user manager and checks
  the host's rootless Podman runtime before reporting readiness. Includes a

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/Weichwolf/ocean/internal/smb"
+	"github.com/Weichwolf/ocean/internal/storage"
 )
 
 var (
@@ -17,8 +18,31 @@ var (
 )
 
 type SMBStore interface {
+	ApplySMBFence(context.Context, storage.SignedFence) error
 	PutSMBShare(context.Context, SubscriptionScope, string, ResourceAddress, smb.Policy) (InventoryResource, *Operation, bool, error)
 	DeleteSMBShare(context.Context, SubscriptionScope, string, ResourceAddress) (*Operation, error)
+}
+
+func (s Server) smbFence(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, "POST")
+		return
+	}
+	if s.SMBShares == nil || r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	var request storage.SignedFence
+	if err := strictJSON(http.MaxBytesReader(w, r.Body, 4096), &request); err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidRequestContent", "A signed member fence attestation is required.")
+		return
+	}
+	if err := s.SMBShares.ApplySMBFence(ctx, request); err != nil {
+		storageError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s Server) smbShare(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, actor, reader, group, name string) {

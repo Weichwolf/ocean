@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/storage"
 )
@@ -34,21 +35,27 @@ func (p Policy) Share(name, volumeID string) Share {
 // VolumeGrant is disclosed only to the qualified active member. A withdrawn
 // volume has no key and can be retired only after Samba releases the share.
 type VolumeGrant struct {
-	Volume   storage.Volume `json:"volume"`
-	Key      []byte         `json:"key,omitempty"`
-	Withdraw bool           `json:"withdraw,omitempty"`
+	Volume      storage.Volume `json:"volume"`
+	Key         []byte         `json:"key,omitempty"`
+	Withdraw    bool           `json:"withdraw,omitempty"`
+	Initialized bool           `json:"initialized,omitempty"`
 }
 
 // Plan is the complete desired state of one certified Samba member.
 type Plan struct {
-	Revision int64         `json:"revision"`
-	Member   Member        `json:"member"`
-	Volumes  []VolumeGrant `json:"volumes"`
+	Revision   int64         `json:"revision"`
+	Generation string        `json:"generation"`
+	Member     Member        `json:"member"`
+	Volumes    []VolumeGrant `json:"volumes"`
+	StateKey   []byte        `json:"stateKey,omitempty"`
 }
 
 func (p Plan) Valid() bool {
-	if p.Revision < 0 || p.Revision == 0 && len(p.Volumes) != 0 ||
+	if !storage.ValidID(p.Generation) || p.Revision < 0 || p.Revision == 0 && len(p.Volumes) != 0 ||
 		len(p.Volumes) > MaxShares || p.Member.Validate() != nil {
+		return false
+	}
+	if p.Member.StateVolumeID == "" && len(p.StateKey) != 0 || p.Member.StateVolumeID != "" && len(p.StateKey) != storage.KeySize {
 		return false
 	}
 	shares := make(map[string]Share, len(p.Member.Shares))
@@ -67,7 +74,7 @@ func (p Plan) Valid() bool {
 		seen[id] = true
 		share, present := shares[id]
 		if grant.Withdraw {
-			if present || len(grant.Key) != 0 {
+			if present || len(grant.Key) != 0 || grant.Initialized {
 				return false
 			}
 			continue
@@ -83,9 +90,28 @@ func (p Plan) Valid() bool {
 var ErrInvalidPlan = errors.New("invalid SMB member plan")
 
 func (p Plan) ClearKeys() {
+	clear(p.StateKey)
 	for _, grant := range p.Volumes {
 		clear(grant.Key)
 	}
+}
+
+type Receipt struct {
+	Revision   int64  `json:"revision"`
+	Generation string `json:"generation"`
+}
+
+func (r Receipt) Valid() bool { return r.Revision > 0 && storage.ValidID(r.Generation) }
+
+// FenceAttestation authorizes moving one member generation and every share
+// it owns after the independent site supervisor has fenced its old host.
+type FenceAttestation struct {
+	TenantID       string    `json:"tenantId"`
+	SubscriptionID string    `json:"subscriptionId"`
+	HostID         string    `json:"hostId"`
+	Generation     string    `json:"generation"`
+	Observation    string    `json:"observation"`
+	ObservedAt     time.Time `json:"observedAt"`
 }
 
 // VolumeSizeMiB reserves headroom for LUKS and ext4 metadata. Ext4 project

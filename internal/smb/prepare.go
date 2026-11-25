@@ -24,7 +24,18 @@ func prepare(ctx context.Context, member Member, destination string, beforeApply
 	if err := member.Validate(); err != nil {
 		return err
 	}
-	for _, directory := range []string{stateRoot + "/private", stateRoot + "/state", "/var/cache/ocean-smb"} {
+	if len(member.Shares) != 0 {
+		if err := verifyWinbindNSS(); err != nil {
+			return err
+		}
+	}
+	if member.StateVolumeID != "" {
+		if err := verifyMount(ctx, filepath.Join(MountRoot, member.StateVolumeID), false); err != nil {
+			return fmt.Errorf("verify encrypted member state: %w", err)
+		}
+	}
+	state := member.stateDirectory()
+	for _, directory := range []string{state + "/private", state + "/state", "/var/cache/ocean-smb"} {
 		if err := os.MkdirAll(directory, 0700); err != nil {
 			return err
 		}
@@ -172,7 +183,31 @@ func verifyGroup(ctx context.Context, domain, sid string) (int, error) {
 	if err != nil || mapped != strconv.Itoa(id) {
 		return 0, errors.New("the Samba group does not match the configured RID mapping")
 	}
+	entry, err := run(ctx, "/usr/bin/getent", "group", mapped)
+	nss := strings.Split(entry, ":")
+	if err != nil || len(nss) != 4 || nss[2] != mapped || !strings.EqualFold(nss[0], strings.Join(fields[:len(fields)-1], " ")) {
+		return 0, errors.New("NSS does not resolve the Winbind group to the configured RID mapping")
+	}
 	return id, nil
+}
+
+func verifyWinbindNSS() error {
+	data, err := os.ReadFile("/etc/nsswitch.conf")
+	if err != nil {
+		return err
+	}
+	configured := map[string]bool{}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		key, sources, present := strings.Cut(line, ":")
+		if present {
+			configured[strings.TrimSpace(key)] = slices.Contains(strings.Fields(sources), "winbind")
+		}
+	}
+	if !configured["passwd"] || !configured["group"] {
+		return errors.New("configure Winbind as an NSS source for passwd and group on the SMB member")
+	}
+	return nil
 }
 
 func run(ctx context.Context, executable string, args ...string) (string, error) {

@@ -250,7 +250,18 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	smbWindows = requireFile(smbWindows, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows SMB serial capture")
 	smbWindows = requireFile(smbWindows, filepath.Join(options.domain, "server-core", "machine.json"), "the joined Windows Server Core identity record")
 	smbWindows = requireFile(smbWindows, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB domain identity")
+	failoverProfile := os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE")
+	smbFailover := harness.Step{Name: "kerberos-smb-failover", Cases: []string{"WORKPLACE-29"}, Timeout: 7 * time.Minute,
+		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-timeout=7m", "-v", "-run", "^TestPackagedSMBFailover$", "./internal/controlplane"},
+		Evidence: []harness.EvidenceSource{{Name: "kerberos-smb-failover.json", Path: filepath.Join(options.domain, "evidence", "kerberos-smb-failover.json")}}}
+	if options.domain == "" || smbFixture == "" || os.Getenv("OCEAN_E2E_SMB_ETCD") == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" || failoverProfile == "" {
+		smbFailover.BlockedReason = "Provide the prepared two-member SMB lab, its profile, a disposable etcd endpoint and the pinned Azure CLI."
+	}
+	smbFailover = requireFile(smbFailover, failoverProfile, "the original two-member lab profile")
+	for _, file := range []string{"member-rbd.json", "smbwriter", "failover-state-id", "failover-state.key"} {
+		smbFailover = requireFile(smbFailover, filepath.Join(smbFixture, file), "the private SMB fixture file "+file)
+	}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover)
 }

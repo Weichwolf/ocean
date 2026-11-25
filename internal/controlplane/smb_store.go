@@ -19,20 +19,22 @@ import (
 )
 
 const (
-	putSMBShare    = "PutSMBShare"
-	removeSMBShare = "DeleteSMBShare"
+	putSMBShare     = "PutSMBShare"
+	removeSMBShare  = "DeleteSMBShare"
+	recoverSMBShare = "RecoverSMBShare"
 )
 
 type smbShareRecord struct {
-	Address   arm.ResourceAddress `json:"address"`
-	Name      string              `json:"name"`
-	Policy    smb.Policy          `json:"policy"`
-	Volume    storage.Volume      `json:"volume"`
-	Envelope  []byte              `json:"envelope"`
-	Operation string              `json:"operation"`
-	Ready     bool                `json:"ready"`
-	Deleting  bool                `json:"deleting"`
-	CreatedAt time.Time           `json:"createdAt"`
+	Address     arm.ResourceAddress `json:"address"`
+	Name        string              `json:"name"`
+	Policy      smb.Policy          `json:"policy"`
+	Volume      storage.Volume      `json:"volume"`
+	Envelope    []byte              `json:"envelope"`
+	Operation   string              `json:"operation"`
+	Ready       bool                `json:"ready"`
+	Initialized bool                `json:"initialized,omitempty"`
+	Deleting    bool                `json:"deleting"`
+	CreatedAt   time.Time           `json:"createdAt"`
 }
 
 func (r *Region) smbMemberKey(b smbBinding) string {
@@ -123,13 +125,17 @@ func (r *Region) PutSMBShare(ctx context.Context, scope arm.SubscriptionScope, a
 	if member.Validate() != nil {
 		return empty, nil, false, arm.ErrSMBPolicy
 	}
-	memberKey, liveKey := r.smbMemberKey(binding), r.hostKey("live", binding.HostID)
+	memberKey, ownerKey := r.smbMemberKey(binding), r.smbOwnerKey(binding)
 	directoryKey, groupKey := r.managedDirectoryKey(scope.TenantID), r.groupPrefix(scope)+strings.ToLower(address.Group)
 	inventoryKey := r.inventoryPrefix(scope) + address.Key()
 	marker := r.smbGroupPrefix(scope, address.Group) + name
+	requests := []clientv3.Op{clientv3.OpGet(memberKey), clientv3.OpGet(groupKey), clientv3.OpGet(directoryKey),
+		clientv3.OpGet(ownerKey), clientv3.OpGet(inventoryKey), clientv3.OpGet(r.hostKey("live", binding.HostID))}
+	if binding.StandbyHostID != "" {
+		requests = append(requests, clientv3.OpGet(r.hostKey("live", binding.StandbyHostID)))
+	}
 	for range 8 {
-		read, err := r.client.Txn(ctx).Then(clientv3.OpGet(memberKey), clientv3.OpGet(groupKey),
-			clientv3.OpGet(directoryKey), clientv3.OpGet(liveKey), clientv3.OpGet(inventoryKey)).Commit()
+		read, err := r.client.Txn(ctx).Then(requests...).Commit()
 		if err != nil {
 			return empty, nil, false, err
 		}
@@ -188,19 +194,30 @@ func (r *Region) PutSMBShare(ctx context.Context, scope arm.SubscriptionScope, a
 				return empty, nil, false, arm.ErrSMBConflict
 			}
 		}
-		live := read.Responses[3].GetResponseRange().Kvs
+		owner, ownerRevision, err := readSMBOwner(binding, read.Responses[3].GetResponseRange().Kvs)
+		if err != nil {
+			return empty, nil, false, err
+		}
+		liveKey := r.hostKey("live", owner.HostID)
+		liveIndex := 5
+		if owner.HostID == binding.StandbyHostID {
+			liveIndex = 6
+		}
+		live := read.Responses[liveIndex].GetResponseRange().Kvs
 		var available enrollment.Availability
 		if !smbDirectoryMatches(binding, directory) || len(live) != 1 || live[0].Lease == 0 ||
-			json.Unmarshal(live[0].Value, &available) != nil || available.HostID != binding.HostID ||
+			json.Unmarshal(live[0].Value, &available) != nil || available.HostID != owner.HostID ||
 			!slices.Contains(available.Roles, "compute") {
 			return empty, nil, false, arm.ErrSMBUnavailable
 		}
 		op := arm.Operation{ID: operationID(), Kind: putSMBShare, Group: group.Name, Actor: actor, Status: arm.OperationInProgress, StartedAt: now}
+		record.Initialized = record.Initialized || record.Ready
 		record.Policy, record.Operation, record.Ready = policy, op.ID, false
 		records[index] = record
 		view := smbProjection(binding, record, r.name, arm.OperationInProgress, now)
 		opKey := r.operationKey(scope, op.ID)
 		applied, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(memberKey), "=", revision),
+			clientv3.Compare(clientv3.ModRevision(ownerKey), "=", ownerRevision),
 			clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(directoryKey), "=", directory[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(liveKey), "=", live[0].ModRevision),
@@ -252,7 +269,7 @@ func (r *Region) DeleteSMBShare(ctx context.Context, scope arm.SubscriptionScope
 			if err != nil {
 				return nil, err
 			}
-			if superseded.Status != arm.OperationInProgress || superseded.Kind != putSMBShare {
+			if superseded.Status != arm.OperationInProgress || superseded.Kind != putSMBShare && superseded.Kind != recoverSMBShare {
 				return nil, errors.New("invalid pending SMB write")
 			}
 			superseded.Status, superseded.FinishedAt = arm.OperationFailed, &now
