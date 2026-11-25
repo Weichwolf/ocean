@@ -2,6 +2,7 @@
 """Exercise the Functions ARM contract with the pinned, unmodified Azure CLI."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -36,7 +37,7 @@ def command(cli, rows, version, values, label, *, expected=None):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def exercise(settings, matrix, fixture, phase, images, runtime="v1"):
+def exercise(settings, matrix, fixture, phase, images, runtime="v1", parallel_create=False):
     if phase == "setup":
         tenant, foreign = create_customers(settings)
         nonce = uuid4().hex[:10]
@@ -79,8 +80,17 @@ def exercise(settings, matrix, fixture, phase, images, runtime="v1"):
             profile = run("function-plan-show")
             if profile["sku"]["name"] != "B1" or not public_properties(profile)["reserved"]:
                 raise RuntimeError("the ARM Functions plan did not round-trip")
+            attempts = 0
             if phase == "setup":
-                run("function-node-create" if state.get("image") == "node" else "function-app-create")
+                label = "function-node-create" if state.get("image") == "node" else "function-app-create"
+                attempts = 3 if parallel_create else 1
+                if attempts == 1:
+                    run(label)
+                else:
+                    with ThreadPoolExecutor(max_workers=attempts) as pool:
+                        completed = list(pool.map(lambda _: run(label), range(attempts)))
+                    if {reply["id"] for reply in completed} != {app_id}:
+                        raise RuntimeError("parallel CLI creates returned different Functions IDs")
             shown = run("function-app-show")
             if shown["id"] != app_id or public_properties(shown)["state"] != "Running":
                 raise RuntimeError("the Azure CLI returned before the native Function host was ready")
@@ -93,7 +103,8 @@ def exercise(settings, matrix, fixture, phase, images, runtime="v1"):
             if listed.get("e2e") != state["key"] or "_master" in listed:
                 raise RuntimeError("the native Function key state did not round-trip securely")
             return {"id": app_id, "host": public_properties(shown)["defaultHostName"], "azureCLI": contract.version["azure-cli"],
-                    "nativeFunctionDiscovered": True, "configuredKeyRoundTrip": True}
+                    "nativeFunctionDiscovered": True, "configuredKeyRoundTrip": True, "createAttempts": attempts,
+                    "tenant": tenant["tenant"], "subscription": tenant["subscription"], "group": state["group"]}
         if phase == "authorize":
             client, principal, credential = create_service_principal(cli)
             scope = app_id.split("/providers/")[0]
@@ -196,8 +207,10 @@ def main():
                         choices=("setup", "inspect", "authorize", "update", "publish", "egress", "integrate",
                                  "integration-status", "start", "stop", "restart", "cleanup"))
     parser.add_argument("--runtime", choices=("v1", "node"), default="v1")
+    parser.add_argument("--parallel-create", action="store_true")
     args = parser.parse_args()
-    result = exercise(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.phase, json.loads(args.images.read_text()), args.runtime)
+    result = exercise(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.phase,
+                      json.loads(args.images.read_text()), args.runtime, args.parallel_create)
     print(json.dumps(result, sort_keys=True))
 
 

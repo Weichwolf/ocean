@@ -2,6 +2,7 @@
 """Run the pinned Azure CLI container commands against real assigned workloads."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import shlex
@@ -19,7 +20,7 @@ PRIVATE_PORT = 8080
 PUBLIC_PORT = 80
 
 
-def run(settings, matrix, fixture, phase, image=None):
+def run(settings, matrix, fixture, phase, image=None, parallel_create=False):
     if phase == "setup":
         tenant, foreign = create_customers(settings)
         saved = {"tenant": tenant, "foreign": foreign, "group": "containers-" + uuid4().hex[:10],
@@ -114,8 +115,17 @@ def run(settings, matrix, fixture, phase, image=None):
         if phase.endswith("-create"):
             if private:
                 cli.run(*command_args(load_matrix(matrix, "NETWORK-01")["vnet-create"], contract.version, **variables))
-            command("container-private-create" if private else "container-public-create")
+            label = "container-private-create" if private else "container-public-create"
+            attempts = 3 if parallel_create and not private else 1
+            if attempts == 1:
+                command(label)
+            else:
+                with ThreadPoolExecutor(max_workers=attempts) as pool:
+                    completed = list(pool.map(lambda _: command(label), range(attempts)))
+                if len({reply["id"] for reply in completed}) != 1:
+                    raise RuntimeError("parallel CLI creates returned different container IDs")
             result = show()
+            result["createAttempts"] = attempts
             if not private:
                 for label in ("container-list", "container-list-subscription"):
                     if not any(item["id"] == result["id"] for item in command(label)):
@@ -145,11 +155,12 @@ def main():
     parser.add_argument("--matrix", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--image")
+    parser.add_argument("--parallel-create", action="store_true")
     parser.add_argument("--phase", required=True, choices=("setup", "cleanup", "public-create", "private-create", "public-show",
                                                           "private-show", "start", "stop", "restart", "public-delete", "private-delete",
                                                           "public-logs", "private-logs", "foreign-conflict"))
     args = parser.parse_args()
-    result = run(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.phase, args.image)
+    result = run(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.phase, args.image, args.parallel_create)
     print(json.dumps(result, sort_keys=True))
 
 

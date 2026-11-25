@@ -31,6 +31,10 @@ def podman(*args):
     return result.stdout.strip()
 
 
+def registry_name(state):
+    return "ocean-functions-registry-" + state.name.rsplit(".", 1)[-1]
+
+
 def ensure_boot_capacity(state, node):
     directory = state / "nodes" / node
     wanted = 8 * 1024**3
@@ -74,7 +78,7 @@ def prepare(state, package, cache, registry_port):
     store.mkdir(mode=0o700, exist_ok=True)
     authority = ca(certs, "registry-ca")
     leaf(certs, "registry", authority, "serverAuth", f"DNS:{REGISTRY_NAME},IP:127.0.0.1", "rsa:2048")
-    service = "ocean-functions-registry-" + state.name.rsplit(".", 1)[-1]
+    service = registry_name(state)
     port = int(registry_port)
     registry = f"{REGISTRY_NAME}:{port}"
     local_registry = f"127.0.0.1:{port}"

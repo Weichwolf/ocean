@@ -123,6 +123,12 @@ CLI's five-minute refresh window and the faults under test.
 3. For continuity cases, probe through the intended endpoint before, during, and after the fault. Exercise fresh and cached DNS answers where required. Record logical request results, per-attempt failures, connection resets, and latency. Capture replication and fencing evidence for single-writer recovery.
 4. Collect the evidence and clean up resources owned by the run. Write a Markdown summary and a TSV with `case_id`, `status`, `duration_ms`, `evidence`, and `detail` columns. Keep relevant sanitized CLI and probe output, logs, and measurements in `evidence/`.
 
+Submit three concurrent creates for the same container group and three for
+the same Function App through the pinned CLI. Compare the returned IDs,
+the ready workload state, the operation record and the reservation charge.
+Run the discarded-response and controller-restart checks against the
+separate ARM deletion operation.
+
 Report each selected case as `PASS`, `FAIL`, `BLOCKED`, or `SKIP`. Phase-one approval requires a `PASS` for every `required` case in the matrix. Production and enabled compatibility profiles also require their applicable cases to pass. Store or publish run evidence as build artifacts so the release can be verified from the recorded inputs, limits, and results.
 
 ## Run the local suite
@@ -148,13 +154,19 @@ and `OCEAN_E2E_ETCD_ARCHIVE` to the pinned etcd release archive used for clean
 recovery. Allow enough test time for all selected probes. The regional,
 small and scale profiles can also run individually. The phase-one runner
 sequences the selected lab states and restores the guests that were running
-when it started. Keep unrelated guests within the host budget.
+when it started. The regional guests start in groups of three so each launch
+checks the available host memory. After a cold start, allow up to five minutes
+for the lab's readiness endpoints. Keep unrelated guests within the host budget.
 
-Start with a fresh small enrollment state because the host qualification
-test revokes its fixture certificate. Prepare the scale base with
+Start with a fresh small enrollment state with a valid preapproved join.
+The runner exercises this short-lived credential first, and host
+qualification revokes its fixture certificate. Prepare the scale base with
 `python3 -B lab/prepare_scale16.py --help` and the same locally pinned
 Debian, etcd, Keycloak and Azure CLI inputs as the regional lab. The scale
 probe boots and enrolls the remaining thirteen guests when it runs.
+The scale profile serves a keyed Java Function over HTTPS and releases its
+capacity after deletion. The regional workload probe exercises image
+updates, lifecycle operations, and fixed egress failover.
 
 The default artifact directory is `artifacts/e2e/<run-id>/`. Set
 `OCEAN_E2E_RUN_ID` for a named run or `OCEAN_E2E_ARTIFACTS` for a different

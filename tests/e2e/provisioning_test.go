@@ -34,6 +34,6 @@ func provisioningSteps(options labOptions) []harness.Step {
 		regional(options, "mixed-node-placement", "verify_lab_topology.py", []string{"LAB-03"},
 			[]string{"mixed-topology.json"}, "--profile", "storage-ha"),
 		regional(options, "placement", "verify_placement.py", []string{"LAB-03"}, []string{"host-placement.json"},
-			"--small", "farm-1-node-05", "--large", "farm-1-node-06"),
+			"--small", "farm-1-node-05", "--large", "farm-1-node-06", "--storage-workers"),
 	}
 }

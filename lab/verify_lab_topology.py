@@ -101,6 +101,8 @@ def verify(state, profile, disk_budget_gib=64):
     limit = host["MemTotal"]//1024 - 2048
     allocation = sum(item["allocatedRAMMiB"] for item in guests)
     require(allocation <= limit, "the planned guest allocation exceeds the host memory budget")
+    if profile == "scale-16":
+        require(host["MemAvailable"] >= 2048 * 1024, "the scale lab left less than 2 GiB of host memory headroom")
     node_allocations = {(item["allocatedRAMMiB"], item["guestVCPUs"]) for item in guests if "-node-" in item["node"]}
     if profile == "storage-ha":
         require(len(node_allocations) >= 2, "the mixed topology must exercise different CPU and memory profiles")

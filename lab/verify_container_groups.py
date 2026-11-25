@@ -15,6 +15,7 @@ from region import OPERATOR, ROOT, etcdctl, eventually, ssh
 from verify_egress_hosts import require, worker_command
 from verify_identity import CLIENT
 from verify_onboarding import prepare_operator_client
+from verify_operations import verify_workload_create
 from verify_wireguard_hosts import macvlan
 
 PROBE = "ocean-aci-probe"
@@ -65,7 +66,7 @@ def exercise_limits(state, host, name):
     worker_command(state, f"rc=0; pod exec {name} {cpu_probe} >/dev/null 2>&1 || rc=$?; test \"$rc\" -eq 143 || test \"$rc\" -eq 124", host)
     require(counter("cpu.stat", "nr_throttled") > throttled, "the CPU limit did not throttle a saturated workload")
     killed = counter("memory.events", "oom_kill")
-    memory_probe = shlex.join(["timeout", "15", "awk", 'BEGIN { for (i=0; i<400000; i++) a[i]=sprintf("%01024d",i); print length(a[0]); }'])
+    memory_probe = shlex.join(["timeout", "30", "awk", 'BEGIN { data = "x"; while (length(data) < 96*1024*1024) data = data data; print length(data) }'])
     worker_command(state, f"rc=0; pod exec {name} {memory_probe} >/dev/null 2>&1 || rc=$?; test \"$rc\" -ne 0", host)
     require(counter("memory.events", "oom_kill") > killed, "the memory limit did not stop an oversized allocation")
     return {"cpuThrottlingObserved": True, "oversizedAllocationOOMKilled": True}
@@ -106,7 +107,7 @@ assert b'/reconcile' in raw and marker not in raw
     ssh(state, OPERATOR, "python3 -", script.encode())
 
 
-def verify(state, observer):
+def verify(state, observer, parallel_create=False):
     prepare_operator_client(state, ("arm_cli.py", "container_cli.py", "testdata/arm-contract.tsv"))
     fixture = f"/tmp/ocean-container-{uuid4().hex}.secret"
 
@@ -115,6 +116,8 @@ def verify(state, observer):
                 f"{CLIENT}/arm-contract.tsv", "--fixture", fixture, "--phase", phase]
         if image:
             args += ["--image", image]
+        if parallel_create and phase == "public-create":
+            args.append("--parallel-create")
         return json.loads(ssh(state, OPERATOR, shlex.join(args)))
 
     ssh(state, observer, f"sudo test ! -e /run/netns/{PROBE}")
@@ -128,6 +131,7 @@ sudo ip -n {PROBE} link set lo up
         invoke("setup")
         nginx, busybox = pinned_image("nginx"), pinned_image("busybox")
         public = invoke("public-create", nginx)
+        retry = verify_workload_create(state, public, 250, 64) if parallel_create else {}
         host, name = assignment(state, public)
         require(host != observer, "the external probe and the container must run on separate KVM guests")
         address = public["address"]
@@ -173,7 +177,8 @@ sudo ip -n {PROBE} link set lo up
                 "stoppedEndpointClosed": True, "restartChangedProcess": True, "deletedEndpointClosed": True,
                 "publicAddressReused": True, "cachedNeighborPreserved": True, "quotaReleased": True,
                 "standardAndSecureVariablesDelivered": True,
-                "secureValueAbsentFromInventoryAuditAndExposedLogs": True, **limits, **conflict, **deleted}
+                "secureValueAbsentFromInventoryAuditAndExposedLogs": True, "createAttempts": public["createAttempts"],
+                **retry, **limits, **conflict, **deleted}
     finally:
         try:
             invoke("cleanup")
@@ -185,9 +190,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--observer", default="farm-1-node-06")
+    parser.add_argument("--parallel-create", action="store_true")
     args = parser.parse_args()
     state = args.state.resolve()
-    report = verify(state, args.observer)
+    report = verify(state, args.observer, args.parallel_create)
     evidence = state / "evidence"
     evidence.mkdir(mode=0o700, exist_ok=True)
     (evidence / "container-groups.json").write_text(json.dumps(report, indent=2) + "\n")

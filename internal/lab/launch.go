@@ -323,6 +323,15 @@ func (lab *Lab) stopGuest(name string) error {
 
 // Down stops the lab guests and switches while preserving disks and inventory.
 func (lab *Lab) Down() error {
+	return lab.shutdown(context.Background(), false)
+}
+
+// Shutdown asks Debian guests to power off cleanly before stopping their switches.
+func (lab *Lab) Shutdown(ctx context.Context) error {
+	return lab.shutdown(ctx, true)
+}
+
+func (lab *Lab) shutdown(ctx context.Context, graceful bool) error {
 	lock, err := lab.lock()
 	if err != nil {
 		return err
@@ -335,12 +344,27 @@ func (lab *Lab) Down() error {
 	var failures error
 	for _, machine := range current.Machines {
 		name := machine.Guest.Name
-		if err := lab.stopGuest(name); err != nil {
+		var err error
+		if graceful {
+			var running bool
+			running, err = lab.running(name)
+			if err == nil && running {
+				err = qmp(filepath.Join(lab.node(name), "qmp"), "ocean-"+name, "system_powerdown")
+			}
+		} else {
+			err = lab.stopGuest(name)
+		}
+		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("stop %s: %w", name, err))
 		}
 	}
 	if failures != nil {
 		return failures
+	}
+	if graceful {
+		if err := lab.waitPoweredOff(ctx, current.Machines); err != nil {
+			return err
+		}
 	}
 	for _, segment := range current.Segments {
 		if err := lab.stopSwitch(segment); err != nil {
@@ -348,6 +372,31 @@ func (lab *Lab) Down() error {
 		}
 	}
 	return failures
+}
+
+func (lab *Lab) waitPoweredOff(ctx context.Context, machines []Machine) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var running []string
+		for _, machine := range machines {
+			active, err := lab.running(machine.Guest.Name)
+			if err != nil {
+				return err
+			}
+			if active {
+				running = append(running, machine.Guest.Name)
+			}
+		}
+		if len(running) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for guest shutdown (%v): %w", running, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // SSH connects to a managed guest through its loopback-only forwarding port.

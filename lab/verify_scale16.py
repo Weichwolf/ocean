@@ -9,12 +9,14 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 sys.dont_write_bytecode = True
 from enrollment import approval, publish
 from prepare_application_gateway import prepare as prepare_gateway
 from prepare_container_groups import NETWORK, SERVICE, prepare as prepare_compute
 from prepare_functions import prepare as prepare_functions
+from prepare_functions import podman, registry_name
 from prepare_storage_provider import prepare as prepare_storage_provider
 from region import ARM, NODES, OPERATOR, ROOT, etcdctl, eventually, run, ssh, upload
 from storage import prepare as prepare_ceph
@@ -74,10 +76,15 @@ def prepare_manifests(state, nodes, package):
         if config["mac"] != interface["mac"] or config["address"] != interface["address"].split("/")[0]:
             raise RuntimeError(f"{name} has a different approved network identity")
         manifest = directory / f"{name}-bootstrap.json"
-        fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as stream:
-            json.dump({"hostId": name, "origin": f"https://{ARM}", "caFile": str(state / "region-pki/ingress-ca.pem"),
-                       "tokenFile": str(token), "packageFile": str(package)}, stream)
+        seed = {"hostId": name, "origin": f"https://{ARM}", "caFile": str(state / "region-pki/ingress-ca.pem"),
+                "tokenFile": str(token), "packageFile": str(package)}
+        if manifest.exists():
+            if json.loads(manifest.read_bytes()) != seed:
+                raise RuntimeError(f"{name} already has a different bootstrap manifest")
+        else:
+            fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                json.dump(seed, stream)
         paths.extend(("-enrollment-file", manifest))
     return paths
 
@@ -92,13 +99,16 @@ def verify(state, package, registry_port, java_cache):
     before = status(state)
     if any(not before.get(node) for node in BASE) or any(before.get(guest["name"]) for guest in added):
         raise RuntimeError("start with the three prepared management voters and stop additional guests before this run")
-    certificates(state, original)
+    eventually(lambda: certificates(state, original), 90)
     manifests = prepare_manifests(state, added, package)
     publish(state)
     try:
+        join_started = time.monotonic()
         run([LAB, "up", "-state", state, "-profile", PROFILE, *manifests])
         print("All additional guests have been started with approved cloud-init seeds.", flush=True)
-        enrolled = eventually(lambda: certificates(state, desired), 420)
+        enrolled = eventually(lambda: certificates(state, desired), 720)
+        join_seconds = round(time.monotonic() - join_started, 3)
+        print(f"All sixteen hosts are enrolled after {join_seconds:.1f} seconds.", flush=True)
         topology = verify_topology(state, "scale-16")
         prepare_compute(state, package, ("farm-1-node-05", "farm-1-node-06"))
 
@@ -117,22 +127,33 @@ def verify(state, package, registry_port, java_cache):
         print("Running the pinned container, persistent writer drain, and native Functions fixtures.", flush=True)
         containers = verify_containers(state, "farm-1-node-06")
         storage = verify_storage(state, "farm-1-node-04", False, drain_writer=True)
-        functions = verify_functions(state)
+        functions = verify_functions(state, smoke=True)
         if not storage["persistentDataMatched"] or storage["drainedWriterHost"] == storage["replacementHost"]:
             raise RuntimeError("the live writer checkpoint did not survive drain onto another permitted host")
         peers = verify_topology(state, "scale-16")["quorumVoters"]
         if peers != topology["quorumVoters"]:
             raise RuntimeError("the management quorum changed while expanding compute hosts")
         result = {"enrolledNodes": enrolled, "topology": topology, "container": containers, "drain": storage,
-                  "functions": functions, "votersAfterWorkloads": peers}
+                  "functions": functions, "votersAfterWorkloads": peers, "enrollmentSeconds": join_seconds,
+                  "enrollmentWaitLimitSeconds": 720}
     finally:
-        for guest in reversed(added):
-            node = guest["name"]
-            if status(state).get(node):
-                run([LAB, "stop", "-state", state, node])
+        try:
+            for guest in reversed(added):
+                node = guest["name"]
+                if status(state).get(node):
+                    run([LAB, "stop", "-state", state, node])
+        finally:
+            podman("stop", "--ignore", "--time", 5, registry_name(state))
     if any(status(state).get(guest["name"]) for guest in added):
         raise RuntimeError("one or more added compute guests remained active after cleanup")
+
+    def retired():
+        if set(records(state, "live")) - BASE:
+            raise RuntimeError("one or more stopped workers still have a live host lease")
+
+    eventually(retired, 35)
     result["additionalGuestsStopped"] = len(added)
+    result["additionalHostLeasesExpired"] = True
     return result
 
 

@@ -29,7 +29,7 @@ type labSessions struct {
 }
 
 func orderLabSteps(steps []harness.Step) []harness.Step {
-	rank := map[string]int{"": 0, "storage-ha": 1, "single-farm-3": 2, "scale-16": 3}
+	rank := map[string]int{"single-farm-3": 0, "": 1, "storage-ha": 2, "scale-16": 3}
 	slices.SortStableFunc(steps, func(a, b harness.Step) int { return rank[a.LabProfile] - rank[b.LabProfile] })
 	return steps
 }
@@ -96,12 +96,42 @@ func (sessions *labSessions) running(ctx context.Context, state string) ([]strin
 }
 
 func (sessions *labSessions) up(ctx context.Context, lab labSession, names []string) error {
-	args := []string{"-profile", filepath.Join("lab", "profiles", lab.profile+".yaml")}
-	for _, name := range names {
-		args = append(args, "-only", name)
+	profile := filepath.Join("lab", "profiles", lab.profile+".yaml")
+	start := func(cohort []string) error {
+		args := []string{"-profile", profile}
+		for _, name := range cohort {
+			args = append(args, "-only", name)
+		}
+		_, err := sessions.command(ctx, "up", lab.state, args...)
+		return err
 	}
-	_, err := sessions.command(ctx, "up", lab.state, args...)
-	return err
+	if lab.profile != "storage-ha" {
+		return start(names)
+	}
+	if len(names) == 0 {
+		command := exec.CommandContext(ctx, filepath.Join(sessions.root, "bin", "ocean-lab"), "plan", "-profile", profile)
+		command.Dir = sessions.root
+		output, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("read regional lab plan: %w", err)
+		}
+		var plan struct {
+			Guests []struct{ Name string } `json:"guests"`
+		}
+		if err := json.Unmarshal(output, &plan); err != nil {
+			return err
+		}
+		for _, guest := range plan.Guests {
+			names = append(names, guest.Name)
+		}
+	}
+	// Each launch checks host headroom before starting the next three guests.
+	for cohort := range slices.Chunk(names, 3) {
+		if err := start(cohort); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (sessions *labSessions) use(ctx context.Context, state string) error {
@@ -117,7 +147,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 			return err
 		}
 		if len(names) > 0 {
-			if _, err := sessions.command(ctx, "down", lab.state); err != nil {
+			if _, err := sessions.command(ctx, "shutdown", lab.state); err != nil {
 				return err
 			}
 		}
@@ -134,11 +164,17 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 	if err := sessions.up(ctx, lab, names); err != nil {
 		return err
 	}
+	readiness := "curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem https://arm.farm-1.ocean.test/readyz"
+	if lab.profile != "single-farm-3" {
+		readiness += " && curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem " +
+			"https://oauth.farm-1.ocean.test/realms/c8c02ae2-b2c9-4762-9bb5-08b660caf0ae/.well-known/openid-configuration"
+	}
+	readyCtx, cancelReady := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancelReady()
 	lastErr := errors.New("the management endpoint did not become ready")
-	for attempt := 0; attempt < 60; attempt++ {
-		probe, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, err := sessions.command(probe, "ssh", lab.state, "farm-1-operator", "--",
-			"curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem https://arm.farm-1.ocean.test/readyz")
+	for readyCtx.Err() == nil {
+		probe, cancel := context.WithTimeout(readyCtx, 8*time.Second)
+		_, err := sessions.command(probe, "ssh", lab.state, "farm-1-operator", "--", readiness)
 		cancel()
 		if err == nil {
 			sessions.current = state
@@ -146,7 +182,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 		}
 		lastErr = err
 		select {
-		case <-ctx.Done():
+		case <-readyCtx.Done():
 			return lastErr
 		case <-time.After(time.Second):
 		}
@@ -155,7 +191,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 }
 
 func (sessions *labSessions) restore() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	var failure error
 	for _, lab := range sessions.labs {
@@ -168,7 +204,7 @@ func (sessions *labSessions) restore() error {
 			continue
 		}
 		if len(actual) > 0 {
-			if _, err := sessions.command(ctx, "down", lab.state); err != nil {
+			if _, err := sessions.command(ctx, "shutdown", lab.state); err != nil {
 				failure = errors.Join(failure, err)
 				continue
 			}
