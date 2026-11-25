@@ -44,10 +44,11 @@ func Load[T any](path string, defaults T) (T, error) {
 		return defaults, err
 	}
 	defer func() { _ = file.Close() }()
-	return decode(file, defaults)
+	return Decode(file, defaults)
 }
 
-func decode[T any](input io.Reader, defaults T) (T, error) {
+// Decode reads one strict JSON object over the supplied defaults.
+func Decode[T any](input io.Reader, defaults T) (T, error) {
 	settings := &defaults
 	decoder := json.NewDecoder(input)
 	decoder.DisallowUnknownFields()

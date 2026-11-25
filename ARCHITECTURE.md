@@ -134,6 +134,13 @@ before returning a decision valid for at most 15 seconds. A successful decision
 contains the assignment and machine IDs. Starting and renewing a graphical
 session require the gateway and guest runtime.
 
+The XRDP guest helper verifies a signed, single-use launch credential for the
+guest's pinned machine ID and canonical AD sign-in name. The credential expires
+within 15 seconds and the guest commits its receipt to a private persistent
+directory before opening the session. PAM still applies the domain account and
+session policies. Conventional private RDP logins keep the Debian password
+authentication path.
+
 Pool policy constrains initial placement and recovery. The enrolled agent
 gets only the workload material required by its assignments. Regional key
 material protects sealed environment variables and volume keys. Assigned

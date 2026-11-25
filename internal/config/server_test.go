@@ -64,7 +64,7 @@ func FuzzLoadServerConfig(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, input []byte) {
 		defaults := Server{ListenAddress: "127.0.0.1:8081"}
-		settings, err := decode(bytes.NewReader(input), defaults)
+		settings, err := Decode(bytes.NewReader(input), defaults)
 		if err != nil {
 			return
 		}
@@ -90,7 +90,7 @@ func FuzzLoadServerConfig(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		restored, err := decode(bytes.NewReader(encoded), defaults)
+		restored, err := Decode(bytes.NewReader(encoded), defaults)
 		if err != nil || !reflect.DeepEqual(settings, restored) {
 			t.Fatalf("configuration changed after re-encoding: %v", err)
 		}
