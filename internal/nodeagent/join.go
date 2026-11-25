@@ -38,6 +38,7 @@ type joinConfig struct {
 	TokenFile            string `json:"tokenFile"`
 	StateDirectory       string `json:"stateDirectory"`
 	TelemetryBufferBytes int    `json:"telemetryBufferBytes,omitempty"`
+	DirectoryImage       string `json:"directoryImage,omitempty"`
 }
 
 type settings struct {
@@ -65,6 +66,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
 			go client.reportCapacity(ctx, logger)
 			go client.runTelemetry(ctx, logger)
+			if client.config.DirectoryImage != "" {
+				go client.reconcileDirectoryControllers(ctx, logger)
+			}
 			client.reconcileContainers(ctx, logger)
 		}
 	}
@@ -106,6 +110,9 @@ func loadEnrolledClient(path string) (*joinClient, error) {
 }
 
 func newJoinClient(cfg joinConfig) (*joinClient, error) {
+	if cfg.DirectoryImage != "" && !directoryImageID.MatchString(cfg.DirectoryImage) {
+		return nil, errors.New("the directory image must be a local SHA-256 image ID")
+	}
 	if cfg.TelemetryBufferBytes != 0 && (cfg.TelemetryBufferBytes < 4096 || cfg.TelemetryBufferBytes > 4<<20) {
 		return nil, errors.New("telemetry buffer must be between 4 KiB and 4 MiB")
 	}

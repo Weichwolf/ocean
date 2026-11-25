@@ -3,6 +3,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -154,6 +156,17 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	t.Helper()
 	r.cell = "cell-1"
 	r.directoryCapacity = enrollment.Capacity{CPUMillis: 400, MemoryMiB: 384}
+	keyFile := filepath.Join(t.TempDir(), "workloads.key")
+	if err := os.WriteFile(keyFile, bytes.Repeat([]byte{9}, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	r.workloads, err = openWorkloadControl(&workloadConfig{SecretsKeyFile: keyFile,
+		DefaultPlacement: PlacementPolicy{Pools: []string{"approved"}, Quota: enrollment.Capacity{CPUMillis: 800, MemoryMiB: 768}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := r.bootstrapManagedDirectories(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +200,7 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 		t.Helper()
 		host := enrollment.Host{HostID: id, Cell: r.cell, Pool: pool, Roles: []string{"compute"}, Certificate: []byte(id)}
 		live := enrollment.Availability{HostID: host.HostID, Cell: host.Cell, Pool: host.Pool, Roles: host.Roles,
-			ContainerNetwork: networked, Capacity: enrollment.Capacity{CPUMillis: 2000, MemoryMiB: 2048}}
+			ContainerNetwork: networked, DirectoryRuntime: id != "host-e", Capacity: enrollment.Capacity{CPUMillis: 2000, MemoryMiB: 2048}}
 		registration, _ := json.Marshal(host)
 		report, _ := json.Marshal(live)
 		if _, err := client.Txn(ctx).Then(clientv3.OpPut(r.hostKey("registered", id), string(registration)),
@@ -217,6 +230,7 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	seedHost("host-b", "approved", false)
 	seedHost("host-c", "outside", true)
 	seedHost("host-d", "approved", true)
+	seedHost("host-e", "approved", true)
 	if err := r.SetHostDraining(ctx, "host-d", true); err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +262,25 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	if left.HostID != "host-a" || right.HostID != "host-b" || left.PrivateIPv4 == right.PrivateIPv4 ||
 		!left.PrivateIPv4.Is4() || !right.PrivateIPv4.Is4() || left.Generation == right.Generation {
 		t.Fatalf("invalid distinct placements %+v", latest.Controllers)
+	}
+	password, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation)
+	if err != nil || !bytes.HasPrefix(password, []byte("Ocn9-")) || bytes.Equal(password, latest.Bootstrap) {
+		t.Fatal("the assigned host could not recover the sealed bootstrap credential")
+	}
+	defer clear(password)
+	retry, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation)
+	if err != nil || !bytes.Equal(retry, password) {
+		t.Fatal("a retry changed the directory bootstrap credential")
+	}
+	clear(retry)
+	for _, request := range []struct{ host, certificate, generation string }{
+		{left.HostID, "other-certificate", left.Generation},
+		{left.HostID, left.HostID, right.Generation},
+		{right.HostID, right.HostID, right.Generation},
+	} {
+		if secret, err := r.HostDirectoryBootstrap(ctx, request.host, []byte(request.certificate), tenant.TenantID, request.generation); secret != nil || !errors.Is(err, enrollment.ErrHostDenied) {
+			t.Fatal("an unauthorized host or generation could read a bootstrap credential")
+		}
 	}
 	if used, err := r.counter(ctx, r.armPrefix(scope)+"placement-usage"); err != nil || used.used != pairCapacity {
 		t.Fatalf("tenant capacity was not charged exactly once: %+v %v", used.used, err)
@@ -329,5 +362,11 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 			t.Fatal("the background controller did not place the pending directory")
 		case <-timer.C:
 		}
+	}
+	if err := r.RevokeHost(ctx, left.HostID); err != nil {
+		t.Fatal(err)
+	}
+	if secret, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation); secret != nil || !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatal("a revoked primary could recover the bootstrap credential")
 	}
 }

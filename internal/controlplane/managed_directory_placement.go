@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,11 @@ const directoryControllerCount = 2
 type directoryPlacement struct {
 	DirectoryID string                                `json:"directoryId"`
 	Controllers [directoryControllerCount]Reservation `json:"controllers"`
+	Bootstrap   []byte                                `json:"encryptedBootstrap"`
+}
+
+func (placement directoryPlacement) bootstrapLabel(key string) []byte {
+	return []byte(key + "/" + placement.DirectoryID)
 }
 
 func (r *Region) managedDirectoryPlacementKey(tenant string) string {
@@ -149,14 +155,14 @@ func (r *Region) reserveDirectoryControllers(ctx context.Context, tenantID, key 
 		return err
 	}
 	perController := r.directoryCapacity
-	if !validCapacity(perController) {
-		return errors.New("managed directory controller capacity must be positive")
+	if !validCapacity(perController) || r.workloads == nil {
+		return errors.New("managed directory needs controller capacity and a regional workload key")
 	}
 	if !fits(policy.Quota, usage.used, perController) || !fits(policy.Quota, addCapacity(usage.used, perController), perController) {
 		return ErrQuotaExceeded
 	}
 	request := PlacementRequest{Cell: r.cell, Role: "compute", Resources: perController,
-		SubnetID: directory.Spec.SubnetID, NeedsContainerNetwork: true, SpreadSet: "directory-" + directory.ID}
+		SubnetID: directory.Spec.SubnetID, NeedsContainerNetwork: true, NeedsDirectoryRuntime: true, SpreadSet: "directory-" + directory.ID}
 	hosts, err := r.chooseHosts(ctx, scope, request, policy.Pools, directoryControllerCount)
 	if err != nil {
 		return err
@@ -166,6 +172,7 @@ func (r *Region) reserveDirectoryControllers(ctx context.Context, tenantID, key 
 		return err
 	}
 	placement := directoryPlacement{DirectoryID: directory.ID}
+	placement.Bootstrap = r.workloads.sealer.Seal(nil, nil, []byte("Ocn9-"+rand.Text()), placement.bootstrapLabel(key))
 	controllerIPs := [directoryControllerCount]netip.Addr{addresses[0].address, addresses[1].address}
 	guards = append(guards, usage.compare(), clientv3.Compare(clientv3.ModRevision(policyKey), "=", revision),
 		clientv3.Compare(clientv3.Version(key), "=", 0))

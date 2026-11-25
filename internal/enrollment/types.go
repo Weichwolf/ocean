@@ -79,6 +79,7 @@ type Availability struct {
 	Roles            []string `json:"roles"`
 	Capacity         Capacity `json:"capacity"`
 	ContainerNetwork bool     `json:"containerNetwork,omitempty"`
+	DirectoryRuntime bool     `json:"directoryRuntime,omitempty"`
 }
 
 type Assignment struct {
@@ -120,6 +121,7 @@ type Report struct {
 	RootlessPodman   bool   `json:"rootlessPodman"`
 	KVM              bool   `json:"kvm"`
 	ContainerNetwork bool   `json:"containerNetwork,omitempty"`
+	DirectoryRuntime bool   `json:"directoryRuntime,omitempty"`
 }
 
 func (a Approval) Qualifies(r Report) bool {

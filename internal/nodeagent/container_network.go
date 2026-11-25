@@ -106,6 +106,16 @@ func RunContainerNetwork(ctx context.Context, settingsPath, agentPath string, lo
 		round, cancel := context.WithTimeout(ctx, 4*time.Second)
 		tasks, err := client.containerTasks(round, true)
 		if err == nil {
+			directories, directoryErr := client.directoryTasks(round)
+			if directoryErr != nil && ctx.Err() == nil {
+				logger.Warn("directory network assignments will retry", "error", directoryErr)
+			}
+			for _, directory := range directories {
+				if !directory.NetworkUnavailable && directory.Network != nil {
+					tasks = append(tasks, workload.Task{AssignmentID: directoryTaskID(directory), State: workload.Running,
+						Address: directory.PrivateIPv4, Policy: directory.Network})
+				}
+			}
 			err = cfg.syncContainerNetwork(round, tasks, installed, account.Uid, asWorker)
 		}
 		if err == nil {

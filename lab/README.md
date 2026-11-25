@@ -248,9 +248,28 @@ including after an interrupted response. A different configuration for the
 same tenant returns HTTP 409. Ocean holds the target subnet while the
 directory exists. It reserves CPU, memory, and private IPv4 addresses for
 both controllers in one transaction, using distinct live compute hosts in
-permitted pools. An incomplete placement leaves the request in
-`Creating` for a later attempt. Samba startup and health reporting are
-pending in this development profile.
+permitted pools. A directory-capable host advertises its locally installed
+controller image, private network reconciler, and sufficient rootless UID
+and GID mappings. An incomplete
+placement stays in `Creating` for a later attempt.
+
+Build the controller image and install the same image on the selected hosts.
+Set `enrollment.directoryImage` in each node agent config to its local
+`sha256:<image-id>`. The primary receives its bootstrap credential over host
+mTLS. The region seals that credential in etcd with the workload key. The
+agent passes it to Podman through stdin and mounts it read-only with mode
+0400. The primary uses its generation-specific persistent volume on restart.
+
+```sh
+podman build -t localhost/ocean-directory:lab packaging/samba
+image_id=$(podman image inspect --format '{{.Id}}' localhost/ocean-directory:lab)
+bash lab/verify_samba_controller.sh "sha256:${image_id#sha256:}"
+```
+
+The local probe provisions the primary, reads SYSVOL through a separate
+Kerberos client, checks write denial, and reopens the volume without a
+bootstrap credential. The regional directory remains in `Creating` while
+replica startup and verified directory health are pending.
 
 ## Tenant directory users
 
