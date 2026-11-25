@@ -34,7 +34,10 @@ def prepare(state, image, etcd, keycloak, cli, package):
     deploy_database(state)
     deploy_identity(state, keycloak, heap_mib=384)
     prepare_client(state, cli)
+    enroll_base(state, package)
 
+
+def enroll_base(state, package):
     tokens = {}
     for index, node in enumerate(NODES):
         gateway = index < 2
@@ -44,7 +47,8 @@ def prepare(state, image, etcd, keycloak, cli, package):
     publish(state, public_ips=["198.51.100.20", "198.51.100.21"])
 
     def enroll(node):
-        ssh(state, node, INSTALL, package.read_bytes())
+        if ssh(state, node, "dpkg-query -W -f='${db:Status-Status}' ocean-agent 2>/dev/null || true").strip() != b"installed":
+            ssh(state, node, INSTALL, package.read_bytes(), timeout=600)
         config = {"listenAddress": "127.0.0.1:8081", "enrollment": {
             "origin": f"https://{ARM}", "hostId": node, "managementInterface": "mgmt0",
             "caFile": f"{DEST}/pki/ingress-ca.pem", "tokenFile": f"{CONFIG}/enrollment.secret",

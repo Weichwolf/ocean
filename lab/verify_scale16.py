@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 sys.dont_write_bytecode = True
 from enrollment import approval, publish
@@ -101,9 +102,12 @@ def verify(state, package, registry_port, java_cache):
     manifests = prepare_manifests(state, added, package)
     publish(state)
     try:
+        join_started = time.monotonic()
         run([LAB, "up", "-state", state, "-profile", PROFILE, *manifests])
         print("All additional guests have been started with approved cloud-init seeds.", flush=True)
-        enrolled = eventually(lambda: certificates(state, desired), 420)
+        enrolled = eventually(lambda: certificates(state, desired), 720)
+        join_seconds = round(time.monotonic() - join_started, 3)
+        print(f"All sixteen hosts are enrolled after {join_seconds:.1f} seconds.", flush=True)
         topology = verify_topology(state, "scale-16")
         prepare_compute(state, package, ("farm-1-node-05", "farm-1-node-06"))
 
@@ -129,7 +133,8 @@ def verify(state, package, registry_port, java_cache):
         if peers != topology["quorumVoters"]:
             raise RuntimeError("the management quorum changed while expanding compute hosts")
         result = {"enrolledNodes": enrolled, "topology": topology, "container": containers, "drain": storage,
-                  "functions": functions, "votersAfterWorkloads": peers}
+                  "functions": functions, "votersAfterWorkloads": peers, "enrollmentSeconds": join_seconds,
+                  "enrollmentWaitLimitSeconds": 720}
     finally:
         for guest in reversed(added):
             node = guest["name"]

@@ -28,15 +28,15 @@ ETCD_SHA = "5c6365e03d0c81f605458f3f9a115f6daaebca08d1fb42d3ab0f1a38fd30909c"
 ETCD_ROOT = "etcd-v3.6.17-linux-amd64"
 
 
-def run(args, payload=None):
-    result = subprocess.run(args, input=payload, capture_output=True, timeout=180)
+def run(args, payload=None, *, timeout=180):
+    result = subprocess.run(args, input=payload, capture_output=True, timeout=timeout)
     if result.returncode:
         raise RuntimeError(f"{shlex.join(map(str, args))}: {result.stderr.decode(errors='replace').strip()}")
     return result.stdout
 
 
-def ssh(state, guest, command, payload=None):
-    return run([ROOT / "bin/ocean-lab", "ssh", "-state", state, guest, "--", command], payload)
+def ssh(state, guest, command, payload=None, *, timeout=180):
+    return run([ROOT / "bin/ocean-lab", "ssh", "-state", state, guest, "--", command], payload, timeout=timeout)
 
 
 def eventually(check, seconds=30):
