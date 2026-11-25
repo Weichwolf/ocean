@@ -116,6 +116,10 @@ Unix socket `<state>/<profile>/vnc`. The probe script is on the
 `OCEAN_PROBE` optical volume. The launcher records the installation
 media digest in `<state>/<profile>/media.json`.
 
+An optional private `Autounattend.xml` can be attached with `--answer-file`.
+Use a local account name of 20 characters or fewer and set the same name
+for autologon when enabled. [Windows account name limit](https://learn.microsoft.com/en-us/windows/win32/api/lmaccess/nf-lmaccess-netuseradd)
+
 After a fixture has booted from its installed disk, resume a stopped guest
 with `--resume`, the same `--state` and `--profile`, and the original `--iso`.
 The launcher checks the media digest and retains the disk, firmware state,
@@ -128,7 +132,7 @@ before domain join and use the fixture controller as the time source.
 Run the following from the probe volume, selecting `ServerCore` or
 `Windows11` as the profile. Use the disposable lab administrator
 for the join. Reboot each guest before running the machine check. Sign in
-as `OCEANLABemployee` before running the identity check.
+as `OCEANLAB\employee` before running the identity check.
 
 ```powershell
 .\verify_windows_domain_join.ps1 -Profile ServerCore -Action Join -SendToLab

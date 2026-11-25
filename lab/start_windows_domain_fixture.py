@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 PROFILES = {
@@ -16,6 +17,7 @@ PROFILES = {
 }
 FIRMWARE = Path("/usr/share/OVMF")
 HERE = Path(__file__).resolve().parent
+UNATTEND = {"u": "urn:schemas-microsoft-com:unattend"}
 
 
 def run(*args):
@@ -57,8 +59,16 @@ def main():
         parser.error("start the disposable domain-join lab before launching a Windows fixture")
     if not iso.is_file() or iso.suffix.lower() != ".iso":
         parser.error("--iso must identify an operator-supplied installation ISO")
-    if args.answer_file and (args.answer_file.name.lower() != "autounattend.xml" or not args.answer_file.is_file()):
-        parser.error("--answer-file must identify an Autounattend.xml file")
+    if args.answer_file:
+        if args.answer_file.name.lower() != "autounattend.xml" or not args.answer_file.is_file():
+            parser.error("--answer-file must identify an Autounattend.xml file")
+        try:
+            answer = ET.parse(args.answer_file)
+        except (OSError, ET.ParseError):
+            parser.error("--answer-file must be a readable XML document")
+        local_names = answer.findall(".//u:LocalAccounts/u:LocalAccount/u:Name", UNATTEND)
+        if any(len((name.text or "").encode("utf-16-le")) // 2 > 20 for name in local_names):
+            parser.error("--answer-file local account names must fit within 20 Windows characters")
     if any(not path.is_file() for path in args.guest_file):
         parser.error("each --guest-file must identify a regular file")
     if args.resume and (args.answer_file or args.guest_file):
@@ -66,7 +76,7 @@ def main():
 
     use_tpm = args.profile == "windows-11"
     if use_tpm and not shutil.which("swtpm"):
-        parser.error("the Windows 11 Pro profile requires swtpm")
+        parser.error("the Windows 11 profile requires swtpm")
     firmware_code = "OVMF_CODE_4M.secboot.fd" if use_tpm else "OVMF_CODE_4M.fd"
     firmware_vars = "OVMF_VARS_4M.ms.fd" if use_tpm else "OVMF_VARS_4M.fd"
 
