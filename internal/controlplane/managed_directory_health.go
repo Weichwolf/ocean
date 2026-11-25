@@ -23,6 +23,28 @@ func (r *Region) directoryObservationKey(tenant, generation string) string {
 	return r.root + "/managed-directory-health/" + tenant + "/" + generation
 }
 
+func (r *Region) readyDirectoryWriter(ctx context.Context, directory identity.ManagedDirectory, revision int64) (Reservation, []clientv3.Cmp, error) {
+	key := r.managedDirectoryPlacementKey(directory.TenantID)
+	rows, err := r.client.Get(ctx, key, clientv3.WithRev(revision))
+	if err != nil {
+		return Reservation{}, nil, err
+	}
+	var placement directoryPlacement
+	if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &placement) != nil || placement.DirectoryID != directory.ID {
+		return Reservation{}, nil, identity.ErrDirectoryJoinUnavailable
+	}
+	writer := placement.Controllers[0]
+	scope := arm.SubscriptionScope{TenantID: directory.TenantID, SubscriptionID: directory.SubscriptionID}
+	sid, guards, err := r.directoryControllerHealth(ctx, directory, scope, writer, 0, revision)
+	if err != nil {
+		return Reservation{}, nil, err
+	}
+	if sid == "" {
+		return Reservation{}, nil, identity.ErrDirectoryJoinUnavailable
+	}
+	return writer, append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", rows.Kvs[0].ModRevision)), nil
+}
+
 // ReportDirectoryHealth records a probe only for the host's current assignment.
 func (r *Region) ReportDirectoryHealth(ctx context.Context, host string, certificate []byte, tenant, generation string, health enrollment.DirectoryHealth) error {
 	if !health.Valid() {

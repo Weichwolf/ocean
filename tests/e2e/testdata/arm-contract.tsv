@@ -17,6 +17,12 @@ WORKPLACE-05	managed-directory-replace-replica	2.93.0	none	2026-11-01	rest --met
 WORKPLACE-09	directory-join-request	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}?api-version=2026-11-01 --body @{join_authorization_json} -o json
 WORKPLACE-09	directory-join-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}?api-version=2026-11-01 -o json
 WORKPLACE-09	directory-join-close	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}/close?api-version=2026-11-01 -o json
+WORKPLACE-10	workforce-user-create	2.93.0	none	v1.0	ad user create --user-principal-name {workforce_upn} --display-name {display_name} --mail-nickname {alias} --password {password} -o json
+WORKPLACE-10	workforce-user-filter-upn	2.93.0	none	v1.0	ad user list --upn {workforce_upn} -o json
+WORKPLACE-10	workforce-user-filter-name	2.93.0	none	v1.0	ad user list --display-name {display_prefix} -o json
+WORKPLACE-10	workforce-user-show	2.93.0	none	v1.0	ad user show --id {upn_or_object_id} -o json
+WORKPLACE-10	workforce-user-update	2.93.0	none	v1.0	ad user update --id {object_id} --display-name {display_name} --account-enabled false -o none
+WORKPLACE-10	workforce-user-reset-password	2.93.0	none	v1.0	ad user update --id {object_id} --password {password} -o none
 NETWORK-01	vnet-create	2.93.0	none	2025-07-01	network vnet create --resource-group {group} --name {vnet} --location {location} --address-prefixes {vnet_prefix} --subnet-name {subnet} --subnet-prefixes {subnet_prefix} -o json
 NETWORK-01	vnet-show	2.93.0	none	2025-07-01	network vnet show --resource-group {group} --name {vnet} -o json
 NETWORK-01	vnet-list	2.93.0	none	2025-07-01	network vnet list --resource-group {group} -o json

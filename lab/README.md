@@ -515,9 +515,36 @@ OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-07 \
 
 ## Tenant directory users
 
-The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph access token. The CLI workflow uses `az ad user create`, `list`, `show`, `update`, and `delete`. Lists support an exact UPN or a display-name prefix, with server paging. Object lookup accepts a UUID or a UPN. The administrator can change a user's display name, mail alias, login status, and password. The original administrator can update their profile and password and must remain enabled.
+The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph
+access token. Lists support an exact UPN or a display-name prefix, with server
+paging. Object lookup accepts a UUID or a UPN. The administrator can change a
+user's display name, mail alias, login status, and password.
 
-Keycloak stores the directory account and password and enforces login. Ocean declares the Graph display name and alias as managed Keycloak attributes writable by the admin API. Realm-scoped device login uses the bounded offline session policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
+For a tenant with a managed domain, `az ad user create`, `list`, `show` and
+`update` operate on Samba accounts in `OU=Ocean Workforce Users`. Use the
+domain's DNS suffix in the UPN and an account name of up to 20 characters.
+Graph uses the AD object GUID as the ID and derives `mailNickname` from the
+configured mail alias at the AD domain. Built-in accounts, privileged
+system accounts, and delegated join principals are outside the workforce
+scope. Disable a managed account with `az ad user update --account-enabled
+false`. The managed user profile rejects permanent user deletion.
+
+The certified writer receives a sealed, short-lived operation through
+the host's mTLS connection. A successful response requires the native
+directory result. Requests wait for that result and return an error if
+the writer is unavailable. A concurrent request for the same directory can
+receive HTTP 429 and `Retry-After`. The writer's audit records contain
+operation metadata. Existing Keycloak users require a separate migration.
+Run `WORKPLACE-10` with the prerequisites for `WORKPLACE-09` to check the
+managed profile with Azure CLI and fresh Debian Kerberos requests.
+
+For tenants without a managed domain, Keycloak continues to store the
+directory user and enforce sign-in. The `az ad user delete` command is
+available in that profile. The original tenant administrator can update
+their Keycloak profile and password and must remain enabled. Ocean declares
+the Graph display name and alias as managed Keycloak attributes writable by
+its admin API. Realm-scoped device login uses the bounded offline session
+policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users` to exercise the user lifecycle with two freshly onboarded tenants. The check verifies that updates preserve the mail alias, regular users are denied directory administration, and deleted users cannot start a new login. Evidence is written to `evidence/graph-users.json`.
 

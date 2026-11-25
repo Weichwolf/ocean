@@ -22,11 +22,11 @@ const (
 )
 
 type graphUserInput struct {
-	UPN         *string        `json:"userPrincipalName"`
-	DisplayName *string        `json:"displayName"`
-	Alias       *string        `json:"mailNickname"`
-	Enabled     *bool          `json:"accountEnabled"`
-	Password    *graphPassword `json:"passwordProfile"`
+	UPN         *string        `json:"userPrincipalName,omitempty"`
+	DisplayName *string        `json:"displayName,omitempty"`
+	Alias       *string        `json:"mailNickname,omitempty"`
+	Enabled     *bool          `json:"accountEnabled,omitempty"`
+	Password    *graphPassword `json:"passwordProfile,omitempty"`
 }
 
 type graphPassword struct {
@@ -98,6 +98,9 @@ func (c *Compatibility) graphUser(w http.ResponseWriter, req *http.Request) {
 	defer cancel()
 	tenant := c.graphTenant(ctx, w, req)
 	if tenant == nil {
+		return
+	}
+	if c.managedGraphUsers(ctx, w, req, *tenant) {
 		return
 	}
 	k := c.onboarding.admin

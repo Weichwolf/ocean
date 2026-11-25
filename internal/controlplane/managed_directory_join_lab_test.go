@@ -36,6 +36,15 @@ import (
 )
 
 func TestRegionalDirectoryJoin(t *testing.T) {
+	testRegionalDirectory(t, false)
+}
+
+func TestRegionalDirectoryUsers(t *testing.T) {
+	testRegionalDirectory(t, true)
+}
+
+func testRegionalDirectory(t *testing.T, users bool) {
+	t.Helper()
 	endpoint, samba, adcli := os.Getenv("OCEAN_E2E_DIRECTORY_ETCD"), os.Getenv("OCEAN_E2E_SAMBA_IMAGE"), os.Getenv("OCEAN_E2E_ADCLI_IMAGE")
 	if endpoint == "" || samba == "" || adcli == "" {
 		t.Skip("requires disposable etcd and the Samba and adcli fixture images")
@@ -139,7 +148,7 @@ func TestRegionalDirectoryJoin(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	issuer, sign := directoryJoinIssuer(t, tenant.TenantID)
+	issuer, sign, enableLogin := directoryJoinIssuer(t, tenant.TenantID)
 	ready := make(chan struct{})
 	var handler http.Handler
 	api := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -151,9 +160,14 @@ func TestRegionalDirectoryJoin(t *testing.T) {
 	api.TLS = &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: roots}
 	api.StartTLS()
 	defer api.Close()
-	compat, err := (identity.Config{Authority: "https://id.ocean.test", Provider: issuer.URL,
+	graph := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		<-ready
+		handler.ServeHTTP(w, req)
+	}))
+	defer graph.Close()
+	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
 		ProviderCAFile: file("provider.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),
-		Cloud:          &identity.CloudEndpoints{ResourceManager: api.URL, MicrosoftGraph: "https://graph.ocean.test"}}).OpenCompatibility()
+		Cloud:          &identity.CloudEndpoints{ResourceManager: api.URL, MicrosoftGraph: graph.URL}}).OpenCompatibility()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,6 +245,20 @@ func TestRegionalDirectoryJoin(t *testing.T) {
 		return &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	}
 	writer, peer := mtls(writerCert), mtls(replicaCert)
+	if users {
+		loginClient, loginSecret := operationID(), rand.Text()
+		enableLogin(api.URL, graph.URL, loginClient, loginSecret, tenant.Administrator)
+		fixture := regionalUserFixture{ctx: ctx, root: root, private: dir, api: api, graph: graph,
+			issuer: issuer, tenant: tenant, app: loginClient, secret: loginSecret, member: member,
+			clientImage: adcli, network: network, address: address,
+			work: func(ctx context.Context) error {
+				return nodeagent.RunDirectoryUserFixture(ctx, api.URL, primary.HostID, writer, container, assignments[0])
+			},
+			observe: observe, sign: sign,
+		}
+		fixture.verify(t)
+		return
+	}
 	taskURL := func(controller Reservation) string {
 		return api.URL + "/ocean/hosts/" + controller.HostID + "/directories/" + tenant.TenantID + "/" + controller.Generation + "/join-task"
 	}
@@ -396,25 +424,17 @@ func directoryJoinClientCertificates(t *testing.T) (*x509.Certificate, ed25519.P
 	return ca, private, leaf(2), leaf(3)
 }
 
-func directoryJoinIssuer(t *testing.T, tenant string) (*httptest.Server, func(string, string) string) {
+func directoryJoinIssuer(t *testing.T, tenant string) (*httptest.Server, func(string, string) string, func(string, string, string, string, string)) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	encode := base64.RawURLEncoding.EncodeToString
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/realms/"+tenant+"/protocol/openid-connect/certs" {
-			http.NotFound(w, req)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string][]map[string]string{
-			"keys": {{"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "fixture", "n": encode(key.N.Bytes()), "e": "AQAB"}},
-		})
-	}))
-	t.Cleanup(server.Close)
-	return server, func(audience, subject string) string {
+	var server *httptest.Server
+	login := make(chan struct{})
+	var arm, graph, app, secret, actor string
+	sign := func(audience, subject string) string {
 		t.Helper()
 		claims, _ := json.Marshal(map[string]any{"iss": server.URL + "/realms/" + tenant, "sub": subject,
 			"aud": audience, "typ": "Bearer", "exp": time.Now().Add(2 * time.Minute).Unix()})
@@ -425,5 +445,49 @@ func directoryJoinIssuer(t *testing.T, tenant string) (*httptest.Server, func(st
 			t.Fatal(err)
 		}
 		return unsigned + "." + encode(signature)
+	}
+	server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.URL.Path == "/realms/"+tenant+"/protocol/openid-connect/certs" {
+			_ = json.NewEncoder(w).Encode(map[string][]map[string]string{
+				"keys": {{"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "fixture", "n": encode(key.N.Bytes()), "e": "AQAB"}},
+			})
+			return
+		}
+		select {
+		case <-login:
+		default:
+			http.NotFound(w, req)
+			return
+		}
+		switch req.URL.Path {
+		case "/" + tenant + "/v2.0/.well-known/openid-configuration":
+			realm := server.URL + "/" + tenant
+			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": realm + "/v2.0",
+				"authorization_endpoint": realm + "/oauth2/v2.0/authorize", "token_endpoint": realm + "/oauth2/v2.0/token"})
+		case "/" + tenant + "/oauth2/v2.0/token":
+			if req.ParseForm() != nil || req.Form.Get("grant_type") != "client_credentials" || req.Form.Get("client_id") != app ||
+				req.Form.Get("client_secret") != secret {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client"})
+				return
+			}
+			scope := req.Form.Get("scope")
+			audience := strings.TrimRight(strings.TrimSuffix(scope, "/.default"), "/")
+			if audience != arm && audience != graph {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_scope"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"token_type": "Bearer", "expires_in": 110, "access_token": sign(audience, actor)})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server, sign, func(armOrigin, graphOrigin, client, credential, subject string) {
+		arm, graph, app, secret, actor = armOrigin, graphOrigin, client, credential, subject
+		close(login)
 	}
 }

@@ -23,6 +23,7 @@ import ldb
 
 import domain_backup
 import domain_join
+import directory_users
 import sysvol as policy
 
 STATE = Path("/var/lib/ocean-ad")
@@ -759,6 +760,15 @@ if __name__ == "__main__":
             restore_domain(settings, sys.argv[2])
         elif len(sys.argv) == 2 and sys.argv[1] in ("stage-join", "close-join"):
             authorize_join(settings, stage=sys.argv[1] == "stage-join")
+        elif len(sys.argv) == 2 and sys.argv[1] == "graph-users":
+            if settings.get("controller") == 2:
+                raise DirectoryIdentityError("Graph user tasks require the directory writer")
+            config = read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf"
+            database = domain_join.open_directory(config)
+            expected = os.environ.get("OCEAN_AD_EXPECTED_SID", "")
+            if expected and database.get_domain_sid() != expected:
+                raise DirectoryIdentityError("the local directory SID differs from the established SID")
+            print(json.dumps(directory_users.directory_users(database, settings["domain"], sys.stdin.buffer)))
         elif len(sys.argv) == 1:
             signal.signal(signal.SIGTERM, stop_before_service)
             signal.signal(signal.SIGINT, stop_before_service)

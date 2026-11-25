@@ -115,22 +115,9 @@ func (r *Region) queueDirectoryJoin(ctx context.Context, tenant identity.TenantR
 			input.Machine, input.ExpiresAt = prior.Machine, prior.ExpiresAt
 		}
 		scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
-		placementKey := r.managedDirectoryPlacementKey(tenant.TenantID)
-		rows, err := r.client.Get(ctx, placementKey, clientv3.WithRev(revision))
+		writer, writerGuards, err := r.readyDirectoryWriter(ctx, *directory, revision)
 		if err != nil {
 			return nil, err
-		}
-		var placement directoryPlacement
-		if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &placement) != nil || placement.DirectoryID != directory.ID {
-			return nil, identity.ErrDirectoryJoinUnavailable
-		}
-		writer := placement.Controllers[0]
-		sid, writerGuards, err := r.directoryControllerHealth(ctx, *directory, scope, writer, 0, revision)
-		if err != nil {
-			return nil, err
-		}
-		if sid == "" {
-			return nil, identity.ErrDirectoryJoinUnavailable
 		}
 		queue := r.directoryJoinKey(*directory, "pending")
 		active, err := r.client.Get(ctx, queue, clientv3.WithRev(revision), clientv3.WithCountOnly())
@@ -156,8 +143,7 @@ func (r *Region) queueDirectoryJoin(ctx context.Context, tenant identity.TenantR
 			view.State = identity.DirectoryJoinClosing
 		}
 		guards = append(guards, writerGuards...)
-		guards = append(guards, clientv3.Compare(clientv3.ModRevision(placementKey), "=", rows.Kvs[0].ModRevision),
-			clientv3.Compare(clientv3.ModRevision(key), "=", mod), clientv3.Compare(clientv3.Version(queue), "=", 0))
+		guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", mod), clientv3.Compare(clientv3.Version(queue), "=", 0))
 		committed, err := r.client.Txn(ctx).If(guards...).Then(putJSON(key, view), clientv3.OpPut(queue, string(sealed), clientv3.WithLease(lease.ID)),
 			r.auditOp(scope, arm.AuditEvent{Time: now, Actor: tenant.Administrator,
 				Action: directoryJoinAudit + command, Target: input.ID, Outcome: view.State})).Commit()

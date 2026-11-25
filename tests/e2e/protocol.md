@@ -70,6 +70,12 @@ the regional ARM and enrollment handlers to a real etcd store. The certified
 node agent runs the staged job on a single Samba lab controller and Debian
 compares the actual join result with the CLI's authorization states.
 
+Select `WORKPLACE-10` with the same prerequisites to test the managed Graph
+user profile. Azure CLI authenticates against the isolated OAuth issuer and
+uses the Graph endpoint. The mTLS worker applies user operations to the Samba
+workforce OU. The Debian fixture requests a fresh Kerberos ticket before and
+after the user is disabled.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures
