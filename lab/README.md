@@ -177,6 +177,16 @@ socket is a local QMP socket in a private directory. The runtime starts QEMU
 with niceness 10 and carries an exclusive local writer lock in that process.
 [QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html)
 
+The reference guest was installed from Microsoft Windows Server 2025
+evaluation media with SHA-256
+`7b052573ba7894c9924e3e87ba732ccd354d18cb75a883efa9b900ea125bfd51`.
+The native guest probe reported Server Standard Evaluation, Server Core,
+build `26100.32230`, Microsoft Standard SATA AHCI driver `10.0.26100.7309`
+and Microsoft Intel 82574L Ethernet driver `12.19.1.32`. The Debian lab used
+QEMU package `1:10.0.13+ds-0+deb13u1` and OVMF `2025.02-8+deb13u1`.
+Record the raw image and firmware-variable digests for each prepared fixture
+because its Windows configuration changes both files.
+
 Use a powered-off Server 2025 Core fixture installed from operator-supplied
 media. Supply its disk and OVMF variables as `WINDOWS_PREPARED_QCOW2` and
 `WINDOWS_PREPARED_VARS`. This example uses a fixture with static IPv4 address
