@@ -594,6 +594,58 @@ recovery on one lab host. `WORKPLACE-05` exercises the CLI contract and
 evidence and disposable etcd. The Windows and independent-host recovery
 gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
+### Regional recovery with existing Windows members
+
+`WORKPLACE-14` combines the regional ARM and enrollment handlers, etcd, two
+real Debian node agents, and the existing Windows Server Core and Windows 11
+members. Use a disposable `domain-join` lab with only
+`farm-1-node-01` and `farm-1-node-02` selected and running. Keep both original
+member disks and the independent backup in private storage. Use writable
+overlays and the original firmware and TPM state when reusing the members.
+Their original `10.232.1.20` and `10.232.1.21` addresses must reach the lab's
+isolated workload network.
+
+Install Podman and its rootless UID mapping tools on the Debian fixtures,
+load the same pinned Samba image under the `ocean` account on each, and run
+`make build` locally. Before the Windows guests boot, attach
+`lab/verify_windows_directory_recovery.ps1` on their `OCEAN_PROBE` media.
+For resumed overlays, build the probe ISO while the guests are off.
+
+Decrypt the backup into a private file. Put `metadata.json` beside it with
+the original `identity` object from the bundle manifest, the plaintext
+`archiveSha256`, and `policySha256` for
+`ad.ocean.test/Policies/{31B2F340-016D-11D2-945F-00C04FB984F9}/GPT.INI`
+from the archived SYSVOL. The test submits a signed fixture fence for the
+archived source slots and uses the guest workload NICs for the two restored
+controller addresses. The node agents enroll over the lab-only QEMU host
+gateway and use their certificates for assignments and startup authorization.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-14 \
+  OCEAN_E2E_WINDOWS_RECOVERY_STATE="$OCEAN_RECOVERY_LAB" \
+  OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE="$PRIVATE_BACKUP_TAR" \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_URL" \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+During the run, read `recovery-phase.json` from the lab state. Sign into
+both existing members as the restored fixture administrator and run the
+probe in an elevated Windows PowerShell session. The fixture writes its
+temporary administrator password to the private
+`recovery-fixture-admin.secret` in the lab state. Pass the recovery ID,
+stage, controller, and address from the phase file. Run `-Action Machine`
+in both stages. After the survivor stage's machine check, sign out and sign
+in as the original fixture employee and run `-Action Employee` on both
+guests. The test changes the phase after it observes both initial machine
+records, powers off the recovered writer VM, and sees `Degraded` through
+the regional API. Its runner collects only the records for that recovery
+ID and saves the report in the acceptance evidence.
+
+This lab exercises the Windows data path and real regional recovery on
+one KVM host. Production fencing and independent physical failure domains
+have separate acceptance gates.
+
 ## Tenant directory users
 
 The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph

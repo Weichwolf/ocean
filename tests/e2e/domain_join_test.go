@@ -88,5 +88,26 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery)
+	windowsState := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_STATE")
+	windowsArchive := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE")
+	windowsRecovery := harness.Step{Name: "regional-windows-directory-recovery", Cases: []string{"WORKPLACE-14"}, Timeout: 13 * time.Minute,
+		Command:       []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-count=1", "-v", "-run", "^TestRegionalWindowsDirectoryRecovery$", "./internal/controlplane"},
+		BlockedReason: fencing.BlockedReason,
+		Evidence: []harness.EvidenceSource{{Name: "regional-windows-recovery.json",
+			Path: filepath.Join(windowsState, "evidence", "regional-windows-recovery.json")}}}
+	if windowsRecovery.BlockedReason == "" {
+		switch {
+		case options.sambaImage == "":
+			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_SAMBA_IMAGE with a controller image ID loaded on both guests."
+		case windowsState == "":
+			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_WINDOWS_RECOVERY_STATE with the prepared isolated KVM topology."
+		case windowsArchive == "":
+			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE with the private independent backup."
+		}
+	}
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join(windowsState, "state.json"), "the isolated recovery lab state")
+	windowsRecovery = requireFile(windowsRecovery, windowsArchive, "the independent backup")
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join(filepath.Dir(windowsArchive), "metadata.json"), "the independent backup manifest")
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join("bin", "ocean-agent"), "the locally built Ocean node agent")
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery)
 }

@@ -96,6 +96,15 @@ original policy and ACL. `WORKPLACE-05` covers the stock CLI recovery calls
 and `WORKPLACE-06` verifies regional two-host placement, fencing and recovery
 state against disposable etcd with signed fixture evidence.
 
+Select `WORKPLACE-14` for the regional Windows recovery test. Azure CLI
+submits a signed fixture fence to the real ARM handler. Two Debian KVM guests
+enroll with the regional authority and their regular node agents complete the
+restore from the independent archive over their authenticated assignments.
+The probe powers off the recovered writer after both existing Windows guests
+report machine trust and policy access. It requires fresh client records
+from the surviving controller before recording success. The preparation and
+interactive Windows steps are in the [lab guide](../../lab/README.md).
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures
