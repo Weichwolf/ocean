@@ -30,7 +30,7 @@ func ReadCatalog(path string) ([]Case, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	rows := csv.NewReader(file)
 	rows.Comma = '\t'
 	rows.FieldsPerRecord = 9
@@ -85,7 +85,7 @@ func ReadContract(path string, cases []Case) ([]CommandContract, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	rows := csv.NewReader(file)
 	rows.Comma = '\t'
 	rows.FieldsPerRecord = 6

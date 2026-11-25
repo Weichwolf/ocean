@@ -99,7 +99,7 @@ func RunContainerNetwork(ctx context.Context, settingsPath, agentPath string, lo
 		}
 	}
 	availablePath := filepath.Join(workloadRuntimeDirectory, ".available")
-	defer os.Remove(availablePath)
+	defer func() { _ = os.Remove(availablePath) }()
 	ticker := time.NewTicker(650 * time.Millisecond)
 	defer ticker.Stop()
 	for ctx.Err() == nil {

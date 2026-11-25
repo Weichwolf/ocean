@@ -48,7 +48,11 @@ func (c *Compatibility) verifyAccessToken(ctx context.Context, raw, issuer, audi
 			issuer+"/protocol/openid-connect/certs")
 		keys, _ = c.signingKeys.LoadOrStore(issuer, keyset)
 	}
-	verifier := oidc.NewVerifier(issuer, keys.(*oidc.RemoteKeySet), &oidc.Config{
+	keyset, ok := keys.(*oidc.RemoteKeySet)
+	if !ok || keyset == nil {
+		return nil, errors.New("invalid cached signing key set")
+	}
+	verifier := oidc.NewVerifier(issuer, keyset, &oidc.Config{
 		ClientID: audience, SupportedSigningAlgs: []string{oidc.RS256},
 	})
 	token, err := verifier.Verify(ctx, raw)
@@ -242,7 +246,7 @@ func (c *Compatibility) providerJSON(ctx context.Context, method, endpoint strin
 	if err != nil {
 		return nil, 0, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxOIDCBody+1))
 	if err != nil {
 		return nil, response.StatusCode, err

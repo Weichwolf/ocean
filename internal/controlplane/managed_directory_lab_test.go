@@ -34,7 +34,7 @@ func TestManagedDirectoryReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	region := &Region{client: client, name: "farm-1", root: "/ocean/tests/directory/" + operationID()}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()

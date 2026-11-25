@@ -9,10 +9,8 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -75,7 +73,7 @@ func TestPackagedDirectoryProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer etcd.Close()
+	defer func() { _ = etcd.Close() }()
 	runID := operationID()
 	r := &Region{client: etcd, name: "farm-1", cell: "cell-1", root: "/ocean/tests/packaged-directory/" + runID,
 		directoryCapacity: enrollment.Capacity{CPUMillis: 600, MemoryMiB: 704}}
@@ -119,7 +117,7 @@ func TestPackagedDirectoryProvisioning(t *testing.T) {
 	defer api.Close()
 	defer graph.Close()
 	origin, graphOrigin := "https://"+api.Listener.Addr().String(), "https://"+graph.Listener.Addr().String()
-	guestOrigin := "https://" + net.JoinHostPort("10.0.2.2", fmt.Sprint(api.Listener.Addr().(*net.TCPAddr).Port))
+	guestOrigin := directoryGuestOrigin(t, api)
 	api.TLS = directoryLabServerTLS(t, ca, caPrivate)
 	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
 		ProviderCAFile: file("issuer.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),

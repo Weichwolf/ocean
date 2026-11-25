@@ -42,7 +42,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	operation := args[0]
 	flags := flag.NewFlagSet(operation, flag.ContinueOnError)
-	flags.Usage = func() { fmt.Fprintln(flags.Output(), usage) }
+	flags.Usage = func() { _, _ = fmt.Fprintln(flags.Output(), usage) }
 	var profilePath, statePath, image string
 	var enrollmentFiles, selected []string
 	var reserve uint

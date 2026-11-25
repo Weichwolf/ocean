@@ -21,7 +21,7 @@ func ParseTraces(r *http.Request, now time.Time) ([]Sample, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer compressed.Close()
+		defer func() { _ = compressed.Close() }()
 		input = compressed
 	} else if r.Header.Get("Content-Encoding") != "" {
 		return nil, errors.New("unsupported trace compression")

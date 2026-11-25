@@ -112,8 +112,11 @@ func TestFixedEgressFailover(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			_ = command.Process.Signal(os.Interrupt)
-			finished := make(chan error, 1)
-			go func() { finished <- command.Wait() }()
+			finished := make(chan struct{})
+			go func() {
+				_ = command.Wait() // The test stops the observer by signal.
+				close(finished)
+			}()
 			select {
 			case <-finished:
 			case <-time.After(3 * time.Second):

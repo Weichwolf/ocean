@@ -21,7 +21,11 @@ type Config struct {
 
 // OpenCompatibility configures the control plane's OAuth compatibility routes.
 func (cfg Config) OpenCompatibility() (*Compatibility, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || defaultTransport == nil {
+		return nil, errors.New("identity provider requires a default HTTP transport with TLS configuration support")
+	}
+	transport := defaultTransport.Clone()
 	transport.Proxy = nil
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	if cfg.ProviderCAFile != "" {

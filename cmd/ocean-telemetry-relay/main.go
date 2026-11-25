@@ -48,7 +48,7 @@ func main() {
 			http.Error(w, "collector unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		w.Header().Set("Content-Type", response.Header.Get("Content-Type"))
 		w.WriteHeader(response.StatusCode)
 		_, _ = io.Copy(w, io.LimitReader(response.Body, 4096))

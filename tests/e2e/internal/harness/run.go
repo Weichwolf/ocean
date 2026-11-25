@@ -154,7 +154,7 @@ func copyEvidence(source, destination string, started time.Time) error {
 	if err != nil {
 		return err
 	}
-	defer read.Close()
+	defer func() { _ = read.Close() }()
 	info, err := read.Stat()
 	if err != nil {
 		return err

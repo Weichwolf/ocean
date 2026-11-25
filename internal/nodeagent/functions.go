@@ -76,10 +76,9 @@ func (j *joinClient) ensureFunctionSidecar(ctx context.Context, name string, tas
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	if _, err := fmt.Fprintf(file, "AZURITE_ACCOUNTS=%s:%s\nNODE_OPTIONS=--max-old-space-size=40\n", task.Function.Account, task.Function.StorageKey); err != nil {
-		file.Close()
-		return errors.New("cannot configure the Function host storage service")
+		return errors.Join(errors.New("cannot configure the Function host storage service"), file.Close())
 	}
 	if err := file.Close(); err != nil {
 		return err

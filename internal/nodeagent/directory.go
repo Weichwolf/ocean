@@ -117,7 +117,7 @@ func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assign
 	if err != nil {
 		return bootstrap, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return bootstrap, fmt.Errorf("directory bootstrap returned HTTP %d", response.StatusCode)
 	}
@@ -168,7 +168,7 @@ func (j *joinClient) confirmDirectoryStartup(ctx context.Context, name string, a
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("directory startup authorization returned HTTP %d", response.StatusCode)
 	}
@@ -187,7 +187,7 @@ func (j *joinClient) reportDirectoryHealth(ctx context.Context, assignment enrol
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("directory health report returned HTTP %d", response.StatusCode)
 	}
@@ -215,7 +215,7 @@ func (j *joinClient) acknowledgeDirectoryRetirement(ctx context.Context, name st
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("directory retirement acknowledgement returned HTTP %d", response.StatusCode)
 	}

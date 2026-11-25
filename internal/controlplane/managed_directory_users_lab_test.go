@@ -139,7 +139,7 @@ func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
 			t.Fatal(err)
 		}
 		_, _ = io.Copy(io.Discard, response.Body)
-		response.Body.Close()
+		_ = response.Body.Close()
 		if response.StatusCode != check.status {
 			t.Fatalf("Graph returned an unexpected authorization status %d", response.StatusCode)
 		}

@@ -117,7 +117,7 @@ func (f regionalGraphFixture) verifyGroups(t *testing.T, cli func(bool, ...strin
 		t.Fatal(err)
 	}
 	_, _ = io.Copy(io.Discard, reply.Body)
-	reply.Body.Close()
+	_ = reply.Body.Close()
 	if reply.StatusCode != http.StatusBadRequest {
 		t.Fatal("Graph accepted a member reference from an unrecognized origin")
 	}

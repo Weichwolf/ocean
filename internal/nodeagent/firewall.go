@@ -188,12 +188,13 @@ func loadEndpointRegistry(path string) (endpointRegistry, error) {
 	if err != nil {
 		return registry, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return registry, err
 	}
-	if !info.Mode().IsRegular() || info.Sys().(*syscall.Stat_t).Uid != 0 || info.Mode().Perm()&0022 != 0 || info.Size() > maximumSize {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || !info.Mode().IsRegular() || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 || info.Size() > maximumSize {
 		return registry, errors.New("endpoint registry must be a small root-owned file with no group or other write access")
 	}
 	content := &io.LimitedReader{R: file, N: maximumSize + 1}
@@ -266,7 +267,7 @@ func (j *joinClient) networkAssignmentPage(ctx context.Context, cursor string) (
 	if err != nil {
 		return page, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return page, fmt.Errorf("network assignments returned HTTP %d", response.StatusCode)
 	}

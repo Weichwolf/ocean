@@ -98,7 +98,7 @@ func TestEncryptedRBDDataPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		if err := backend.Export(ctx, id, "checkpoint", file); err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestEncryptedRBDDataPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		if err := backend.Import(ctx, id, file); err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestEncryptedRBDDataPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		restored := "restored-" + id
 		if err := backend.Import(ctx, restored, file); err != nil {
 			t.Fatal(err)

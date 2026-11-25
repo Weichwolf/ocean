@@ -54,7 +54,7 @@ func (lab *Lab) stopSwitch(name string) error {
 	if err != nil || connection == nil {
 		return err
 	}
-	if err := connection.SetWriteDeadline(time.Now().Add(time.Second)); err == nil {
+	if err = connection.SetWriteDeadline(time.Now().Add(time.Second)); err == nil {
 		_, err = connection.Write([]byte("shutdown\n"))
 	}
 	closeErr := connection.Close()
@@ -67,7 +67,7 @@ func (lab *Lab) stopSwitch(name string) error {
 		if err != nil || connection == nil {
 			return err
 		}
-		connection.Close()
+		_ = connection.Close()
 		time.Sleep(25 * time.Millisecond)
 	}
 	return fmt.Errorf("switch %s did not stop", name)

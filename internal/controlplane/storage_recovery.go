@@ -36,7 +36,7 @@ func RecoverVolumeKey(ctx context.Context, configuration, tenant, subscription, 
 	if err != nil {
 		return err
 	}
-	defer region.client.Close()
+	defer func() { _ = region.client.Close() }()
 	lookup, err := region.client.Get(ctx, region.shareKey(scope, address))
 	if err != nil {
 		return err
@@ -56,18 +56,13 @@ func RecoverVolumeKey(ctx context.Context, configuration, tenant, subscription, 
 		return err
 	}
 	if _, err := file.Write(key); err != nil {
-		file.Close()
-		_ = os.Remove(destination)
-		return err
+		return errors.Join(err, file.Close(), os.Remove(destination))
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
-		_ = os.Remove(destination)
-		return err
+		return errors.Join(err, file.Close(), os.Remove(destination))
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(destination)
-		return err
+		return errors.Join(err, os.Remove(destination))
 	}
 	return nil
 }

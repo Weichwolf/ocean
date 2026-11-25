@@ -64,11 +64,11 @@ func (j *joinClient) containerTasks(ctx context.Context, networkOnly bool) ([]wo
 		}
 		var page workload.Page
 		if response.StatusCode != http.StatusOK {
-			response.Body.Close()
+			_ = response.Body.Close()
 			return nil, fmt.Errorf("workload tasks returned HTTP %d", response.StatusCode)
 		}
 		err = json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&page)
-		response.Body.Close()
+		_ = response.Body.Close()
 		if err != nil || len(page.Tasks) > 16 || page.Next != "" && (page.Next <= cursor || len(page.Tasks) == 0) || len(tasks) > 4096 {
 			return nil, errors.New("invalid workload task page")
 		}
@@ -96,7 +96,7 @@ func (j *joinClient) reportContainer(ctx context.Context, report workload.Report
 	if err != nil {
 		return err
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusConflict {
 		return fmt.Errorf("workload report returned HTTP %d", response.StatusCode)
 	}
@@ -351,21 +351,18 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	for _, variable := range c.EnvironmentVariables {
 		if !variable.Valid() {
-			file.Close()
-			return errors.New("invalid environment variable in workload assignment")
+			return errors.Join(errors.New("invalid environment variable in workload assignment"), file.Close())
 		}
 		if _, err := fmt.Fprintf(file, "%s=%s\n", variable.Name, variable.Text()); err != nil {
-			file.Close()
-			return err
+			return errors.Join(err, file.Close())
 		}
 	}
 	if task.Function != nil && j.config.TelemetryBufferBytes > 0 {
 		if _, err := fmt.Fprintln(file, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces\nOTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json"); err != nil {
-			file.Close()
-			return err
+			return errors.Join(err, file.Close())
 		}
 		memory -= 24
 		cpu -= 40
@@ -418,7 +415,7 @@ func replaceRuntimeFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	_, writeErr := file.Write(data)
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
 		return err

@@ -95,7 +95,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	r := &Region{client: client, name: "farm-1", cell: "cell-1", root: "/ocean/tests/windows-directory/" + operationID(),
 		directoryCapacity: enrollment.Capacity{CPUMillis: 600, MemoryMiB: 704}}
 	defer func() {
@@ -142,7 +142,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	defer graph.Close()
 	origin := "https://" + api.Listener.Addr().String()
 	graphOrigin := "https://" + graph.Listener.Addr().String()
-	guestOrigin := "https://" + net.JoinHostPort("10.0.2.2", fmt.Sprint(api.Listener.Addr().(*net.TCPAddr).Port))
+	guestOrigin := directoryGuestOrigin(t, api)
 	api.TLS = directoryLabServerTLS(t, ca, caPrivate)
 	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
 		ProviderCAFile: file("issuer.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),
@@ -273,7 +273,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	}
 	diagnosticPath := filepath.Join(state, "recovery-fixture-admin.secret")
 	writeWindowsRecoverySecret(t, diagnosticPath, diagnostic)
-	defer os.Remove(diagnosticPath)
+	defer func() { _ = os.Remove(diagnosticPath) }()
 	if graphProbe {
 		app, secret := operationID(), rand.Text()
 		enableLogin(api.URL, graph.URL, app, secret, tenant.Administrator)
@@ -294,6 +294,15 @@ type directoryLabView struct {
 	Controllers  []identity.DirectoryControllerReadiness `json:"controllers"`
 }
 
+func directoryGuestOrigin(t *testing.T, api *httptest.Server) string {
+	t.Helper()
+	_, port, err := net.SplitHostPort(api.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "https://" + net.JoinHostPort("10.0.2.2", port)
+}
+
 func readWindowsRecoveryArchive(t *testing.T, archive string) windowsRecoveryArchive {
 	t.Helper()
 	var metadata windowsRecoveryArchive
@@ -307,7 +316,7 @@ func readWindowsRecoveryArchive(t *testing.T, archive string) windowsRecoveryArc
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		t.Fatal("the recovery archive must be a private regular file")

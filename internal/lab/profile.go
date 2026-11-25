@@ -60,7 +60,7 @@ func LoadPlan(path string) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	settings := profile{Defaults: Resources{MemoryMiB: 1024, VCPUs: 1}}
 	decoder := yaml.NewDecoder(file)
 	decoder.KnownFields(true)

@@ -43,7 +43,7 @@ func DecodeHTTPSCertificate(ctx context.Context, pfx []byte, password string) (H
 	if err != nil {
 		return result, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	_, err = io.WriteString(writer, password+"\n")
 	if err := errors.Join(err, writer.Close()); err != nil {
 		return result, err

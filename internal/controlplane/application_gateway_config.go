@@ -91,13 +91,14 @@ func readSealingKey(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
-	owner := info.Sys().(*syscall.Stat_t).Uid
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || (owner != 0 && owner != uint32(os.Geteuid())) || info.Size() != 32 {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 ||
+		(stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) || info.Size() != 32 {
 		return nil, errors.New("the encryption key must be a private 32-byte file")
 	}
 	key, err := io.ReadAll(io.LimitReader(file, 33))

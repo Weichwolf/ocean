@@ -106,12 +106,13 @@ func readWireGuardKey(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return "", err
 	}
-	if !info.Mode().IsRegular() || info.Sys().(*syscall.Stat_t).Uid != 0 || info.Mode().Perm()&0077 != 0 || info.Size() > 64 {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || !info.Mode().IsRegular() || stat.Uid != 0 || info.Mode().Perm()&0077 != 0 || info.Size() > 64 {
 		return "", errors.New("the WireGuard private key must be a small root-owned private file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 65))

@@ -134,7 +134,7 @@ func loadTelemetryOutbox(path string) (telemetryOutbox, error) {
 	if err != nil {
 		return queue, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	const maximum = 4 << 20
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil || len(data) > maximum || json.Unmarshal(data, &queue) != nil || queue.Dropped < 0 || queue.Oversized < 0 {
@@ -239,7 +239,7 @@ func (j *joinClient) flushTelemetry(ctx context.Context, queue *telemetryOutbox)
 	if err != nil {
 		return err
 	}
-	reply.Body.Close()
+	_ = reply.Body.Close()
 	if reply.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("telemetry ingestion returned HTTP %d", reply.StatusCode)
 	}

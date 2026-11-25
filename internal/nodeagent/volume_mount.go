@@ -133,7 +133,7 @@ func (j *joinClient) volumeMountAssignments(ctx context.Context) ([]storage.Moun
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("volume mount request returned HTTP %d", response.StatusCode)
 	}
@@ -166,7 +166,7 @@ func (j *joinClient) sendUnmountReceipt(ctx context.Context, task storage.MountT
 	if err != nil {
 		return err
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusConflict {
 		return fmt.Errorf("volume unmount receipt returned HTTP %d", response.StatusCode)
 	}
