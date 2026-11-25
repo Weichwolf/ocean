@@ -261,7 +261,20 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	for _, file := range []string{"member-rbd.json", "smbwriter", "failover-state-id", "failover-state.key"} {
 		smbFailover = requireFile(smbFailover, filepath.Join(smbFixture, file), "the private SMB fixture file "+file)
 	}
+	archive := os.Getenv("OCEAN_E2E_SMB_ETCD_ARCHIVE")
+	smbRestore := harness.Step{Name: "kerberos-smb-restore", Cases: []string{"WORKPLACE-30"}, Timeout: 14 * time.Minute,
+		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-timeout=13m", "-v", "-run", "^TestPackagedSMBBackupRestore$", "./internal/controlplane"},
+		Evidence: []harness.EvidenceSource{{Name: "kerberos-smb-restore.json", Path: filepath.Join(options.domain, "evidence", "kerberos-smb-restore.json")}}}
+	if options.domain == "" || smbFixture == "" || archive == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" || os.Getenv("OCEAN_E2E_SMB_RESTORE_WINDOWS_READY") == "" {
+		smbRestore.BlockedReason = "Provide the two-member SMB lab, pinned etcd and Azure CLI, and a Windows fixture handoff path."
+	}
+	smbRestore = requireFile(smbRestore, archive, "the pinned etcd 3.6.17 lab release archive")
+	for _, file := range []string{"member-rbd.json", "smbwriter", "smbreader", "smbdenied", "failover-state-id", "failover-state.key"} {
+		smbRestore = requireFile(smbRestore, filepath.Join(smbFixture, file), "the private SMB fixture file "+file)
+	}
+	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "machine.json"), "the joined Windows Server Core identity")
+	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows Kerberos serial capture")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore)
 }

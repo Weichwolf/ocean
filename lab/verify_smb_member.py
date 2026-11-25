@@ -3,6 +3,7 @@
 
 import argparse
 import json
+from ipaddress import IPv4Address
 import re
 import secrets
 import shlex
@@ -30,6 +31,7 @@ account=$1
 mode=$2
 file=$3
 share=$4
+address=$5
 private=$(mktemp -d)
 cleanup() {
     for name in ticket krb5.conf kdc.trace payload downloaded auth; do
@@ -51,8 +53,12 @@ if ! grep -Eq ' (dgram|stream) 10\.232\.1\.11:88' "$KRB5_TRACE" ||
     exit 1
 fi
 endpoint="//files04.ad.ocean.test/$share"
+route=()
+if [[ -n "$address" ]]; then
+    route=(-I "$address")
+fi
 smb=(smbclient "$endpoint"
-    --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" --client-protection=encrypt)
+    --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" --client-protection=encrypt "${route[@]}")
 
 expect_denial() {
     local expected=$1 result
@@ -72,7 +78,7 @@ case "$mode" in
         sha256sum "$private/downloaded" | cut -d ' ' -f 1
         printf '%s\n' "username = $account" "password = $password" 'domain = OCEANLAB' > "$private/auth"
         expect_denial 'session setup failed: NT_STATUS_' \
-            smbclient "$endpoint" -A "$private/auth" \
+            smbclient "$endpoint" "${route[@]}" -A "$private/auth" \
             --use-kerberos=off --client-protection=encrypt -c ls
         ;;
     reader)
@@ -86,10 +92,13 @@ case "$mode" in
     checkpoint)
         "${smb[@]}" -c "put $private/payload $file"
         ;;
-    windows-read)
+    windows-read|windows-reader)
         "${smb[@]}" -c "get $file $private/downloaded"
         nonce=${file#ocean-windows-}
         printf '%s' "${nonce%.txt}" | cmp - "$private/downloaded"
+        if [[ $mode == windows-reader ]]; then
+            expect_denial 'NT_STATUS_ACCESS_DENIED' "${smb[@]}" -c "put $private/payload ${file}.denied"
+        fi
         ;;
     cleanup)
         "${smb[@]}" -c "get $file $private/downloaded; del $file"
@@ -109,8 +118,8 @@ def private_password(path):
     return password + b"\n"
 
 
-def probe_client(state, share, user, mode, marker, password):
-    command = shlex.join(["bash", "-c", CLIENT_PROBE, "--", user, mode, marker, share])
+def probe_client(state, share, user, mode, marker, password, address=""):
+    command = shlex.join(["bash", "-c", CLIENT_PROBE, "--", user, mode, marker, share, address])
     return ssh(state, CLIENT, command, password, timeout=10).decode().strip()
 
 
@@ -214,7 +223,7 @@ def verify_quota(state, fixture):
     return {"volumeId": volume, "encryption": "LUKS2", "blockDevice": device[1], **result}
 
 
-def verify_windows(state, fixture, run_id, share):
+def verify_windows(state, fixture, run_id, share, *, restored=False, address=""):
     profile = state / "server-core"
     recorded_machine = json.loads((profile / "machine.json").read_text())
     expected_member = json.loads((fixture / "member-rbd.json").read_text())
@@ -227,7 +236,7 @@ def verify_windows(state, fixture, run_id, share):
         if proof["runId"] == str(run_id):
             records[proof["action"]] = proof
     for action, user, flags in (
-        ("Write", "smbwriter", ("writeAcknowledged", "readVerified")),
+        ("Restore" if restored else "Write", "smbwriter", ("writeAcknowledged", "readVerified")),
         ("ReadOnly", "smbreader", ("readVerified", "writeDenied")),
         ("Denied", "smbdenied", ("readDenied",)),
     ):
@@ -247,15 +256,26 @@ def verify_windows(state, fixture, run_id, share):
         ):
             raise RuntimeError(f"The Windows guest supplied inconsistent {action} evidence")
     marker = f"ocean-windows-{run_id}.txt"
-    probe_client(state, share, "smbwriter", "windows-read", marker, private_password(fixture / "smbwriter"))
+    probe_client(state, share, "smbwriter", "windows-read", marker, private_password(fixture / "smbwriter"), address)
     audit = ssh(state, MEMBER, "sudo journalctl --no-pager -t smbd_audit -o cat -n 250", timeout=10).decode().splitlines()
-    for user, address, operation in (("smbwriter", "10.232.1.20", "fsync_recv"),
-                                     ("smbreader", "10.232.1.20", "create_file"),
-                                     ("smbwriter", "10.232.1.12", "create_file")):
-        if not any(line.startswith(f"OCEANLAB|{user}|{address}|{share}|{operation}|ok|")
+    for user, client_ip, operation in (("smbwriter", "10.232.1.20", "create_file" if restored else "fsync_recv"),
+                                       ("smbreader", "10.232.1.20", "create_file"),
+                                       ("smbwriter", "10.232.1.12", "create_file")):
+        if not any(line.startswith(f"OCEANLAB|{user}|{client_ip}|{share}|{operation}|ok|")
                    and line.endswith("/" + marker) for line in audit):
             raise RuntimeError(f"The Samba journal lacks the {operation} from {user} at {address}")
     return {"windows": records, "debianSamePrincipalRead": True, "sambaAuditCorrelated": True}
+
+
+def verify_restored_debian(state, fixture, run_id, share, address):
+    marker = f"ocean-windows-{run_id}.txt"
+    for account, mode in (("smbwriter", "windows-read"), ("smbreader", "windows-reader"), ("smbdenied", "denied")):
+        probe_client(state, share, account, mode, marker, private_password(fixture / account), address)
+    password = private_password(fixture / "smbwriter")
+    probe_client(state, share, "smbwriter", "writer", marker + ".new", password, address)
+    probe_client(state, share, "smbwriter", "cleanup", marker + ".new", password, address)
+    return {"acknowledgedCheckpointRead": True, "writerWriteVerified": True,
+            "readerWriteDenied": True, "ungrantedAccountDenied": True}
 
 
 def main():
@@ -263,11 +283,14 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--share", default=SHARE)
+    parser.add_argument("--server-ip", type=IPv4Address)
     variants = parser.add_mutually_exclusive_group()
     variants.add_argument("--rbd-quota", action="store_true")
     variants.add_argument("--reader-denied", action="store_true")
     variants.add_argument("--checkpoint", choices=("write", "verify"))
     variants.add_argument("--windows-run-id", type=UUID)
+    variants.add_argument("--restored-debian-run-id", type=UUID)
+    variants.add_argument("--restored-windows-run-id", type=UUID)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", args.share):
         parser.error("--share must be a simple SMB share name")
@@ -287,6 +310,14 @@ def main():
         probe_client(args.state, args.share, "smbwriter", mode, "ocean-managed-checkpoint.bin",
                      private_password(args.fixture / "smbwriter"))
         print(f"Completed the SMB data checkpoint action {args.checkpoint}.")
+    elif args.restored_debian_run_id:
+        result = verify_restored_debian(args.state, args.fixture, args.restored_debian_run_id,
+                                        args.share, str(args.server_ip or ""))
+        print(json.dumps(result))
+    elif args.restored_windows_run_id:
+        result = verify_windows(args.state, args.fixture, args.restored_windows_run_id, args.share,
+                                restored=True, address=str(args.server_ip or ""))
+        print(json.dumps(result))
     elif args.windows_run_id:
         result = verify_windows(args.state, args.fixture, args.windows_run_id, args.share)
         write_evidence(args.state, "kerberos-smb-windows.json", result)

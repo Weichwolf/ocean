@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][guid]$RunId,
-    [Parameter(Mandatory)][ValidateSet('Write', 'Read', 'ReadOnly', 'Denied')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Write', 'Read', 'Restore', 'ReadOnly', 'Denied')][string]$Action,
     [Parameter(Mandatory)][ValidateSet('smbwriter', 'smbreader', 'smbdenied')][string]$Account,
     [ValidatePattern('^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$')][string]$Share = 'company-files',
     [switch]$AsFixtureUser
@@ -76,9 +76,13 @@ if ($Action -eq 'Denied') {
     Require-AccessDenied { [void][IO.File]::ReadAllText($checkpoint) }
     $result.readDenied = $true
 } else {
-    if ($Action -eq 'Write') {
+    if ($Action -in 'Write', 'Restore') {
         $data = [Text.Encoding]::UTF8.GetBytes($RunId.ToString())
-        $file = [IO.File]::Open($checkpoint, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        $destination = $checkpoint
+        if ($Action -eq 'Restore') {
+            $destination = "$checkpoint.restored"
+        }
+        $file = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
         try {
             $file.Write($data, 0, $data.Length)
             $file.Flush($true)
@@ -86,6 +90,12 @@ if ($Action -eq 'Denied') {
             $file.Dispose()
         }
         $result.writeAcknowledged = $true
+        if ($Action -eq 'Restore') {
+            if ([IO.File]::ReadAllText($destination) -cne $RunId.ToString()) {
+                throw 'The fresh write on the restored share contains the wrong nonce'
+            }
+            [IO.File]::Delete($destination)
+        }
     }
     if ([IO.File]::ReadAllText($checkpoint) -cne $RunId.ToString()) {
         throw 'The SMB checkpoint contains the wrong nonce'

@@ -59,8 +59,8 @@ from pathlib import Path
 import sys
 import time
 
-mode, control, file, marker = sys.argv[1:]
-control, file, marker = Path(control), Path(file), marker.encode()
+mode, control, file, nonce = sys.argv[1:]
+control, file, marker = Path(control), Path(file), nonce.encode()
 unlocked = file.with_name(file.name + "-unlocked")
 if mode == "hold":
     control.mkdir(mode=0o700)
@@ -87,6 +87,11 @@ if mode == "hold":
             if data != marker:
                 raise RuntimeError("old descriptor returned different data")
             print("oldHandle=client-reopened")
+elif mode == "checkpoint":
+    checkpoint = file.with_name(f"ocean-windows-{nonce}.txt")
+    with checkpoint.open("xb", buffering=0) as handle:
+        handle.write(marker)
+        os.fsync(handle.fileno())
 elif mode == "reopen":
     with file.open("r+b", buffering=0) as handle:
         fcntl.lockf(handle, fcntl.LOCK_EX | fcntl.LOCK_NB, 1)

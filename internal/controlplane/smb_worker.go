@@ -77,11 +77,10 @@ func (r *Region) HostSMBPlan(ctx context.Context, host string, certificate []byt
 				}
 				grant.Initialized = !op.StartedAt.Equal(record.CreatedAt)
 			}
-			grant.Key, err = r.storage.sealer.Open(nil, nil, record.Envelope, r.smbVolumeLabel(binding, record.Volume.ID))
-			if err != nil || len(grant.Key) != storage.KeySize {
-				clear(grant.Key)
+			grant.Key, err = r.smbShareEncryptionKey(binding, record)
+			if err != nil {
 				plan.ClearKeys()
-				return smb.Plan{}, errors.New("invalid SMB volume key envelope")
+				return smb.Plan{}, err
 			}
 			plan.Member.Shares = append(plan.Member.Shares, record.Policy.Share(record.Name, record.Volume.ID))
 		}

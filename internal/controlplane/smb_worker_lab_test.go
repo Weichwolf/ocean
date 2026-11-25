@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,6 +186,13 @@ printf '%s\n' "$result" | grep -F 'No such file or directory'
 
 func startSMBLabAPI(t *testing.T, r *Region, scope, other arm.SubscriptionScope) (*httptest.Server, string, []byte) {
 	t.Helper()
+	api, caFile, caPEM, activate := newSMBLabAPI(t, scope, other)
+	activate(r)
+	return api, caFile, caPEM
+}
+
+func newSMBLabAPI(t *testing.T, scope, other arm.SubscriptionScope) (*httptest.Server, string, []byte, func(*Region)) {
+	t.Helper()
 	ca, caKey, _, _ := directoryJoinClientCertificates(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
 	key, err := x509.MarshalPKCS8PrivateKey(caKey)
@@ -201,33 +209,49 @@ func startSMBLabAPI(t *testing.T, r *Region, scope, other arm.SubscriptionScope)
 		return path
 	}
 	caFile := write("ca.pem", caPEM)
-	authority, _, err := enrollment.Open(enrollment.Config{CertificateFile: caFile,
+	authorityConfig := enrollment.Config{CertificateFile: caFile,
 		KeyFile:       write("ca.key", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})),
-		InventoryFile: write("inventory.json", []byte(`{"hosts":[]}`))}, r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	api := httptest.NewUnstartedServer(nil)
+		InventoryFile: write("inventory.json", []byte(`{"hosts":[]}`))}
+	var handler atomic.Pointer[http.Handler]
+	api := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		active := handler.Load()
+		if active == nil {
+			http.Error(w, "regional service is offline", http.StatusServiceUnavailable)
+			return
+		}
+		(*active).ServeHTTP(w, req)
+	}))
 	t.Cleanup(api.Close)
 	api.TLS = directoryLabServerTLS(t, ca, caKey)
-	regional := arm.Server{Origin: "https://" + api.Listener.Addr().String(), Location: r.name,
-		Inventory: r, Groups: r, Operations: r, Roles: r, SMBShares: r,
-		Authenticate: func(_ context.Context, request *http.Request) (identity.ARMPrincipal, error) {
-			entry := scope
-			switch request.Header.Get("Authorization") {
-			case "Bearer smb-worker-lab":
-			case "Bearer smb-worker-foreign-lab":
-				entry = other
-			default:
-				return identity.ARMPrincipal{}, identity.ErrInvalidARMToken
-			}
-			return identity.ARMPrincipal{Subject: "operator", Subscription: identity.Subscription{
-				TenantID: entry.TenantID, SubscriptionID: entry.SubscriptionID, Members: []string{"operator"},
-			}}, nil
-		}}
-	api.Config.Handler = authority.Handler(regional.Handler(http.NotFoundHandler()))
 	api.StartTLS()
-	return api, caFile, caPEM
+	activate := func(r *Region) {
+		t.Helper()
+		if r == nil {
+			handler.Store(nil)
+			return
+		}
+		authority, _, err := enrollment.Open(authorityConfig, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		regional := arm.Server{Origin: api.URL, Location: r.name, Inventory: r, Groups: r, Operations: r, Roles: r, SMBShares: r,
+			Authenticate: func(_ context.Context, request *http.Request) (identity.ARMPrincipal, error) {
+				entry := scope
+				switch request.Header.Get("Authorization") {
+				case "Bearer smb-worker-lab":
+				case "Bearer smb-worker-foreign-lab":
+					entry = other
+				default:
+					return identity.ARMPrincipal{}, identity.ErrInvalidARMToken
+				}
+				return identity.ARMPrincipal{Subject: "operator", Subscription: identity.Subscription{
+					TenantID: entry.TenantID, SubscriptionID: entry.SubscriptionID, Members: []string{"operator"},
+				}}, nil
+			}}
+		next := authority.Handler(regional.Handler(http.NotFoundHandler()))
+		handler.Store(&next)
+	}
+	return api, caFile, caPEM, activate
 }
 
 func smbLabDeleteOperation(t *testing.T, ctx context.Context, r *Region, scope arm.SubscriptionScope) string {
@@ -283,14 +307,19 @@ func setupSMBWorkerRegion(t *testing.T, endpoint string, binding smbBinding, fen
 	if err := r.bootstrapSMB(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	seedSMBLabDirectory(t, r, binding)
+	return r
+}
+
+func seedSMBLabDirectory(t *testing.T, r *Region, binding smbBinding) {
+	t.Helper()
 	directory := identity.ManagedDirectory{TenantID: binding.TenantID, SubscriptionID: binding.SubscriptionID,
 		ID: operationID(), RequestedAt: time.Now().UTC(), ProvisionedAt: time.Now().UTC(), DomainSID: binding.Member.DomainSID,
 		Spec: identity.DirectorySpec{DNSName: binding.Member.DNSDomain, NetBIOSName: binding.Member.NetBIOSDomain}}
-	if _, err := client.Txn(t.Context()).Then(putJSON(r.managedDirectoryKey(binding.TenantID), directory),
+	if _, err := r.client.Txn(t.Context()).Then(putJSON(r.managedDirectoryKey(binding.TenantID), directory),
 		clientv3.OpPut(r.root+"/cells/"+r.cell+"/metadata", "{}")).Commit(); err != nil {
 		t.Fatal(err)
 	}
-	return r
 }
 
 func readSMBLabShare(t *testing.T, ctx context.Context, r *Region, binding smbBinding) smbShareRecord {

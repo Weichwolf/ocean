@@ -105,6 +105,15 @@ func (r *Region) smbVolumeLabel(b smbBinding, volume string) []byte {
 	return []byte(r.armPrefix(b.scope()) + "smb/volumes/" + volume)
 }
 
+func (r *Region) smbShareEncryptionKey(binding smbBinding, record smbShareRecord) ([]byte, error) {
+	key, err := r.storage.sealer.Open(nil, nil, record.Envelope, r.smbVolumeLabel(binding, record.Volume.ID))
+	if err != nil || len(key) != storage.KeySize {
+		clear(key)
+		return nil, errors.New("invalid SMB volume key envelope")
+	}
+	return key, nil
+}
+
 func (r *Region) PutSMBShare(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress, policy smb.Policy) (arm.InventoryResource, *arm.Operation, bool, error) {
 	var empty arm.InventoryResource
 	name, valid := smbShareName(address)

@@ -395,6 +395,91 @@ the old worker's management API path, then uses QMP to verify its power-off
 before signing the lab fence. The production fencing authority requires
 independent power control and verification on physically separate hosts.
 
+### Restore SMB from independent backups
+
+Keep regional metadata, encrypted RBD exports, and key escrow in
+independent storage. Restore the etcd snapshot, the RBD export for the
+Samba member state, the exports for each published share, and the
+original binding configuration. Protect the regional storage wrapping
+key and the member-state key separately from those exports. Back up the
+AD domain separately so its SID, SPNs, groups and machine trust are
+available after a wider outage.
+
+For a coordinated cold checkpoint, block regional management mutations,
+drain pending share operations, and stop the SMB agents on both
+members. Confirm SMB and Winbind are stopped and the share and member
+state images have no writer mappings before taking the metadata snapshot
+and exporting the images. Keep the recovery set with its checksums and
+the original pool, image and resource IDs.
+
+The member-state ID is in the registered binding's `member.stateVolumeId`.
+The regional etcd record at
+`/ocean/v1/regions/<region>/smb/members/<initialHostId>` supplies each
+published share's `address` and `volume.id`. Record the IDs before
+backup under operator access. Tenant ARM responses omit the internal
+image names and key envelopes.
+
+```sh
+etcdctl snapshot save "$OCEAN_BACKUP/region.db"
+rbd export --export-format 2 "$SOURCE_POOL/$MEMBER_STATE_ID" "$OCEAN_BACKUP/member.rbd"
+rbd export --export-format 2 "$SOURCE_POOL/$SHARE_VOLUME_ID" "$OCEAN_BACKUP/share.rbd"
+```
+
+Verify the backup checksums before recovery. Keep the source control plane
+and writers isolated throughout restoration. Restore the snapshot into a
+new authenticated etcd cluster. Use an independent Ceph pool and configure
+the approved worker with a Ceph identity scoped to that pool. Import every
+image under its original ID. Preserve the region name and binding and
+configure the restored regional replicas with the escrowed keys and
+their new etcd endpoints. Inspect the original share ID, reconnect with
+a fresh Kerberos session, and verify data, individual file ACLs, quotas
+and numeric ownership before reopening access to users.
+[etcd disaster recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)
+[Ceph RBD export and import](https://docs.ceph.com/en/quincy/man/8/rbd/)
+
+```sh
+rbd import --export-format 2 "$OCEAN_BACKUP/member.rbd" "$RESTORE_POOL/$MEMBER_STATE_ID"
+rbd import --export-format 2 "$OCEAN_BACKUP/share.rbd" "$RESTORE_POOL/$SHARE_VOLUME_ID"
+ocean-recover -config "$RESTORED_REGION_CONFIG" -tenant "$OCEAN_TENANT" \
+  -subscription "$OCEAN_SUBSCRIPTION" -share "$OCEAN_SMB_SHARE_ID" -output "$PRIVATE_DIR/share.key"
+az rest --method get --url "$OCEAN_ARM$OCEAN_SMB_SHARE_ID?api-version=2026-11-01" -o json
+```
+
+`ocean-recover` verifies an operator's ability to recover a single
+published share key. It uses the restored metadata and creates a new
+owner-only file. The enrolled member receives its own authorized key
+grant from the restored control plane.
+
+For `WORKPLACE-30`, boot the joined Server Core VM on the workload
+network and attach both `lab/verify_windows_smb_member.ps1` and
+`lab/verify_windows_smb_restore.ps1` to the same media. Use a new handoff
+path in an owner-only directory. Launch the local case with the prepared
+SMB fixture and the pinned etcd release archive.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-30 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  OCEAN_E2E_SMB_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64.tar.gz" \
+  OCEAN_E2E_SMB_AZ="$(command -v az)" OCEAN_E2E_SMB_RESTORE_WINDOWS_READY="$PRIVATE_DIR/ready.json" \
+  go test -tags=e2e -count=1 -timeout=15m -run '^TestAcceptance$' ./tests/e2e
+```
+
+The case writes the handoff after Debian verifies the restored checkpoint.
+Use its `runId`, `share` and `serverIP` in the Server Core administrator
+session. The fixture selects the restored address locally while keeping
+the original Kerberos name. Enter the three private passwords at the
+prompts for `smbwriter`, `smbreader` and `smbdenied`.
+
+```powershell
+.\verify_windows_smb_restore.ps1 -RunId $runId -Share $share -FixtureServerIP $serverIP
+```
+
+The test verifies the Windows serial records, the original checkpoint and
+the matching Samba audit events before releasing the restored fixture.
+It records backup and restore times and backup artifact hashes. The lab
+uses separate Ceph pools on three virtual storage nodes and an independent
+etcd cluster restored from a file.
+
 ## KVM tenant guest runtime probe
 
 The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`
