@@ -738,7 +738,7 @@ def health(settings):
     if not durable.exists():
         subprocess.run(["/usr/bin/sync", "-f", str(root)], check=True, timeout=2)
         durable.touch()
-        print(ndr_unpack(dom_sid, domain_entry["objectSid"][0]))
+    print(ndr_unpack(dom_sid, domain_entry["objectSid"][0]))
 
 
 def serve(settings):
