@@ -1,0 +1,222 @@
+# ocean architecture
+
+ocean is an open-source cloud platform on Debian. It uses Azure CLI as a
+reference client for a defined compatibility contract. An ocean **region**, also
+called a **farm**, has a regional management endpoint and multiple Debian
+servers. A server can run more than one role. The phase-one topology starts
+with one **cell** for workload placement and storage. Additional workers can
+join the region while its three control-plane voters remain fixed.
+
+Phase one passed all 34 required cases in the Debian KVM lab. Physical failure
+domains, production capacity and recovery objectives, and multi-farm
+continuity have their own acceptance gates. See the
+[objective](objective.md) and [acceptance matrix](acceptance.tsv).
+
+## Regional topology
+
+```mermaid
+flowchart TD
+    CLI["Azure CLI and automation"]
+    DNS["Regional ARM, identity and Graph names"]
+    GW["Two management gateways<br/>HAProxy and Keepalived VIP"]
+    API["Three HTTPS API replicas<br/>ARM, Graph and workload controllers"]
+    IDP["Two Keycloak replicas"]
+    PG["PostgreSQL with Patroni<br/>synchronous standby and watchdog"]
+    ETCD["Three regional etcd voters<br/>metadata, operations and reservations"]
+    AGENT["Enrolled Debian node agents"]
+    PODMAN["Rootless Podman<br/>Linux containers and HTTP Functions"]
+    STORAGE["Ceph RBD<br/>LUKS2-encrypted persistent volumes"]
+    TELEMETRY["Independent three-member<br/>telemetry etcd cluster"]
+
+    CLI --> DNS --> GW
+    GW --> API
+    GW --> IDP --> PG
+    API --> ETCD
+    PG -. "Patroni coordination" .-> ETCD
+    API -->|"Directory and token exchange"| IDP
+    AGENT -->|"mTLS leases and assignments"| API
+    AGENT --> PODMAN
+    PODMAN -->|"Mounted files"| STORAGE
+    AGENT -->|"Usage and bounded telemetry batches"| API
+    API --> TELEMETRY
+```
+
+The management gateways serve the regional DNS names and forward verified
+HTTPS connections to healthy API replicas. In the lab, Keepalived moves a
+management virtual IP between gateways. A client using a cached address can
+keep the same destination after takeover. The three API replicas share durable
+state through a two-of-three etcd quorum. A single API replica, gateway, or
+voter can fail within the tested topology.
+
+Keycloak handles OAuth and realm authentication. Ocean adapts discovery and
+token exchange for Azure CLI. PostgreSQL holds the directory state and
+requires a synchronous standby for commits in the tested profile. Patroni
+coordinates promotion through the regional etcd cluster using its own state
+prefix and certificate. The lab exercises watchdog fencing and verifies
+that the former writer rejoins as a standby. See the
+[regional lab setup](lab/README.md#regional-management-stack).
+
+## Tenant and workload capabilities
+
+| Area | Phase-one capabilities | Contract entry points |
+| --- | --- | --- |
+| Tenant onboarding and identity | Retry-safe onboarding of a tenant, initial administrator and subscription. Device-code sign-in for users and password-based service principals for automation. Create, update and delete directory users. Register applications, create service principals, and add or revoke password credentials. | Operator `az rest`, `az cloud`, `az login`, `az account`, selected `az ad user`, `az ad app` and `az ad sp`. |
+| ARM and authorization | Subscription discovery, tagged resource groups, provider discovery, filtered and paginated inventory, resource lookup, and resource-group Reader assignments with server-side revocation. Durable polling and retries for asynchronous operations. | `az group`, `az provider show`, `az resource`, `az role assignment`. |
+| Linux container groups | Run a single Linux container from a public, digest-pinned OCI image. Choose a public TCP endpoint or private subnet. Configure CPU and memory limits, restart policy, and ordinary or secure environment variables. Inspect, start, stop, restart, read logs and delete. | `az container`. |
+| Persistent storage | Create a storage account and file share with the supported Azure Files contract. Mount the share in a container, retain its data across restarts, and recover it on an eligible host after confirming fencing. | `az storage account`, `az storage share-rm`, `az container create`. |
+| HTTP Functions | Deploy a Linux Functions v4 OCI image on a B1 plan. Discover functions, manage keys and settings, update the image, and control app lifecycle. Attach a private subnet and publish the function over HTTPS. Java 21 is the end-to-end deployment fixture. Node.js 22 exercises Insights, and .NET isolated and Go have runtime fixture checks. | `az functionapp`, selected networking commands. |
+| Networking | Manage IPv4 VNets, subnets, NSGs and firewall rules. Expose private backends through a redundant Application Gateway. Assign Standard static public IPv4 addresses and a stable outbound address through NAT. Connect approved on-premises prefixes over two WireGuard paths. Preview and apply the supported network-only Bicep template. | Selected `az network` and `az deployment group`, plus `az rest` for `Ocean.Network/siteConnections`. |
+| Usage, quotas and Insights | Read resource health, tenant audit events, container CPU and memory, current reservations and quota ceilings. Query supported request, error, latency, dependency and exception data, including reported telemetry gaps. | `az monitor metrics` and selected ARM and Insights endpoints through `az rest`. |
+| Local placement and scaling | Run stateless private container replicas at a fixed count or scale locally on fresh CPU measurements. Reserve replacement capacity and keep serving through a worker failure on the local tier. | `az rest` for `Ocean.Compute/replicaSets`. |
+
+The [Azure CLI 2.93.0 command matrix](tests/e2e/testdata/arm-contract.tsv)
+defines supported flag combinations, resource types and API versions. The
+[README](README.md#azure-cli-compatibility) shows how to register the cloud and
+run supported workflows. The platform explicitly rejects unsupported
+parameters and operations.
+
+## Request, placement and execution
+
+1. The API verifies token signature, issuer, audience and expiry. Current
+   tenant, subscription and scope grants determine access on each request.
+   Mutations and privileged denials generate tenant-scoped audit records.
+2. A workload request selects an eligible cell, host and network endpoint.
+   Applicable capacity, tenant quota, placement and operation state commit
+   together. Retry identifiers and placement generations protect against
+   duplicate reservations and stale cleanup. ARM polling exposes durable
+   operation state through a controller restart.
+3. A Debian node agent authenticates with its own mTLS certificate. The agent
+   renews a capacity lease and reads only its authorized assignments. Pool,
+   hardware, role, capacity and drain policy determine placement eligibility.
+4. The worker applies the assigned network and storage policy and starts the
+   workload under rootless Podman. The regional controllers reconcile the
+   recorded intent with observed host and workload state.
+
+The operator admits hosts through an approved inventory with management MAC,
+address, cell, pool, profile and roles. A short-lived enrollment credential
+and proof of possession bind each host certificate to its own key. In the
+KVM lab, cloud-init installs the Debian agent package from a private NoCloud
+seed at first boot. A lost response or restart preserves the enrolled identity.
+Adding or draining eligible workers leaves voter membership under regional
+operator control. See [host enrollment](lab/README.md#host-identity-enrollment)
+and [capacity reservations](lab/README.md#leased-host-capacity-and-reservations).
+
+Pool policy constrains initial placement and recovery. The enrolled agent
+gets only the workload material required by its assignments. Regional key
+material protects sealed environment variables and volume keys. Assigned
+workers receive the material they need over mTLS. Approved operators are
+part of the trust model for running workloads. Attestation-bound key release
+and confidential execution are later design extensions for contributed hosts.
+
+## Workload network paths
+
+```mermaid
+flowchart LR
+    INTERNET["External clients"]
+    ONPREM["Customer on-premises network"]
+    EXTERNAL["External egress destination"]
+    TCP["Public TCP endpoint"]
+    HTTPS["Application Gateway pair<br/>TLS and backend health checks"]
+    VPN["WireGuard gateway pair<br/>approved routes"]
+    PRIVATE["Private VNet subnet<br/>routing and NSG policy"]
+    NAT["NAT gateway pair<br/>stable public IPv4"]
+    CONTAINER["Linux container group"]
+    FUNCTION["Linux HTTP Function"]
+
+    INTERNET --> TCP --> CONTAINER
+    INTERNET --> HTTPS --> PRIVATE
+    ONPREM <-->|"Two site-to-site paths"| VPN
+    VPN <--> PRIVATE
+    PRIVATE <--> CONTAINER
+    PRIVATE <--> FUNCTION
+    PRIVATE --> NAT --> EXTERNAL
+```
+
+The container node applies tenant routing and firewall policy through Linux
+network namespaces and nftables. Leased assignments bound stale forwarding.
+The diagram shows alternative public and private paths for container groups.
+Application Gateway terminates HTTPS and probes selected private backends.
+WireGuard forwards approved customer prefixes through dedicated gateway roles.
+A managed subnet can select a NAT gateway for fixed IPv4 egress. The lab uses
+separate management, workload and customer network segments. Active private
+workload prefixes on the shared regional fabric must be exclusive. See the
+[networking lab guide](lab/README.md#arm-virtual-networks-and-subnets).
+
+## Availability, scaling and recovery
+
+| Service tier | Placement and behavior | Status |
+| --- | --- | --- |
+| Non-redundant | One active placement can satisfy the tier. Persistence follows the storage policy. | Phase one for the supported local replica-set workflow. |
+| Locally redundant | At least two serving replicas on different eligible hosts, healthy-backend routing and reserved replacement capacity. The acceptance case keeps HTTPS available through the loss of one worker within its client deadline and retry budget. | Phase one for stateless container replica sets. |
+| Geo-redundant | Eligible placements span authorized farms and continue serving through loss of one farm. Ingress, DNS, data dependencies and capacity must meet the same failure target. | Planned federation profile. |
+
+Availability defines the minimum safe placement. Scaling defines the target
+replica count. The same reconciliation loop replaces lost replicas and
+implements fixed counts or local CPU-based scaling. Bounds, cooldown and
+separate scale-in and scale-out thresholds preserve the minimum placement.
+When telemetry is unavailable, the existing target count is retained and
+replacement continues. Geo scaling is part of the federation profile.
+
+Regional etcd owns admission and placement decisions. When the quorum is
+unavailable, new mutations that depend on it pause. Existing workloads can
+continue while their dependencies and forwarding leases allow. Ceph RBD
+stores encrypted volumes with three copies and a two-copy minimum for I/O
+in the tested profile. A writer generation and confirmed fencing of the old
+writer govern reassignment. Lease loss alone cannot grant a second writer.
+The lab verifies encrypted-volume recovery from separate metadata and storage
+backups using authorized key material. See
+[storage and recovery](lab/README.md#replicated-azure-files-mounts).
+
+Audit, health and quota state live with the regional control plane. Usage
+and selected function observations use a separate telemetry store. Cgroup
+measurements and scoped OTLP traces feed bounded persistent worker queues.
+Drops surface through gap records. Provisioning and writer fencing are
+exercised during a full telemetry-store outage. See
+[regional observability](lab/README.md#regional-observability).
+
+## Federation and physical deployment
+
+The planned federation profile keeps management, identity and storage quorums
+local to each farm. Redundant WireGuard paths between gateway pairs provide
+inter-farm transport. After a path becomes reachable, pre-authorized farms
+discover each other, authenticate with mTLS and reconcile durable pairings.
+Cross-farm placement follows tenant authorization. Stateful takeover requires
+an acceptable recovery point and confirmed fencing before ownership moves.
+
+The lab has topology definitions for four farms of three nodes and for adding
+a fourth node to each farm. Those topologies support future mesh, pairing,
+whole-farm outage and geo-scaling acceptance. Physical rack provisioning
+adds a trusted hardware inventory, out-of-band management and unattended
+Debian installation to the demonstrated first-boot enrollment path. Physical
+qualification also covers fencing, independent infrastructure failure
+domains and measured performance under load. IPsec compatibility, Functions
+ZIP deployment and slots, and monetary Cost Management have separate
+conditional gates. A tenant VM provider would require a separate compatibility
+contract.
+See the [objective](objective.md) and the production and conditional gates in
+the [acceptance matrix](acceptance.tsv).
+
+## Implementation map
+
+| Responsibility | Repository entry points |
+| --- | --- |
+| Regional API, durable state and identity compatibility | [Control plane](cmd/ocean-control-plane), [ARM providers](internal/arm), [regional coordination](internal/controlplane), [identity](internal/identity) |
+| Host trust, compute and runtime | [Node agent](cmd/ocean-agent), [Debian systemd units and packaging](packaging/debian), [enrollment](internal/enrollment), [workloads](internal/workload), [Functions](internal/functions) |
+| Network and storage data paths | [Gateway](cmd/ocean-gateway), [network agent](cmd/ocean-network-agent), [network policy](internal/network), [storage](internal/storage), [recovery tool](cmd/ocean-recover) |
+| Telemetry | [Telemetry runtime](internal/telemetry), [Function telemetry relay](cmd/ocean-telemetry-relay) |
+| Local verification | [Lab launcher](cmd/ocean-lab), [profiles](lab/profiles), [end-to-end suite](tests/e2e) |
+
+## Lab and evidence
+
+The local Debian QEMU/KVM launcher uses small nodes with configurable RAM and
+vCPU counts. The scale profile exercises 16 nodes with 1 GiB each. Mixed and
+support profiles budget CPU and memory independently for workloads, identity
+and storage. Test clients on separate management and customer segments
+exercise the intended network paths.
+
+The end-to-end suite validates live behavior alongside CLI responses. It uses
+pinned public images and small Containerfile fixtures, probes tenant isolation,
+tests contention and retries, and injects gateway, host, quorum and telemetry
+faults. Local runs produce a Markdown report, machine-readable TSV and
+sanitized evidence. See the [E2E protocol](tests/e2e/protocol.md),
+[image lock](tests/e2e/testdata/images.lock.yaml) and [lab guide](lab/README.md).
