@@ -135,6 +135,21 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	webCLIRegression = requireFile(webCLIRegression, os.Getenv("SSL_CERT_FILE"), "the Keycloak lab CA in SSL_CERT_FILE")
 	webCLIRegression = requireFile(webCLIRegression, filepath.Join(kerberosState, "service.keytab"), "the disposable HTTP service keytab")
+	joinedBrowser := harness.Step{Name: "joined-debian-web-kerberos", Cases: []string{"WORKPLACE-23"}, Timeout: 4 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakDebianDomainBrowserLab$", "./internal/identity"}, BlockedReason: webClientPreparation.BlockedReason}
+	joinedState := os.Getenv("OCEAN_E2E_JOINED_WEB_STATE")
+	if joinedBrowser.BlockedReason == "" {
+		switch {
+		case options.domain == "" || joinedState == "":
+			joinedBrowser.BlockedReason = "Provide the running Debian domain-join lab and OCEAN_E2E_JOINED_WEB_STATE."
+		default:
+			joinedBrowser.BlockedReason = cli.BlockedReason
+		}
+	}
+	joinedBrowser = requireFile(joinedBrowser, filepath.Join(options.domain, "known-hosts"), "the verified SSH host keys for the lab")
+	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "service.keytab"), "the lab HTTP service keytab")
+	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "guest-ssh-port"), "the joined guest's loopback SSH port")
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
@@ -187,5 +202,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
-		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser, webCLIRegression)
+		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser, webCLIRegression, joinedBrowser)
 }

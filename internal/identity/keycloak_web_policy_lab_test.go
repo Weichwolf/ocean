@@ -25,6 +25,7 @@ type webPolicyLabStore struct {
 	directoryRequestFixture
 	existing   TenantReservation
 	controller string
+	group      func(context.Context, string) (enrollment.DirectoryGraphResult, error)
 	apps       map[string]webPolicyLabRecord
 	mu         sync.Mutex
 }
@@ -73,6 +74,9 @@ func (s *webPolicyLabStore) RunDirectoryGraph(ctx context.Context, tenant Tenant
 	if tenant != s.tenant || input.Operation != enrollment.DirectoryGroupGet {
 		return enrollment.DirectoryGraphResult{Status: http.StatusNotFound}, nil
 	}
+	if s.group != nil {
+		return s.group(ctx, input.Selector)
+	}
 	return runSambaFederationGraph(ctx, s.controller, input.Operation, nil, input.Selector, "")
 }
 
@@ -85,7 +89,7 @@ func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server
 	}
 	compat.cloud = lab.cloud
 	store := &webPolicyLabStore{directoryTenantFixture: directoryTenantFixture{tenant: lab.tenant},
-		directoryRequestFixture: directoryRequestFixture{received: &lab.directory}, controller: lab.primary,
+		directoryRequestFixture: directoryRequestFixture{received: &lab.directory}, controller: lab.primary, group: lab.group,
 		apps: make(map[string]webPolicyLabRecord)}
 	for _, app := range apps {
 		store.apps[app.ID] = webPolicyLabRecord{app, 1}
@@ -99,7 +103,7 @@ func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server
 	})
 	compat.onboarding = &onboarding{admin: lab.admin, store: store, config: OnboardingConfig{WebDirectories: map[string]WebDirectoryConfig{
 		lab.tenant.TenantID: {DirectoryID: lab.directory.ID, DomainSID: lab.directory.DomainSID, Connectors: lab.connectors,
-			ReaderSecretFile: filepath.Join(os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE"), "reader"), KerberosKeytab: kerberosKeytab},
+			ReaderSecretFile: lab.readerFile, KerberosKeytab: kerberosKeytab},
 	}}}
 	if err := compat.EnableManagedDirectories(store); err != nil {
 		t.Fatal(err)

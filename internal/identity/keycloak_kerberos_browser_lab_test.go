@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -195,9 +196,10 @@ func kerberosBrowserCallback(t *testing.T, handler http.Handler) (*httptest.Serv
 		return key
 	}
 	rootKey, serverKey := makeKey(), makeKey()
+	rootID := sha256.Sum256(rootKey.X.Bytes())
 	validFrom, validUntil := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
 	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Ocean callback fixture CA"},
-		NotBefore: validFrom, NotAfter: validUntil, BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign}
+		NotBefore: validFrom, NotAfter: validUntil, BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign, SubjectKeyId: rootID[:20]}
 	rootDER, err := x509.CreateCertificate(rand.Reader, root, root, rootKey.Public(), rootKey)
 	if err != nil {
 		t.Fatal(err)

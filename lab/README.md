@@ -1125,6 +1125,28 @@ The managed tenant publishes its Kerberos policy with an authenticated
 `az rest` call, and both tenants repeat the checks with new caches. The
 regional reservation and application records are disposable fixture data.
 
+`WORKPLACE-23` uses the running `domain-join` lab and its verified SSH host
+keys. In the isolated domain, keep the primary at `farm-1-node-01`, promote
+`farm-1-node-03` as a replica, and use the joined Debian client at
+`farm-1-node-02` with Firefox ESR, `certutil`, `adcli`, and SSSD's PAM
+modules. Create `webemployee@ad.ocean.test` in the workforce user OU and
+assign it to `OceanWebJoined`, a security group in the workforce group OU.
+Keep both LDAPS connectors authenticated and reachable from Keycloak.
+
+Set `OCEAN_E2E_JOINED_WEB_STATE` to a private fixture directory containing
+`directory-id`, `sid`, `reader`, `employee`, `group-guid`, `port1`, `port2`,
+`guest-ssh-port`, `tls.pem`, and `service.keytab`. The two connector ports
+are loopback forwards to the respective controllers' LDAPS listeners. The
+issuer URL uses `oauth.ad.ocean.test`, resolved through the guest's AD DNS.
+The exported keytab covers `HTTP/oauth.ad.ocean.test@AD.OCEAN.TEST`. Enable
+AES128 and AES256 on the Samba service account before exporting the keytab. Trust
+the issuer CA in `SSL_CERT_FILE` and, if the host routes to a local Keycloak
+port, use `OCEAN_E2E_KEYCLOAK_LOOPBACK` for that loopback address and port.
+The probe checks the machine join and opens a fresh PAM session. Firefox
+uses the session's TGT to obtain an AES service ticket without a browser password
+prompt. The test validates the code and signed token for the same federated
+subject. The callback is HTTPS through an SSH reverse forward to the host.
+
 ## ARM resource groups
 
 Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.

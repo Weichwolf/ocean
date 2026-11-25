@@ -47,6 +47,8 @@ type sambaDirectoryLab struct {
 	cloud      CloudEndpoints
 	firstAdmin onboardingRequest
 	value      func(string) string
+	readerFile string
+	group      func(context.Context, string) (enrollment.DirectoryGraphResult, error)
 }
 
 func keycloakSambaLab(t *testing.T, cloud CloudEndpoints) sambaDirectoryLab {
@@ -77,7 +79,8 @@ func keycloakSambaExchangeLab(t *testing.T, cloud CloudEndpoints, exchange strin
 		Spec:        DirectorySpec{DNSName: federationLabDomain, NetBIOSName: "OCEANWEB", SubnetID: "/fixture/subnet"},
 		RequestedAt: time.Now().Add(-time.Minute), ProvisionedAt: time.Now(), DomainSID: value("sid")}
 	connectors := [2]string{"ldaps://127.0.0.1:" + value("port1"), "ldaps://127.0.0.1:" + value("port2")}
-	return sambaDirectoryLab{ctx, admin, tenant, directory, primary, connectors, cloud, firstAdmin, value}
+	return sambaDirectoryLab{ctx: ctx, admin: admin, tenant: tenant, directory: directory, primary: primary, connectors: connectors,
+		cloud: cloud, firstAdmin: firstAdmin, value: value, readerFile: filepath.Join(state, "reader")}
 }
 
 func TestKeycloakDirectoryFederationLab(t *testing.T) {

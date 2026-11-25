@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -33,6 +35,20 @@ func keycloakTenantExchangeLab(t *testing.T, cloud CloudEndpoints, exchange stri
 		t.Fatal(err)
 	}
 	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if endpoint := os.Getenv("OCEAN_E2E_KEYCLOAK_LOOPBACK"); endpoint != "" {
+		address, err := netip.ParseAddrPort(endpoint)
+		if err != nil || !address.Addr().IsLoopback() || address.Port() == 0 {
+			t.Fatal("the Keycloak lab route must be a loopback address and port")
+		}
+		transport := &http.Transport{DialContext: func(ctx context.Context, network, target string) (net.Conn, error) {
+			if target == strings.TrimPrefix(origin, "https://") {
+				target = endpoint
+			}
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, target)
+		}}
+		client.Transport = transport
+		t.Cleanup(transport.CloseIdleConnections)
+	}
 	admin := keycloakAdmin{client: client, endpoints: []string{origin},
 		clientID: os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT"), secret: secret}
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
