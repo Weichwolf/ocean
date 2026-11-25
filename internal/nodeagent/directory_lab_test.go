@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -48,14 +49,23 @@ func TestDirectoryControllerRuntimeHandoff(t *testing.T) {
 		_ = podmanAction(ctx, "volume", "rm", name)
 	})
 	private := "Ocn9-" + rand.Text()
-	var reads atomic.Int32
+	var reads, reports atomic.Int32
 	issuer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/ocean/hosts/node/directories/"+tenant+"/"+generation+"/bootstrap" {
+		base := "/ocean/hosts/node/directories/" + tenant + "/" + generation
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == base+"/bootstrap":
+			reads.Add(1)
+			_, _ = fmt.Fprint(w, private)
+		case r.Method == http.MethodPost && r.URL.Path == base+"/health":
+			if body, err := io.ReadAll(r.Body); err != nil || string(body) != `{"ready":false}` || r.TLS == nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			reports.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		reads.Add(1)
-		_, _ = fmt.Fprint(w, private)
 	}))
 	defer issuer.Close()
 	j := joinClient{config: joinConfig{DirectoryImage: image, Origin: issuer.URL, HostID: "node"}, client: issuer.Client()}
@@ -66,6 +76,12 @@ func TestDirectoryControllerRuntimeHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	check()
+	if health := directoryControllerHealth(t.Context(), name); health.Ready {
+		t.Fatal("starting container reported ready without a private address")
+	}
+	if err := j.reportDirectoryHealth(t.Context(), a, enrollment.DirectoryHealth{}); err != nil || reports.Load() != 1 {
+		t.Fatalf("the agent did not report the unavailable controller: %v", err)
+	}
 	data, err := localPodman(t.Context(), "inspect", name).Output()
 	if err != nil || strings.Contains(string(data), private) {
 		t.Fatal("bootstrap secret appeared in process configuration")

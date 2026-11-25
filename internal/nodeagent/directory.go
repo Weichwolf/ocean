@@ -109,6 +109,37 @@ func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assign
 	return secret, nil
 }
 
+func (j *joinClient) reportDirectoryHealth(ctx context.Context, assignment enrollment.Assignment, health enrollment.DirectoryHealth) error {
+	payload, _ := json.Marshal(health)
+	path := j.url() + "/directories/" + assignment.TenantID + "/" + assignment.Generation + "/health"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := j.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("directory health report returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func directoryControllerHealth(ctx context.Context, name string) enrollment.DirectoryHealth {
+	probe, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	result, err := localPodman(probe, "exec", name, "/usr/bin/timeout", "3", "/usr/bin/python3",
+		"/usr/local/lib/ocean-directory/controller.py", "health").Output()
+	health := enrollment.DirectoryHealth{Ready: true, DomainSID: strings.TrimSpace(string(result))}
+	if err != nil || !health.Valid() {
+		return enrollment.DirectoryHealth{}
+	}
+	return health
+}
+
 func (j *joinClient) reconcileDirectoryControllers(ctx context.Context, logger *slog.Logger) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -143,10 +174,15 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 		}
 	}
 	for name, task := range tasks {
-		if task.NetworkUnavailable || task.Network == nil {
-			continue
+		var health enrollment.DirectoryHealth
+		if !task.NetworkUnavailable && task.Network != nil {
+			if err := j.syncDirectoryContainer(ctx, name, task); err != nil {
+				failures = append(failures, err)
+			} else {
+				health = directoryControllerHealth(ctx, name)
+			}
 		}
-		failures = append(failures, j.syncDirectoryContainer(ctx, name, task))
+		failures = append(failures, j.reportDirectoryHealth(ctx, task, health))
 	}
 	return errors.Join(failures...)
 }

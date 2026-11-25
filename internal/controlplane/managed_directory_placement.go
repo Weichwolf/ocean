@@ -127,7 +127,7 @@ func (r *Region) reserveDirectoryControllers(ctx context.Context, tenantID, key 
 	if tenant == nil || !tenant.Valid(tenantID) {
 		return identity.ErrDirectoryTenant
 	}
-	directory, guards, err := r.managedDirectorySnapshot(ctx, *tenant)
+	directory, guards, _, err := r.managedDirectorySnapshot(ctx, *tenant)
 	if err != nil || directory == nil {
 		return err
 	}

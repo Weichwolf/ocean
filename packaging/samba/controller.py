@@ -96,13 +96,19 @@ def provision(root, settings):
     subprocess.run(["/usr/bin/samba-tool", "ntacl", "sysvolcheck", "-s", str(config)], check=True, timeout=30)
 
 
-def primary_ticket(directory, settings):
+def target_kerberos(directory, settings, address):
     realm = settings["domain"].upper()
     config = directory / "krb5.conf"
     config.write_text(f"[libdefaults]\n default_realm = {realm}\n rdns = false\n"
-                      f"[realms]\n {realm} = {{\n  kdc = {settings['primary']}\n }}\n")
+                      f"[realms]\n {realm} = {{\n  kdc = {address}\n }}\n")
     cache = "FILE:" + str(directory / "ticket")
     os.environ.update(KRB5_CONFIG=str(config), KRB5CCNAME=cache)
+    return cache
+
+
+def primary_ticket(directory, settings):
+    cache = target_kerberos(directory, settings, settings["primary"])
+    realm = settings["domain"].upper()
     subprocess.run(["/usr/bin/kinit", "Administrator@" + realm], input=bootstrap_password() + "\n",
                    text=True, check=True, timeout=15)
     return cache
@@ -300,6 +306,51 @@ def wait_for_address(address):
     raise RuntimeError("the assigned directory address did not become available")
 
 
+def health(settings):
+    import ldb
+    from samba import NTSTATUSError
+    from samba.credentials import Credentials, MUST_USE_KERBEROS
+    from samba.dcerpc.security import dom_sid
+    from samba.ndr import ndr_unpack
+    from samba.param import LoadParm
+    from samba.samdb import SamDB
+
+    root = read_checkpoint(STATE / "controller.json", settings)
+    address = settings["address"]
+    domain = settings["domain"]
+    hostname = f"dc0{settings.get('controller', 1)}.{domain}"
+    query = ["/usr/bin/dig", "+time=1", "+tries=1", "+short", "@" + address]
+    addresses = subprocess.check_output([*query, hostname, "A"], text=True, timeout=2).split()
+    service = subprocess.check_output([*query, "_ldap._tcp.dc._msdcs." + domain, "SRV"],
+                                      text=True, timeout=2)
+    if addresses != [address] or not any(record.split()[2:] == ["389", hostname + "."]
+                                          for record in service.lower().splitlines()):
+        raise RuntimeError("controller DNS records are not available")
+    lp = LoadParm()
+    lp.load(str(root / "etc/smb.conf"))
+    with tempfile.TemporaryDirectory() as private:
+        # Pin the KDC to this controller so a healthy peer cannot mask a fault.
+        target_kerberos(Path(private), settings, address)
+        try:
+            credentials = Credentials()
+            credentials.guess(lp)
+            credentials.set_machine_account(lp)
+            credentials.set_kerberos_state(MUST_USE_KERBEROS)
+            remote = SamDB(url="ldap://" + hostname, lp=lp, credentials=credentials)
+            entry, = remote.search(base="", scope=ldb.SCOPE_BASE,
+                                   attrs=["dnsHostName", "isSynchronized", "defaultNamingContext"])
+            domain_entry, = remote.search(base=entry["defaultNamingContext"][0].decode(), scope=ldb.SCOPE_BASE,
+                                          attrs=["objectSid"])
+        except (ldb.LdbError, NTSTATUSError) as error:
+            raise RuntimeError("controller Kerberos LDAP bind failed") from error
+        naming_context = ",".join("dc=" + label for label in domain.split(".")).encode()
+        if (entry["dnsHostName"][0].lower() != hostname.encode()
+                or entry["isSynchronized"][0] != b"TRUE"
+                or entry["defaultNamingContext"][0].lower() != naming_context):
+            raise RuntimeError("controller LDAP root does not match the assigned domain")
+        print(ndr_unpack(dom_sid, domain_entry["objectSid"][0]))
+
+
 def serve(settings):
     os.umask(0o077)
     if not STATE.is_mount():
@@ -353,6 +404,8 @@ if __name__ == "__main__":
             join_replica(Path(sys.argv[2]), settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "seed" and settings.get("controller") == 2:
             seed_replica(Path(sys.argv[2]), settings)
+        elif len(sys.argv) == 2 and sys.argv[1] == "health":
+            health(settings)
         elif len(sys.argv) == 1:
             signal.signal(signal.SIGTERM, stop_before_service)
             signal.signal(signal.SIGINT, stop_before_service)

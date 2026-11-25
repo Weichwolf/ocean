@@ -13,6 +13,21 @@ import (
 )
 
 func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certificate []byte, tenant, generation string) ([]byte, error) {
+	binding, err := r.authorizeDirectoryController(ctx, host, certificate, tenant, generation)
+	if err != nil {
+		return nil, err
+	}
+	return r.workloads.sealer.Open(nil, nil, binding.placement.Bootstrap,
+		binding.placement.bootstrapLabel(r.managedDirectoryPlacementKey(tenant)))
+}
+
+type authorizedDirectoryController struct {
+	placement directoryPlacement
+	lease     clientv3.LeaseID
+	guards    []clientv3.Cmp
+}
+
+func (r *Region) authorizeDirectoryController(ctx context.Context, host string, certificate []byte, tenant, generation string) (*authorizedDirectoryController, error) {
 	if !validCapacity(r.directoryCapacity) || r.workloads == nil || !identifier.MatchString(tenant) || !identifier.MatchString(generation) {
 		return nil, enrollment.ErrHostDenied
 	}
@@ -54,14 +69,29 @@ func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certif
 	if !validScope(scope) || !identifier.MatchString(controller.ID) {
 		return nil, errors.New("invalid directory controller identity")
 	}
-	active, err := r.client.Get(ctx, r.hostReservationKey(scope, host, controller.ID), clientv3.WithRev(snapshot.Header.Revision))
+	assignmentKey := r.hostReservationKey(scope, host, controller.ID)
+	active, err := r.client.Get(ctx, assignmentKey, clientv3.WithRev(snapshot.Header.Revision))
 	if err != nil {
 		return nil, err
 	}
-	var assignment enrollment.Assignment
-	if len(active.Kvs) != 1 || json.Unmarshal(active.Kvs[0].Value, &assignment) != nil || assignment.Generation != generation ||
-		assignment.Directory == nil || assignment.Directory.DirectoryID != directory.ID || assignment.Directory.ControllerIndex != index+1 {
+	if len(active.Kvs) != 1 || !directoryAssignmentMatches(active.Kvs[0].Value, directory, controller, index) {
 		return nil, enrollment.ErrHostDenied
 	}
-	return r.workloads.sealer.Open(nil, nil, placement.Bootstrap, placement.bootstrapLabel(key))
+	binding := &authorizedDirectoryController{placement: placement, lease: clientv3.LeaseID(snapshot.Responses[1].GetResponseRange().Kvs[0].Lease)}
+	for _, response := range snapshot.Responses {
+		kv := response.GetResponseRange().Kvs[0]
+		binding.guards = append(binding.guards, clientv3.Compare(clientv3.ModRevision(string(kv.Key)), "=", kv.ModRevision))
+	}
+	binding.guards = append(binding.guards, clientv3.Compare(clientv3.ModRevision(assignmentKey), "=", active.Kvs[0].ModRevision))
+	return binding, nil
+}
+
+func directoryAssignmentMatches(raw []byte, directory identity.ManagedDirectory, controller Reservation, index int) bool {
+	var assigned enrollment.Assignment
+	return json.Unmarshal(raw, &assigned) == nil && assigned.Generation == controller.Generation &&
+		assigned.ID == controller.ID && assigned.TenantID == directory.TenantID && assigned.SubscriptionID == directory.SubscriptionID &&
+		assigned.PrivateIPv4 == controller.PrivateIPv4 && assigned.Directory != nil &&
+		assigned.Directory.DirectoryID == directory.ID && assigned.Directory.ControllerIndex == index+1 &&
+		assigned.Directory.DNSName == directory.Spec.DNSName && assigned.Directory.NetBIOSName == directory.Spec.NetBIOSName &&
+		assigned.Directory.ControllerIPv4[index] == controller.PrivateIPv4
 }

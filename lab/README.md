@@ -242,16 +242,31 @@ az rest --method get --url "$directory_url"
 ```
 
 HTTP 202 means the region saved the request. The response contains an opaque
-`directoryId`, a polling URL in the `Location` header, and
-`provisioningState: Creating`. Identical requests return the same ID,
-including after an interrupted response. A different configuration for the
-same tenant returns HTTP 409. Ocean holds the target subnet while the
+`directoryId`, a polling URL in the `Location` header, and the current
+provisioning state. Identical requests return the same ID, including after an
+interrupted response. A different configuration for the same tenant returns
+HTTP 409. Ocean holds the target subnet while the
 directory exists. It reserves CPU, memory, and private IPv4 addresses for
 both controllers in one transaction, using distinct live compute hosts in
 permitted pools. A directory-capable host advertises its locally installed
 controller image, private network reconciler, and sufficient rootless UID
 and GID mappings. An incomplete
 placement stays in `Creating` for a later attempt.
+
+Poll with `az rest --method get`. The response lists allocated controllers
+with their tenant-private IPv4 addresses, DNS names, and readiness. The
+directory reports `Creating` and `Pending` until both assigned controllers
+verify their DNS and Kerberos-authenticated LDAP service and present the same
+domain SID. Ocean records the completed provisioning and established domain
+SID in regional etcd. Later outages change `availability` to `Degraded` or
+`Unavailable` while `provisioningState` stays `Succeeded`. Recovery of both
+controllers in the same domain restores `Available`.
+
+Each node agent reports on its current placement over host mTLS. Revocation
+or reassignment invalidates its observation. Reports expire after 15
+seconds without a fresh observation. This status reflects the checks from
+inside the controller and the regional assignment. Client reachability has
+its own network and domain sign-in probes.
 
 Build the controller image and install the same image on the selected hosts.
 Set `enrollment.directoryImage` in each node agent config to its local
@@ -286,8 +301,11 @@ primary is stopped and requires the restarted primary to observe the change
 within 45 seconds. The harness stores the Markdown report, TSV, and client
 logs under `artifacts/e2e`.
 
-The regional directory stays in `Creating` pending verified health reporting.
-Ongoing SYSVOL synchronization, controller replacement, and the separate-host
+The same profile runs the `az rest` request and status commands with Azure
+CLI 2.93.0 against a loopback HTTPS contract fixture and a signed fixture
+token. The runtime and CLI probes are independently selectable with
+`OCEAN_E2E_CASES=WORKPLACE-04` or `OCEAN_E2E_CASES=WORKPLACE-05`.
+Ongoing SYSVOL synchronization, controller replacement, and separate-host
 and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ## Tenant directory users

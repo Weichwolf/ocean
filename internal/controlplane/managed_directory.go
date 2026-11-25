@@ -19,28 +19,28 @@ func (r *Region) managedDirectorySubnetLock(scope arm.SubscriptionScope, parent 
 	return r.subnetNetworkPlacements(scope, parent, subnet) + "_managed-directory"
 }
 
-func (r *Region) managedDirectorySnapshot(ctx context.Context, tenant identity.TenantReservation) (*identity.ManagedDirectory, []clientv3.Cmp, error) {
+func (r *Region) managedDirectorySnapshot(ctx context.Context, tenant identity.TenantReservation) (*identity.ManagedDirectory, []clientv3.Cmp, int64, error) {
 	if !tenant.Valid(tenant.TenantID) {
-		return nil, nil, identity.ErrDirectoryTenant
+		return nil, nil, 0, identity.ErrDirectoryTenant
 	}
 	registration, subscription := r.tenantKeys(tenant.TenantID)
 	key := r.managedDirectoryKey(tenant.TenantID)
 	read, err := r.client.Txn(ctx).Then(clientv3.OpGet(registration), clientv3.OpGet(subscription), clientv3.OpGet(key)).Commit()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	registrations := read.Responses[0].GetResponseRange().Kvs
 	subscriptions := read.Responses[1].GetResponseRange().Kvs
 	if len(registrations) != 1 || len(subscriptions) != 1 {
-		return nil, nil, identity.ErrDirectoryTenant
+		return nil, nil, 0, identity.ErrDirectoryTenant
 	}
 	var saved identity.TenantReservation
 	var sub identity.Subscription
 	if json.Unmarshal(registrations[0].Value, &saved) != nil || json.Unmarshal(subscriptions[0].Value, &sub) != nil {
-		return nil, nil, errors.New("invalid tenant metadata for managed directory")
+		return nil, nil, 0, errors.New("invalid tenant metadata for managed directory")
 	}
 	if saved != tenant || !sub.Valid(tenant.TenantID) || sub.SubscriptionID != tenant.SubscriptionID {
-		return nil, nil, identity.ErrDirectoryTenant
+		return nil, nil, 0, identity.ErrDirectoryTenant
 	}
 	items := read.Responses[2].GetResponseRange().Kvs
 	guards := []clientv3.Cmp{
@@ -48,17 +48,21 @@ func (r *Region) managedDirectorySnapshot(ctx context.Context, tenant identity.T
 		clientv3.Compare(clientv3.ModRevision(subscription), "=", subscriptions[0].ModRevision),
 	}
 	if len(items) == 0 {
-		return nil, append(guards, clientv3.Compare(clientv3.Version(key), "=", 0)), nil
+		return nil, append(guards, clientv3.Compare(clientv3.Version(key), "=", 0)), read.Header.Revision, nil
 	}
 	var directory identity.ManagedDirectory
 	if json.Unmarshal(items[0].Value, &directory) != nil || !directory.Valid(tenant) {
-		return nil, nil, errors.New("invalid managed directory record")
+		return nil, nil, 0, errors.New("invalid managed directory record")
 	}
-	return &directory, append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", items[0].ModRevision)), nil
+	return &directory, append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", items[0].ModRevision)), read.Header.Revision, nil
 }
 
 func (r *Region) LookupManagedDirectory(ctx context.Context, tenant identity.TenantReservation) (*identity.ManagedDirectory, error) {
-	directory, _, err := r.managedDirectorySnapshot(ctx, tenant)
+	directory, _, revision, err := r.managedDirectorySnapshot(ctx, tenant)
+	if err != nil || directory == nil {
+		return directory, err
+	}
+	_, _, err = r.readManagedDirectoryHealth(ctx, directory, revision)
 	return directory, err
 }
 
@@ -76,7 +80,7 @@ func (r *Region) RequestManagedDirectory(ctx context.Context, tenant identity.Te
 	key := r.managedDirectoryKey(tenant.TenantID)
 	lock := r.managedDirectorySubnetLock(scope, parent, name)
 	for range 8 {
-		existing, guards, err := r.managedDirectorySnapshot(ctx, tenant)
+		existing, guards, revision, err := r.managedDirectorySnapshot(ctx, tenant)
 		if err != nil {
 			return empty, err
 		}
@@ -84,7 +88,8 @@ func (r *Region) RequestManagedDirectory(ctx context.Context, tenant identity.Te
 			if existing.Spec != spec {
 				return empty, identity.ErrDirectoryConflict
 			}
-			return *existing, nil
+			_, _, err := r.readManagedDirectoryHealth(ctx, existing, revision)
+			return *existing, err
 		}
 		subnet, err := r.allocateSubnet(ctx, scope, spec.SubnetID)
 		if errors.Is(err, ErrPlacementSubnetUnavailable) || errors.Is(err, ErrSubnetAddressExhausted) {

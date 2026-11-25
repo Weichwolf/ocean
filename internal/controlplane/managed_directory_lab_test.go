@@ -313,6 +313,64 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 			t.Fatalf("a mismatched production certificate could read the assignment: %v", err)
 		}
 	}
+	assertHealth := func(left, right, provisioned bool) {
+		t.Helper()
+		state, err := r.LookupManagedDirectory(ctx, tenant)
+		if err != nil || state == nil || state.Controllers[0].Ready != left || state.Controllers[1].Ready != right ||
+			(!state.ProvisionedAt.IsZero()) != provisioned || state.Controllers[0].DNSName != "dc01."+directory.Spec.DNSName ||
+			state.Controllers[1].PrivateIPv4 != latest.Controllers[1].PrivateIPv4 {
+			t.Fatalf("unexpected directory health %+v, error %v", state, err)
+		}
+	}
+	const domainSID = "S-1-5-21-123-456-789"
+	const differentSID = "S-1-5-21-123-456-999"
+	ready := enrollment.DirectoryHealth{Ready: true, DomainSID: domainSID}
+	report := func(controller Reservation, health enrollment.DirectoryHealth) {
+		t.Helper()
+		if err := r.ReportDirectoryHealth(ctx, controller.HostID, []byte(controller.HostID), tenant.TenantID, controller.Generation, health); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertHealth(false, false, false)
+	if err := r.ReportDirectoryHealth(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, right.Generation, ready); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatal("a host reported health of another controller")
+	}
+	if err := r.ReportDirectoryHealth(ctx, left.HostID, []byte(left.HostID), second.TenantID, left.Generation, ready); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatal("a host reported health for another tenant")
+	}
+	report(left, ready)
+	assertHealth(true, false, false)
+	report(right, enrollment.DirectoryHealth{Ready: true, DomainSID: differentSID})
+	assertHealth(false, false, false)
+	report(right, ready)
+	report(right, ready)
+	assertHealth(true, true, true)
+	events, err := client.Get(ctx, r.armPrefix(scope)+"audit/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provisioned int
+	for _, item := range events.Kvs {
+		var event arm.AuditEvent
+		if json.Unmarshal(item.Value, &event) == nil && event.Action == "Ocean.Identity/directories/provision" &&
+			event.Target == directory.ID && event.Outcome == "Succeeded" {
+			provisioned++
+		}
+	}
+	if provisioned != 1 {
+		t.Fatalf("duplicate health report committed %d provisioning audit events", provisioned)
+	}
+	old, _ := json.Marshal(directoryObservation{DirectoryHealth: ready, ObservedAt: time.Now().Add(-enrollment.HostAvailabilityTTL - time.Second)})
+	if _, err := client.Put(ctx, r.directoryObservationKey(tenant.TenantID, left.Generation), string(old), clientv3.WithLease(lease.ID)); err != nil {
+		t.Fatal(err)
+	}
+	assertHealth(false, true, true)
+	report(left, ready)
+	report(right, enrollment.DirectoryHealth{Ready: true, DomainSID: differentSID})
+	assertHealth(true, false, true)
+	report(right, enrollment.DirectoryHealth{})
+	assertHealth(true, false, true)
+	report(right, ready)
 	other := arm.SubscriptionScope{TenantID: second.TenantID, SubscriptionID: second.SubscriptionID}
 	setPolicy(other, pairCapacity)
 	parent, name, _ := arm.SubnetParent(other, secondSpec.SubnetID)
@@ -374,4 +432,8 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	if secret, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation); secret != nil || !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatal("a revoked primary could recover the bootstrap credential")
 	}
+	if err := r.ReportDirectoryHealth(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation, ready); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatal("a revoked primary reported health")
+	}
+	assertHealth(false, true, true)
 }

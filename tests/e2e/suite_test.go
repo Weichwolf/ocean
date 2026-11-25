@@ -239,7 +239,7 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 			return slices.Contains([]string{"WORKPLACE-01", "WORKPLACE-02", "WORKPLACE-03"}, c.ID)
 		}
 	case "managed-directory":
-		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-04" }
+		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-04" || c.ID == "WORKPLACE-05" }
 	default:
 		t.Fatalf("unknown acceptance profile %q", profile)
 	}

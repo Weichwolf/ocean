@@ -35,5 +35,11 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	} else if _, err := exec.LookPath("podman"); err != nil {
 		runtime.BlockedReason = "Install rootless Podman for the directory runtime probe."
 	}
-	return append(steps, runtime)
+	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
+		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
+			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
+	if _, err := exec.LookPath("az"); err != nil {
+		cli.BlockedReason = "Install the pinned Azure CLI 2.93.0 for the managed directory contract probe."
+	}
+	return append(steps, runtime, cli)
 }

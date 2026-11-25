@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -54,17 +55,29 @@ func (s DirectorySpec) Canonical() (DirectorySpec, bool) {
 
 // ManagedDirectory is the durable provisioning request for a tenant.
 type ManagedDirectory struct {
-	TenantID       string        `json:"tenantId"`
-	SubscriptionID string        `json:"subscriptionId"`
-	ID             string        `json:"directoryId"`
-	Spec           DirectorySpec `json:"spec"`
-	RequestedAt    time.Time     `json:"requestedAt"`
+	TenantID       string                          `json:"tenantId"`
+	SubscriptionID string                          `json:"subscriptionId"`
+	ID             string                          `json:"directoryId"`
+	Spec           DirectorySpec                   `json:"spec"`
+	RequestedAt    time.Time                       `json:"requestedAt"`
+	ProvisionedAt  time.Time                       `json:"provisionedAt,omitzero"`
+	DomainSID      string                          `json:"domainSid,omitempty"`
+	Controllers    [2]DirectoryControllerReadiness `json:"-"`
+}
+
+// DirectoryControllerReadiness is the tenant-facing view of an assigned controller.
+type DirectoryControllerReadiness struct {
+	DNSName     string     `json:"dnsName"`
+	PrivateIPv4 netip.Addr `json:"privateIPv4"`
+	Ready       bool       `json:"ready"`
 }
 
 func (d ManagedDirectory) Valid(tenant TenantReservation) bool {
 	spec, ok := d.Spec.Canonical()
 	return tenant.Valid(d.TenantID) && d.SubscriptionID == tenant.SubscriptionID &&
-		tenantID.MatchString(d.ID) && ok && d.Spec == spec && !d.RequestedAt.IsZero()
+		tenantID.MatchString(d.ID) && ok && d.Spec == spec && !d.RequestedAt.IsZero() &&
+		(d.ProvisionedAt.IsZero() && d.DomainSID == "" ||
+			d.DomainSID != "" && !d.ProvisionedAt.Before(d.RequestedAt))
 }
 
 // ManagedDirectoryStore reserves a tenant directory in the regional store.
@@ -163,9 +176,31 @@ func directoryPath(tenant string) string {
 }
 
 func writeDirectory(w http.ResponseWriter, status int, directory ManagedDirectory) {
+	controllers := make([]DirectoryControllerReadiness, 0, len(directory.Controllers))
+	available := 0
+	for _, controller := range directory.Controllers {
+		if controller.DNSName == "" {
+			continue
+		}
+		controllers = append(controllers, controller)
+		if controller.Ready {
+			available++
+		}
+	}
+	provisioning, availability := "Creating", "Pending"
+	if !directory.ProvisionedAt.IsZero() {
+		provisioning, availability = "Succeeded", "Unavailable"
+		switch available {
+		case 1:
+			availability = "Degraded"
+		case 2:
+			availability = "Available"
+		}
+	}
 	writeJSON(w, status, map[string]any{
 		"id": directoryPath(directory.TenantID), "directoryId": directory.ID, "tenantId": directory.TenantID,
-		"properties": directory.Spec, "requestedAt": directory.RequestedAt, "provisioningState": "Creating",
+		"properties": directory.Spec, "requestedAt": directory.RequestedAt, "provisioningState": provisioning,
+		"availability": availability, "controllers": controllers,
 	})
 }
 

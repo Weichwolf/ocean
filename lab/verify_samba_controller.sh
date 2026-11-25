@@ -60,6 +60,19 @@ wait_dns() {
     p logs "$container" 2>&1 | tail -12 >&2
     exit 1
 }
+wait_health() {
+    local container=$1 expected=$2 started=$SECONDS sid
+    until sid=$(p exec "$container" /usr/bin/timeout 3 /usr/bin/python3 \
+            /usr/local/lib/ocean-directory/controller.py health) && [[ "$sid" == "$expected" ]]; do
+        if (( SECONDS - started >= 15 )); then
+            p logs "$container" 2>&1 | tail -12 >&2
+            return 1
+        fi
+        sleep 1
+    done
+    printf '%s verified its DNS, Kerberos-authenticated LDAP, and domain SID after %d seconds.\n' \
+        "$container" "$(( SECONDS - started ))"
+}
 proof() {
     p run --rm -i --network "$net" --entrypoint /bin/sh "$image" -c '
         set -eu
@@ -135,6 +148,9 @@ sys.exit(samba_tool("user", "create", "employee", sys.stdin.readline().rstrip("\
 ' <"$probe/employee.secret"
 original=$(account "$name")
 printf '%s\n' "$original"
+employee_sid=$(awk '$1 == "objectSid:" { print $2 }' <<<"$original")
+domain_sid=${employee_sid%-*}
+wait_health "$name" "$domain_sid"
 before=$(proof "$addr" 1)
 printf '%s\n' "$before"
 p stop --time 15 "$name" >/dev/null
@@ -161,6 +177,7 @@ p stop --time 15 "$name" >/dev/null
 p rm "$replica" --force >/dev/null
 start "$replica" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr"
 wait_dns "$replica" "$replica_addr" 2
+wait_health "$replica" "$domain_sid"
 test "$original" = "$(account "$replica")"
 replicated=$(proof "$replica_addr" 2)
 printf '%s\n' "$replicated"
@@ -172,6 +189,7 @@ p start "$name" >/dev/null
 wait_dns "$name" "$addr" 1
 wait_membership "$name" LabPrimaryGroup "" "$recovery_started"
 p stop --time 15 "$replica" >/dev/null
+wait_health "$name" "$domain_sid"
 after=$(proof "$addr" 1)
 same_policy "$before" "$after"
 printf 'The primary served Kerberos and SYSVOL with the replica stopped.\n'
