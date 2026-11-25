@@ -190,8 +190,27 @@ func testRegionalDirectory(t *testing.T, mode string) {
 	}
 	handler = compat.Handler()
 	if mode == "desktops" {
+		r.desktopLaunch, err = openDesktopLaunch(&desktopLaunchConfig{
+			SigningKeyFile: file("desktop-signing.seed", bytes.Repeat([]byte{25}, ed25519.SeedSize)),
+			Gateways:       []string{"desktop-gateway-a", "desktop-gateway-b"},
+		}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.bootstrapDesktopLaunch(ctx); err != nil {
+			t.Fatal(err)
+		}
 		handler = (arm.Server{Origin: api.URL, Location: r.name, Authenticate: compat.AuthenticateARM, Inventory: r,
-			Roles: r, VirtualMachines: r, Desktops: r}).Handler(handler)
+			Roles: r, VirtualMachines: r, Desktops: r, DesktopLaunch: r,
+			AuthenticateDesktop: func(_ context.Context, req *http.Request) (identity.DesktopPrincipal, error) {
+				user, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer fixture-browser:")
+				if !ok || !enrollment.ValidDirectoryJoinID(user) {
+					return identity.DesktopPrincipal{}, identity.ErrInvalidDesktopToken
+				}
+				return identity.DesktopPrincipal{Tenant: tenant, DirectoryID: domain.ID, UserID: user,
+					ExpiresAt: time.Now().Add(time.Minute)}, nil
+			},
+		}).Handler(handler)
 	}
 	handler = authority.Handler(handler)
 	close(ready)
@@ -260,7 +279,7 @@ func testRegionalDirectory(t *testing.T, mode string) {
 		transport := baseTransport.Clone()
 		transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
 		t.Cleanup(transport.CloseIdleConnections)
-		return &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		return &http.Client{Transport: transport, Timeout: 12 * time.Second}
 	}
 	writer, peer := mtls(writerCert), mtls(replicaCert)
 	if mode != "join" {
@@ -276,7 +295,12 @@ func testRegionalDirectory(t *testing.T, mode string) {
 			observe: observe, sign: sign,
 		}
 		if mode == "desktops" {
-			fixture.verifyDesktops(t, r, scope)
+			gateways := make([]desktopLabGateway, 0, len(r.desktopLaunch.gateways))
+			for i, host := range r.desktopLaunch.gateways {
+				certificate := directoryFixtureHostCertificate(t, ca, caPrivate, host, int64(i+4))
+				gateways = append(gateways, desktopLabGateway{host: host, certificate: certificate.Certificate[0], client: mtls(certificate)})
+			}
+			fixture.verifyDesktops(t, r, scope, gateways, writer)
 		} else {
 			fixture.verify(t, mode == "groups")
 		}
@@ -440,15 +464,24 @@ func directoryJoinClientCertificates(t *testing.T) (*x509.Certificate, ed25519.P
 		NotBefore: validAfter, NotAfter: validBefore, IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	public, private := keypair()
 	ca = cert(ca, ca, public, private)
-	leaf := func(serial int64) tls.Certificate {
-		template := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "Ocean directory fixture host"},
-			NotBefore: validAfter, NotAfter: validBefore, KeyUsage: x509.KeyUsageDigitalSignature,
-			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
-		public, key := keypair()
-		certificate := cert(template, ca, public, private)
-		return tls.Certificate{Certificate: [][]byte{certificate.Raw}, PrivateKey: key, Leaf: certificate}
+	return ca, private, directoryFixtureHostCertificate(t, ca, private, "join-writer", 2),
+		directoryFixtureHostCertificate(t, ca, private, "join-replica", 3)
+}
+
+func directoryFixtureHostCertificate(t *testing.T, ca *x509.Certificate, signer ed25519.PrivateKey, host string, serial int64) tls.Certificate {
+	t.Helper()
+	public, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return ca, private, leaf(2), leaf(3)
+	template := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: host},
+		NotBefore: ca.NotBefore, NotAfter: ca.NotAfter, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	certificate, err := x509.CreateCertificate(rand.Reader, template, ca, public, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{certificate}, PrivateKey: key}
 }
 
 func directoryJoinIssuer(t *testing.T, tenant string) (*httptest.Server, func(string, string) string, func(string, string, string, string, string)) {

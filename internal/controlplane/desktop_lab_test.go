@@ -4,13 +4,20 @@ package controlplane
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/desktop"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/storage"
@@ -20,7 +27,13 @@ import (
 
 const desktopLabHost = "desktop-compute"
 
-func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.SubscriptionScope) {
+type desktopLabGateway struct {
+	host        string
+	certificate []byte
+	client      *http.Client
+}
+
+func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.SubscriptionScope, gateways []desktopLabGateway, nonGateway *http.Client) {
 	t.Helper()
 	defer f.startWorker(t)()
 	const group = "desktop-lab"
@@ -112,6 +125,7 @@ func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.
 		}
 	}
 	check("desktop-a", browserUser, assigned, nil)
+	f.verifyDesktopLaunch(t, r, scope, vmA, assigned, browserUser, gateways, nonGateway)
 	if _, err := r.client.Delete(f.ctx, hostKey); err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +188,153 @@ func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.
 	az(false, "rest", "--method", "delete", "--url", vmURL)
 	put("desktop-other", "InvalidDesktopVM", changedPolicy)
 	t.Log("stock Azure CLI created managed AD identities, assigned two prepared VM records, and verified assignment versioning, invalid grants and VM deletion guards")
+}
+
+func (f regionalGraphFixture) verifyDesktopLaunch(t *testing.T, r *Region, scope arm.SubscriptionScope, vm arm.ResourceAddress,
+	assigned desktopAssignment, user identity.DesktopPrincipal, gateways []desktopLabGateway, nonGateway *http.Client) {
+	t.Helper()
+	ctx := f.ctx
+	ip := netip.MustParseAddr("10.254.247.33")
+	nicAddress := arm.ResourceAddress{Group: vm.Group, Path: arm.VMNetworkInterfaceType + "/vm-a"}
+	nic := vmNIC{Address: nicAddress, IP: ip, VMID: assigned.MachineID, VM: &vm, Lease: operationID(),
+		SubnetID: "/subscriptions/" + scope.SubscriptionID + "/resourceGroups/" + vm.Group + "/providers/Microsoft.Network/virtualNetworks/office/subnets/workforce"}
+	nic.Config.Properties.IPConfigurations = []arm.VMIPConfiguration{{Name: "workforce"}}
+	nicKey := r.vmNICKey(scope, nicAddress)
+	vnet, subnet, ok := arm.SubnetParent(scope, nic.SubnetID)
+	if !ok {
+		t.Fatal("invalid fixture subnet")
+	}
+	addressOwner := r.subnetNetworkPlacements(scope, vnet, subnet) + ip.String()
+	storeNIC := func() {
+		t.Helper()
+		if _, err := r.client.Txn(ctx).Then(putJSON(nicKey, nic)).Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storeNIC()
+	if _, err := r.client.Put(ctx, addressOwner, nic.Lease); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := r.client.Grant(ctx, 70)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeGateway := func(gateway desktopLabGateway, certificate []byte) {
+		t.Helper()
+		host := enrollment.Host{HostID: gateway.host, Cell: r.cell, Pool: "approved", Roles: []string{"gateway"}, Certificate: certificate}
+		live, err := json.Marshal(enrollment.Availability{HostID: host.HostID, Cell: host.Cell, Pool: host.Pool, Roles: host.Roles})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.client.Txn(ctx).Then(putJSON(r.hostKey("registered", host.HostID), host),
+			clientv3.OpPut(r.hostKey("live", host.HostID), string(live), clientv3.WithLease(lease.ID))).Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, gateway := range gateways {
+		storeGateway(gateway, gateway.certificate)
+	}
+	address := arm.ResourceAddress{Group: vm.Group, Path: arm.DesktopType + "/desktop-a"}
+	endpoint := f.api.URL + address.ID(scope) + "/launch?api-version=" + arm.DesktopAPIVersion
+	bearer := "Bearer fixture-browser:" + user.UserID
+	request := func(client *http.Client, url, auth string, expected int, code string) arm.DesktopLaunch {
+		t.Helper()
+		f.observe()
+		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		httpRequest.Header.Set("Authorization", auth)
+		response, err := client.Do(httpRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		body, err := io.ReadAll(io.LimitReader(response.Body, 8192))
+		if err != nil || response.StatusCode != expected || response.Header.Get("Cache-Control") != "no-store" ||
+			code != "" && response.Header.Get("x-ms-error-code") != code {
+			t.Fatalf("desktop launch expected status %d and code %s, got %d and %s: %v", expected, code, response.StatusCode, response.Header.Get("x-ms-error-code"), err)
+		}
+		var target arm.DesktopLaunch
+		if err := json.Unmarshal(body, &target); err != nil || expected != http.StatusOK && target.Credential != "" {
+			t.Fatal("invalid desktop launch response")
+		}
+		return target
+	}
+	request(f.api.Client(), endpoint, bearer, http.StatusForbidden, "DesktopGatewayDenied")
+	request(nonGateway, endpoint, bearer, http.StatusForbidden, "DesktopGatewayDenied")
+	first, second := gateways[0], gateways[1]
+	request(first.client, endpoint, "Bearer "+f.sign(f.api.URL, f.tenant.Administrator), http.StatusUnauthorized, "InvalidDesktopToken")
+	request(first.client, strings.Replace(endpoint, scope.SubscriptionID, operationID(), 1), bearer, http.StatusNotFound, "SubscriptionNotFound")
+	storeGateway(first, second.certificate)
+	request(first.client, endpoint, bearer, http.StatusForbidden, "DesktopGatewayDenied")
+	storeGateway(first, first.certificate)
+
+	assertCredential := func(result arm.DesktopLaunch) {
+		t.Helper()
+		const upn = "desktop@ad.runtime.test"
+		now := time.Now()
+		if result.AssignmentID != assigned.AssignmentID || result.MachineID != assigned.MachineID || result.User != upn ||
+			result.PrivateIP != ip || result.NetworkInterface != nicAddress.ID(scope) || result.SubnetID != nic.SubnetID ||
+			!now.Before(result.ExpiresAt) || result.ExpiresAt.After(now.Add(desktop.LaunchLifetime)) {
+			t.Fatal("regional launch did not bind the expected desktop, address and validity window")
+		}
+		state := filepath.Join(t.TempDir(), "replay")
+		if err := os.Mkdir(state, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		public := ed25519.PublicKey(r.desktopLaunch.signer[ed25519.SeedSize:])
+		if err := desktop.RedeemLaunch(public, result.MachineID, upn, []byte(result.Credential), now, state); err != nil {
+			t.Fatalf("guest rejected the regional credential: %v", err)
+		}
+	}
+	assertCredential(request(first.client, endpoint, bearer, http.StatusOK, ""))
+	nic.VMID = operationID()
+	storeNIC()
+	request(first.client, endpoint, bearer, http.StatusServiceUnavailable, "DesktopUnavailable")
+	nic.VMID = assigned.MachineID
+	validSubnet := nic.SubnetID
+	nic.SubnetID = strings.Replace(validSubnet, scope.SubscriptionID, operationID(), 1)
+	storeNIC()
+	request(first.client, endpoint, bearer, http.StatusServiceUnavailable, "DesktopUnavailable")
+	nic.SubnetID = validSubnet
+	storeNIC()
+	if _, err := r.client.Delete(ctx, addressOwner); err != nil {
+		t.Fatal(err)
+	}
+	request(first.client, endpoint, bearer, http.StatusServiceUnavailable, "DesktopUnavailable")
+	if _, err := r.client.Put(ctx, addressOwner, nic.Lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RevokeHost(ctx, first.host); err != nil {
+		t.Fatal(err)
+	}
+	request(first.client, endpoint, bearer, http.StatusForbidden, "DesktopGatewayDenied")
+	switched := time.Now()
+	assertCredential(request(second.client, endpoint, bearer, http.StatusOK, ""))
+	t.Logf("a second enrolled gateway obtained a guest-verifiable credential in %s after revoking the first gateway",
+		time.Since(switched).Round(time.Millisecond))
+	log, err := r.client.Get(ctx, r.armPrefix(scope)+"audit/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	for _, item := range log.Kvs {
+		var event arm.AuditEvent
+		if err := json.Unmarshal(item.Value, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Action == arm.DesktopType+"/launch/action" {
+			if event.Actor != user.UserID || event.Target != address.ID(scope) || event.Outcome != "Authorized" ||
+				bytes.Contains(item.Value, []byte("ocean1.")) {
+				t.Fatal("desktop launch audit has invalid fields")
+			}
+			launches++
+		}
+	}
+	if launches != 2 {
+		t.Fatalf("desktop audit recorded %d successful launch decisions, want 2", launches)
+	}
 }
 
 func seedDesktopLabVM(t *testing.T, f regionalGraphFixture, r *Region, scope arm.SubscriptionScope, group, name, osType string) arm.ResourceAddress {

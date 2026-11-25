@@ -134,6 +134,16 @@ before returning a decision valid for at most 15 seconds. A successful decision
 contains the assignment and machine IDs. Starting and renewing a graphical
 session require the gateway and guest runtime.
 
+The launch action additionally requires a verified client certificate from an
+allowlisted, enrolled gateway with a live host lease. The region checks the
+VM's current NIC binding and ownership of its private address. It returns the
+address, NIC and tenant subnet to the gateway. The issuance decision compares
+the gateway enrollment and availability, assignment, directory, VM, NIC and
+address allocation revisions in etcd. The audit event records the user
+object ID and the desktop resource ID. Every
+regional API replica uses the same signer and gateway allowlist, verified
+against a public-key manifest in regional metadata.
+
 The XRDP guest helper verifies a signed, single-use launch credential for the
 guest's pinned machine ID and canonical AD sign-in name. The credential expires
 within 15 seconds and the guest commits its receipt to a private persistent

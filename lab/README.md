@@ -704,8 +704,12 @@ sends stock Azure CLI requests through the regional API. The enrolled
 directory worker checks the user and group in the live Samba database. The
 test exercises the two assignments, cross-subscription denial, updates, and
 VM deletion guards. It checks admission against live AD membership and account
-status using the native object ID. Its runtime companion `VM-03` boots the small Debian VM
-and verifies profile persistence.
+status using the native object ID. The launch probe uses two client certificates
+over real mTLS and a fixture browser principal. It rejects a missing, unlisted
+or replaced certificate, an ARM bearer, a foreign subscription and an invalid
+NIC binding. After revoking the first gateway it verifies that the other can
+obtain a credential the guest verifier accepts. The companion case `VM-03`
+boots the small Debian VM and verifies profile persistence.
 
 ```sh
 OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-33 \
@@ -713,6 +717,21 @@ OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-33 \
   OCEAN_E2E_SAMBA_IMAGE="$LOCAL_SAMBA_IMAGE_ID" OCEAN_E2E_ADCLI_IMAGE="$LOCAL_ADCLI_IMAGE_ID" \
   go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
+
+For the internal launch API, configure `region.desktopLaunch.signingKeyFile`
+with a private file containing a 32-byte Ed25519 seed and
+`region.desktopLaunch.gateways` with 2 to 16 distinct enrolled gateway host
+IDs. Use the same seed and allowlist on every regional API replica. Provision
+the corresponding raw Ed25519 public key as standard Base64 in the guest
+configuration and bind it to the VM's stable machine ID.
+
+The gateway calls `POST {desktopId}/launch?api-version=2026-11-01` at the
+regional HTTPS endpoint with its enrolled client certificate and the workforce
+user's dedicated desktop application access token. Send an empty request body.
+The no-store response contains the authorized user, a 15-second maximum
+single-use RDP credential and the NIC and subnet of the destination. The
+gateway must establish the connection in that tenant subnet and keep the
+credential within the gateway-to-guest connection.
 
 ### Small Debian desktop VM
 

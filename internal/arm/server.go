@@ -38,6 +38,7 @@ type Server struct {
 	Storage             StorageStore
 	SMBShares           SMBStore
 	Desktops            DesktopStore
+	DesktopLaunch       DesktopLaunchStore
 	FunctionPlans       bool
 	Functions           FunctionStore
 	FunctionDomain      string
@@ -102,8 +103,13 @@ func parseRoute(segments []string) armRoute {
 			return armRoute{collection: "inventory", group: group}
 		}
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
-			if len(segments) == 9 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) && strings.EqualFold(segments[8], "authorize") {
-				return armRoute{collection: "desktopAuthorization", group: group, name: segments[7]}
+			if len(segments) == 9 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) {
+				switch strings.ToLower(segments[8]) {
+				case "authorize":
+					return armRoute{collection: "desktopAuthorization", group: group, name: segments[7]}
+				case "launch":
+					return armRoute{collection: "desktopLaunch", group: group, name: segments[7]}
+				}
 			}
 			if len(segments) == 8 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) {
 				return armRoute{collection: "personalDesktop", group: group, name: segments[7]}
@@ -224,8 +230,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			fallback.ServeHTTP(w, r)
 			return
 		}
-		if route.collection == "desktopAuthorization" {
-			s.authorizePersonalDesktop(w, r, segments[1], route.group, route.name)
+		if route.collection == "desktopAuthorization" || route.collection == "desktopLaunch" {
+			s.authorizePersonalDesktop(w, r, segments[1], route.group, route.name, route.collection == "desktopLaunch")
 			return
 		}
 		timeout := 5 * time.Second

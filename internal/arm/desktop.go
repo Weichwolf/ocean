@@ -2,8 +2,10 @@ package arm
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ var (
 	ErrDesktopDirectory = errors.New("the tenant's managed directory is unavailable")
 	ErrDesktopDenied    = errors.New("the user has no current access to this desktop")
 	ErrDesktopOffline   = errors.New("the assigned desktop is unavailable")
+	ErrDesktopGateway   = errors.New("the desktop gateway has no current authorization")
 )
 
 type DesktopPolicy struct {
@@ -47,8 +50,22 @@ type DesktopAdmission struct {
 	ExpiresAt    time.Time `json:"expiresAt"`
 }
 
-func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request, subscription, group, name string) {
-	if s.Desktops == nil || s.AuthenticateDesktop == nil {
+type DesktopLaunchStore interface {
+	LaunchPersonalDesktop(context.Context, identity.DesktopPrincipal, ResourceAddress, string, []byte) (DesktopLaunch, error)
+}
+
+// DesktopLaunch is sent only to an authorized gateway over mutual TLS.
+type DesktopLaunch struct {
+	DesktopAdmission
+	User             string     `json:"user"`
+	Credential       string     `json:"credential"`
+	PrivateIP        netip.Addr `json:"privateIp"`
+	NetworkInterface string     `json:"networkInterfaceId"`
+	SubnetID         string     `json:"subnetId"`
+}
+
+func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request, subscription, group, name string, launch bool) {
+	if s.Desktops == nil || s.AuthenticateDesktop == nil || launch && s.DesktopLaunch == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -64,8 +81,21 @@ func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-		writeError(w, http.StatusBadRequest, "InvalidDesktopRequest", "The desktop authorization action takes no request body.")
+		writeError(w, http.StatusBadRequest, "InvalidDesktopRequest", "The desktop access action takes no request body.")
 		return
+	}
+	var peer *x509.Certificate
+	if launch {
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
+			writeError(w, http.StatusForbidden, "DesktopGatewayDenied", ErrDesktopGateway.Error())
+			return
+		}
+		peer = r.TLS.PeerCertificates[0]
+		now := time.Now()
+		if peer == nil || now.Before(peer.NotBefore) || !now.Before(peer.NotAfter) {
+			writeError(w, http.StatusForbidden, "DesktopGatewayDenied", ErrDesktopGateway.Error())
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 24*time.Second)
 	defer cancel()
@@ -82,7 +112,20 @@ func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "SubscriptionNotFound", "The subscription could not be found.")
 		return
 	}
-	admission, err := s.Desktops.AuthorizePersonalDesktop(ctx, principal, ResourceAddress{Group: group, Path: DesktopType + "/" + name})
+	address := ResourceAddress{Group: group, Path: DesktopType + "/" + name}
+	if launch {
+		if peer.NotAfter.Before(principal.ExpiresAt) {
+			principal.ExpiresAt = peer.NotAfter
+		}
+		result, err := s.DesktopLaunch.LaunchPersonalDesktop(ctx, principal, address, peer.Subject.CommonName, peer.Raw)
+		if err != nil {
+			desktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	admission, err := s.Desktops.AuthorizePersonalDesktop(ctx, principal, address)
 	if err != nil {
 		desktopError(w, err)
 		return
@@ -149,6 +192,8 @@ func desktopError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "DesktopDirectoryUnavailable", err.Error())
 	case errors.Is(err, ErrDesktopDenied):
 		writeError(w, http.StatusForbidden, "DesktopAccessDenied", err.Error())
+	case errors.Is(err, ErrDesktopGateway):
+		writeError(w, http.StatusForbidden, "DesktopGatewayDenied", err.Error())
 	case errors.Is(err, ErrDesktopOffline):
 		writeError(w, http.StatusServiceUnavailable, "DesktopUnavailable", err.Error())
 	case errors.Is(err, ErrGroupDeleting):

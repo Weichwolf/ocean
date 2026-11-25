@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/desktop"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/workload"
@@ -143,7 +144,12 @@ func (r *Region) DeletePersonalDesktop(ctx context.Context, scope arm.Subscripti
 }
 
 func (r *Region) AuthorizePersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress) (arm.DesktopAdmission, error) {
-	var empty arm.DesktopAdmission
+	access, err := r.resolvePersonalDesktop(ctx, principal, address, nil)
+	return access.DesktopAdmission, err
+}
+
+func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, gatewayGuards []clientv3.Cmp) (arm.DesktopLaunch, error) {
+	var empty arm.DesktopLaunch
 	started := time.Now().UTC()
 	if !principal.Tenant.Valid(principal.Tenant.TenantID) || !enrollment.ValidDirectoryJoinID(principal.UserID) ||
 		!enrollment.ValidDirectoryJoinID(principal.DirectoryID) || !started.Before(principal.ExpiresAt) {
@@ -210,18 +216,39 @@ func (r *Region) AuthorizePersonalDesktop(ctx context.Context, principal identit
 		return empty, arm.ErrDesktopOffline
 	}
 	guards = append(guards, vmGuards...)
+	var access arm.DesktopLaunch
+	actions := []clientv3.Op{clientv3.OpGet(key, clientv3.WithCountOnly())}
+	if gatewayGuards != nil {
+		user := strings.ToLower(result.User.UPN)
+		if !strings.HasSuffix(user, "@"+directory.Spec.DNSName) {
+			return empty, arm.ErrDesktopDenied
+		}
+		nic, nicGuards, err := r.desktopPrivateNIC(ctx, scope, target, read.Header.Revision)
+		if err != nil {
+			return empty, err
+		}
+		guards = append(guards, nicGuards...)
+		guards = append(guards, gatewayGuards...)
+		access.User, access.PrivateIP, access.NetworkInterface, access.SubnetID = user, nic.IP, nic.Address.ID(scope), nic.SubnetID
+		actions = []clientv3.Op{r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: principal.UserID,
+			Action: arm.DesktopType + "/launch/action", Target: resource.Address.ID(scope), Outcome: "Authorized"})}
+	}
 	guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", read.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(hostKey), "=", host.Kvs[0].ModRevision))
-	current, err := r.client.Txn(ctx).If(guards...).Then(clientv3.OpGet(key, clientv3.WithCountOnly())).Commit()
-	if err != nil {
-		return empty, err
-	}
-	expires := started.Add(15 * time.Second)
+	expires := started.Add(desktop.LaunchLifetime)
 	if principal.ExpiresAt.Before(expires) {
 		expires = principal.ExpiresAt
+	}
+	if !time.Now().Before(expires) {
+		return empty, arm.ErrDesktopDenied
+	}
+	current, err := r.client.Txn(ctx).If(guards...).Then(actions...).Commit()
+	if err != nil {
+		return empty, err
 	}
 	if !current.Succeeded || !time.Now().Before(expires) {
 		return empty, arm.ErrDesktopDenied
 	}
-	return arm.DesktopAdmission{AssignmentID: policy.AssignmentID, MachineID: policy.MachineID, ExpiresAt: expires}, nil
+	access.DesktopAdmission = arm.DesktopAdmission{AssignmentID: policy.AssignmentID, MachineID: policy.MachineID, ExpiresAt: expires}
+	return access, nil
 }
