@@ -97,10 +97,11 @@ result is in `evidence/debian-domain-join.json` under the state directory.
 Keep the generated credentials in `identity/domain-join.secret` local to
 this disposable lab.
 
-Use the official Server 2025 installation media and select Server Core. Use
-licensed Windows 11 Pro media or the official Windows 11 Enterprise Evaluation for the workstation. Keep both media files
-outside the repository. The launcher needs OVMF and `genisoimage`. The
-Windows 11 profile also needs a host `swtpm` executable.
+Use official Server 2025 installation media and select Server Core. Use
+licensed Windows 11 Pro media or the official Windows 11 Enterprise Evaluation
+for the workstation. Keep both media files outside the repository. The launcher
+needs OVMF and `genisoimage`. The Windows 11 profile also needs a host `swtpm`
+executable. [Server evaluation](https://www.microsoft.com/en-us/evalcenter/download-windows-server-2025) · [Workstation evaluation](https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise)
 
 ```sh
 python3 lab/start_windows_domain_fixture.py --state "$OCEAN_AD_STATE" \
