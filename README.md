@@ -159,14 +159,18 @@ order-dependent failure, pass `-shuffle=<seed>` to `go test -race` with the seed
 printed by the failing package. The gate compiles the tagged E2E suite for
 separate execution in the lab.
 
-`make lint` runs version-pinned Staticcheck, errcheck, errorlint and nilness on
-application and E2E sources. Errorlint checks that wrapped causes remain
-detectable, and nilness reports provable nil dereferences and impossible nil
-comparisons. `make vuln` uses a version-pinned govulncheck to look for known
-vulnerabilities reachable from the production Go commands and their
-dependencies, including the Go standard library. Go downloads missing modules
-and tools on first use. The vulnerability scan queries the Go vulnerability
-database and requires network access.
+`make lint` runs pinned versions of Staticcheck, errcheck, errorlint, nilness,
+and bodyclose with and without the `e2e` build tag. These tools check errors and
+type assertions, error wrapping, provable nil dereferences, and unclosed HTTP
+response bodies.
+
+`make security` runs a pinned gosec scan of the production Go source. Its rule
+list covers insecure TLS and SSH settings, weak cryptography, missing HTTP
+header timeouts, exposed profiling endpoints, and common injection and archive
+handling errors. `make vuln` checks for known vulnerabilities reachable from
+the production commands and their dependencies, including the Go standard
+library. Go downloads missing modules and tools on first use. The vulnerability
+scan queries the Go vulnerability database and requires network access.
 
 Handle returned errors and check type assertions. Use explicit error discards
 for intentional best-effort operations such as closing a read-only response body.
