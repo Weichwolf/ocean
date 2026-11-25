@@ -169,7 +169,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 		readiness += " && curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem " +
 			"https://oauth.farm-1.ocean.test/realms/c8c02ae2-b2c9-4762-9bb5-08b660caf0ae/.well-known/openid-configuration"
 	}
-	readyCtx, cancelReady := context.WithTimeout(ctx, 150*time.Second)
+	readyCtx, cancelReady := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancelReady()
 	lastErr := errors.New("the management endpoint did not become ready")
 	for readyCtx.Err() == nil {

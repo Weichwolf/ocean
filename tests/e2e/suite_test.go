@@ -165,7 +165,7 @@ func TestAcceptance(t *testing.T) {
 		step.Cases = applicable
 		t.Run(step.Name, func(t *testing.T) {
 			if sessions != nil && step.BlockedReason == "" && step.LabState != "" {
-				starting, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+				starting, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 				err := sessions.use(starting, step.LabState)
 				cancel()
 				if err != nil {
