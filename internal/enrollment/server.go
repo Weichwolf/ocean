@@ -99,6 +99,8 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("GET /ocean/hosts/{host}/volume-mounts", a.volumeMounts)
 	mux.HandleFunc("POST /ocean/hosts/{host}/volume-unmounts", a.volumeUnmount)
 	mux.HandleFunc("POST /ocean/hosts/{host}/share-jobs/{job}/complete", a.storageJobs)
+	mux.HandleFunc("GET /ocean/hosts/{host}/smb-plan", a.smbPlan)
+	mux.HandleFunc("POST /ocean/hosts/{host}/smb-plan", a.smbPlan)
 	mux.HandleFunc("GET /ocean/hosts/{host}/container-tasks", func(w http.ResponseWriter, r *http.Request) {
 		a.containerTasks(w, r, false)
 	})

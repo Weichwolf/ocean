@@ -6,8 +6,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 )
+
+var directoryGroupSID = regexp.MustCompile(`^S-1-5-21(-[0-9]{1,10}){4}$`)
 
 const (
 	DirectoryUserCreate        = "userCreate"
@@ -105,6 +108,7 @@ type DirectoryGroupView struct {
 	Description string `json:"description"`
 	Security    bool   `json:"securityEnabled"`
 	Mail        bool   `json:"mailEnabled"`
+	SID         string `json:"onPremisesSecurityIdentifier,omitempty"`
 }
 
 type DirectoryGraphResult struct {
@@ -128,7 +132,8 @@ func (r DirectoryGraphResult) Valid(operation string) bool {
 	}
 	validGroup := func(group DirectoryGroupView) bool {
 		return ValidDirectoryJoinID(group.ID) && group.DisplayName != "" && len(group.DisplayName) <= 120 &&
-			group.Alias != "" && len(group.Alias) <= 64 && len(group.Description) <= 256 && group.Security && !group.Mail
+			group.Alias != "" && len(group.Alias) <= 64 && len(group.Description) <= 256 && group.Security && !group.Mail &&
+			(group.SID == "" || directoryGroupSID.MatchString(group.SID))
 	}
 	if r.User != nil && !valid(*r.User) {
 		return false

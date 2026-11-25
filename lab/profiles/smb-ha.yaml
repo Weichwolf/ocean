@@ -1,0 +1,22 @@
+farms: 2
+nodesPerFarm: 8
+defaults:
+  memoryMiB: 1024
+  vcpus: 1
+overrides:
+  farm-1-node-04:
+    memoryMiB: 1536
+    rootDiskMiB: 4096
+    dataDiskMiB: 1024
+  farm-1-node-05:
+    memoryMiB: 2048
+    dataDiskMiB: 4096
+  farm-1-node-06:
+    memoryMiB: 2048
+    dataDiskMiB: 4096
+  farm-1-node-07:
+    memoryMiB: 2048
+    dataDiskMiB: 4096
+  farm-1-node-08:
+    memoryMiB: 1536
+    rootDiskMiB: 4096

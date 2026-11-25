@@ -221,7 +221,69 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
+	smbFixture := os.Getenv("OCEAN_E2E_SMB_MEMBER_FIXTURE")
+	smb := probe("kerberos-smb-member", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-25"},
+		[]string{"kerberos-smb-member.json"}, "--fixture", smbFixture)
+	if smb.BlockedReason == "" && smbFixture == "" {
+		smb.BlockedReason = "Provide OCEAN_E2E_SMB_MEMBER_FIXTURE with the private credentials for the disposable share."
+	}
+	for _, user := range []string{"smbwriter", "smbreader", "smbdenied"} {
+		smb = requireFile(smb, filepath.Join(smbFixture, user), "the disposable credential for "+user)
+	}
+	smbQuota := probe("kerberos-smb-quota", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-26"},
+		[]string{"kerberos-smb-quota.json"}, "--fixture", smbFixture, "--rbd-quota")
+	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "smbwriter"), "the disposable SMB writer credential")
+	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "rbd-volume-id"), "the encrypted RBD fixture volume ID")
+	smbManaged := harness.Step{Name: "managed-smb-cli", Cases: []string{"WORKPLACE-27"}, Timeout: 6 * time.Minute,
+		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v", "-run", "^TestPackagedSMBWorker$", "./internal/controlplane"},
+		Evidence: []harness.EvidenceSource{{Name: "managed-smb-cli.json", Path: filepath.Join(options.domain, "evidence", "managed-smb-cli.json")}}}
+	if options.domain == "" || smbFixture == "" || os.Getenv("OCEAN_E2E_SMB_ETCD") == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" {
+		smbManaged.BlockedReason = "Provide the prepared SMB member lab, a disposable etcd endpoint and the pinned Azure CLI."
+	}
+	smbManaged = requireFile(smbManaged, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB member identity and native group grants")
+	smbRevocation := smbManaged
+	smbRevocation.Name, smbRevocation.Cases = "kerberos-smb-live-revocation", []string{"WORKPLACE-31"}
+	smbRevocation.Command = []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v", "-run",
+		"^TestPackagedSMBLiveRevocation$", "./internal/controlplane"}
+	smbRevocation.Evidence = []harness.EvidenceSource{{Name: "kerberos-smb-revocation.json",
+		Path: filepath.Join(options.domain, "evidence", "kerberos-smb-revocation.json")}}
+	for _, user := range []string{"smbwriter", "smbreader", "smbdenied"} {
+		smbRevocation = requireFile(smbRevocation, filepath.Join(smbFixture, user), "the disposable credential for "+user)
+	}
+	smbWindowsRun := os.Getenv("OCEAN_E2E_SMB_WINDOWS_RUN_ID")
+	smbWindows := probe("kerberos-smb-windows", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-28"},
+		[]string{"kerberos-smb-windows.json"}, "--fixture", smbFixture, "--windows-run-id", smbWindowsRun)
+	if smbWindows.BlockedReason == "" && (smbFixture == "" || smbWindowsRun == "") {
+		smbWindows.BlockedReason = "Capture a fresh Windows SMB run with a lab nonce and provide the fixture credentials."
+	}
+	smbWindows = requireFile(smbWindows, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows SMB serial capture")
+	smbWindows = requireFile(smbWindows, filepath.Join(options.domain, "server-core", "machine.json"), "the joined Windows Server Core identity record")
+	smbWindows = requireFile(smbWindows, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB domain identity")
+	failoverProfile := os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE")
+	smbFailover := harness.Step{Name: "kerberos-smb-failover", Cases: []string{"WORKPLACE-29"}, Timeout: 7 * time.Minute,
+		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-timeout=7m", "-v", "-run", "^TestPackagedSMBFailover$", "./internal/controlplane"},
+		Evidence: []harness.EvidenceSource{{Name: "kerberos-smb-failover.json", Path: filepath.Join(options.domain, "evidence", "kerberos-smb-failover.json")}}}
+	if options.domain == "" || smbFixture == "" || os.Getenv("OCEAN_E2E_SMB_ETCD") == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" || failoverProfile == "" {
+		smbFailover.BlockedReason = "Provide the prepared two-member SMB lab, its profile, a disposable etcd endpoint and the pinned Azure CLI."
+	}
+	smbFailover = requireFile(smbFailover, failoverProfile, "the original two-member lab profile")
+	for _, file := range []string{"member-rbd.json", "smbwriter", "failover-state-id", "failover-state.key"} {
+		smbFailover = requireFile(smbFailover, filepath.Join(smbFixture, file), "the private SMB fixture file "+file)
+	}
+	archive := os.Getenv("OCEAN_E2E_SMB_ETCD_ARCHIVE")
+	smbRestore := harness.Step{Name: "kerberos-smb-restore", Cases: []string{"WORKPLACE-30"}, Timeout: 14 * time.Minute,
+		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-timeout=13m", "-v", "-run", "^TestPackagedSMBBackupRestore$", "./internal/controlplane"},
+		Evidence: []harness.EvidenceSource{{Name: "kerberos-smb-restore.json", Path: filepath.Join(options.domain, "evidence", "kerberos-smb-restore.json")}}}
+	if options.domain == "" || smbFixture == "" || archive == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" || os.Getenv("OCEAN_E2E_SMB_RESTORE_WINDOWS_READY") == "" {
+		smbRestore.BlockedReason = "Provide the two-member SMB lab, pinned etcd and Azure CLI, and a Windows fixture handoff path."
+	}
+	smbRestore = requireFile(smbRestore, archive, "the pinned etcd 3.6.17 lab release archive")
+	for _, file := range []string{"member-rbd.json", "smbwriter", "smbreader", "smbdenied", "failover-state-id", "failover-state.key"} {
+		smbRestore = requireFile(smbRestore, filepath.Join(smbFixture, file), "the private SMB fixture file "+file)
+	}
+	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "machine.json"), "the joined Windows Server Core identity")
+	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows Kerberos serial capture")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation)
 }

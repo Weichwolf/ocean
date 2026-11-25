@@ -1,0 +1,17 @@
+[Unit]
+Description=ocean Kerberos SMB member reconciler
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ocean-agent/smb-storage.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode smb
+ExecStopPost=/usr/bin/systemctl --no-block stop smbd.service
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+KillMode=mixed
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

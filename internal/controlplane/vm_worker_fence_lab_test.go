@@ -189,24 +189,28 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 
 func partitionVMPrimary(t *testing.T, ctx context.Context, worker directoryKVMHosts, apiURL string) {
 	t.Helper()
+	partitionWorkerAPI(t, ctx, worker, apiURL, vmLabPrimary, "ocean_vm_lab_partition")
+}
+
+func partitionWorkerAPI(t *testing.T, ctx context.Context, worker directoryKVMHosts, apiURL, host, table string) {
+	t.Helper()
 	endpoint, err := url.Parse(apiURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	port, err := strconv.ParseUint(endpoint.Port(), 10, 16)
 	if err != nil || port == 0 || endpoint.Hostname() != "127.0.0.1" {
-		t.Fatal("the VM worker partition requires a loopback API fixture")
+		t.Fatal("the worker partition requires a loopback API fixture")
 	}
-	const table = "ocean_vm_lab_partition"
 	rules := fmt.Sprintf(`add table inet %[1]s
 add chain inet %[1]s output { type filter hook output priority filter; policy accept; }
 add rule inet %[1]s output ip daddr 10.0.2.2 tcp dport %[2]d reject with tcp reset
 `, table, port)
-	worker.run(ctx, vmLabPrimary, "sudo nft -f -", strings.NewReader(rules))
+	worker.run(ctx, host, "sudo nft -f -", strings.NewReader(rules))
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		_, _ = worker.ssh(cleanup, vmLabPrimary, "if sudo nft list table inet "+table+" >/dev/null 2>&1; then sudo nft delete table inet "+table+"; fi", nil)
+		_, _ = worker.ssh(cleanup, host, "if sudo nft list table inet "+table+" >/dev/null 2>&1; then sudo nft delete table inet "+table+"; fi", nil)
 	})
 }
 

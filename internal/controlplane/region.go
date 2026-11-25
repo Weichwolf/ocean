@@ -42,6 +42,7 @@ type regionConfig struct {
 	WireGuard           *wireGuardConfig          `json:"wireGuard"`
 	Workloads           *workloadConfig           `json:"workloads"`
 	Storage             *storageConfig            `json:"storage"`
+	SMBMembers          []smbBinding              `json:"smbMembers,omitempty"`
 	VirtualMachines     *vmConfig                 `json:"virtualMachines,omitempty"`
 	Telemetry           *telemetryConfig          `json:"telemetry"`
 	FunctionPlans       bool                      `json:"functionPlans"`
@@ -161,6 +162,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				if region.storage != nil {
 					resources.Storage = region
 				}
+				if region.smb != nil {
+					resources.SMBShares = region
+				}
 				if region.vms != nil {
 					resources.VirtualMachines = region
 				}
@@ -198,6 +202,7 @@ type Region struct {
 	directoryCapacity enrollment.Capacity
 	directoryFencer   ed25519.PublicKey
 	storage           *storageControl
+	smb               *smbControl
 	vms               *vmControl
 	telemetry         *telemetryControl
 	cell              string
@@ -224,6 +229,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, err
 	}
 	storage, err := openStorageControl(cfg.Storage)
+	if err != nil {
+		return nil, err
+	}
+	smbMembers, err := openSMBControl(cfg.SMBMembers, storage, cfg.ManagedDirectories != nil)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +264,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
-		directoryFencer: directoryFencer, vms: vms}
+		directoryFencer: directoryFencer, vms: vms, smb: smbMembers}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
@@ -308,6 +317,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapStorage(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapSMB(ctx); err != nil {
 		return err
 	}
 	if err := region.bootstrapVirtualMachines(ctx); err != nil {

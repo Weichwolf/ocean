@@ -123,7 +123,7 @@ func TestPackagedVMWorker(t *testing.T) {
 	if err := r.PutInventoryResource(ctx, scope, arm.InventoryResource{Address: vnet, Location: r.name, APIVersion: "2025-07-01", Properties: json.RawMessage(properties)}); err != nil {
 		t.Fatal(err)
 	}
-	cli := vmWorkerCLI(t, ctx, api.URL, caFile)
+	cli := regionalWorkerCLI(t, ctx, api.URL, caFile, os.Getenv("OCEAN_E2E_VM_AZ"))
 	az := func(method, path, body string) []byte { return cli(method, path, body, "vm-worker-lab", "") }
 	image, nic, vm := address(arm.VMImageType, "core"), address(arm.VMNetworkInterfaceType, "primary"), address(arm.VirtualMachineType, "server-core")
 	imageURL := image.ID(scope) + "?api-version=" + arm.VMImageAPIVersion
@@ -344,18 +344,17 @@ func assertPackagedVMQuota(t *testing.T, ctx context.Context, r *Region, scope a
 	}
 }
 
-func vmWorkerCLI(t *testing.T, ctx context.Context, origin, caFile string) func(string, string, string, string, string) []byte {
+func regionalWorkerCLI(t *testing.T, ctx context.Context, origin, caFile, az string) func(string, string, string, string, string) []byte {
 	t.Helper()
-	az := os.Getenv("OCEAN_E2E_VM_AZ")
 	if az == "" {
-		t.Fatal("the packaged VM worker test requires the pinned Azure CLI")
+		t.Fatal("the packaged worker test requires the pinned Azure CLI")
 	}
 	configDir := t.TempDir()
 	environment := append(os.Environ(), "AZURE_CONFIG_DIR="+configDir, "REQUESTS_CA_BUNDLE="+caFile, "AZURE_CORE_COLLECT_TELEMETRY=no")
 	version := exec.CommandContext(ctx, az, "version", "--query", `"azure-cli"`, "--output", "tsv")
 	version.Env = environment
 	if output, err := version.CombinedOutput(); err != nil || strings.TrimSpace(string(output)) != "2.93.0" {
-		t.Fatalf("the VM test requires Azure CLI 2.93.0: %v: %s", err, output)
+		t.Fatalf("the test requires Azure CLI 2.93.0: %v: %s", err, output)
 	}
 	return func(method, path, body, token, expectedError string) []byte {
 		t.Helper()

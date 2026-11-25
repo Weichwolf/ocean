@@ -166,6 +166,345 @@ Shut down the Windows guests from the guest console, then run
 `bin/ocean-lab shutdown -state "$OCEAN_AD_STATE"` to stop the Debian
 guests and their switches.
 
+## Kerberos SMB member
+
+Use a disposable domain-join lab with `dc01.ad.ocean.test`, the joined
+Debian client at `10.232.1.12`, and the separate farm's client. Add
+`farm-1-node-04` with a private `10.232.1.14` workload address and
+`files04.ad.ocean.test` in the lab directory DNS. Install Debian's
+Samba member server, Winbind, `libnss-winbind`, Kerberos, ACL utilities,
+and cryptsetup in the member guest. Add `winbind` to the `passwd` and
+`group` entries in `/etc/nsswitch.conf`. Install `smbclient` and MIT
+Kerberos on the joined client.
+
+Install `bin/ocean-smb-member` from `make build` on the member. Write a
+root-owned `/etc/ocean-smb/member.json` with `dnsDomain`, `netbiosDomain`,
+`domainSid`, `serverName`, `address`, and an empty `shares` array.
+Use the native domain SID from the controller and the member name
+`FILES04`. Run `ocean-smb-member` as root to prepare `/etc/samba/smb.conf`,
+join the member using the lab directory's Kerberos credentials, and
+start Winbind. Use the selected writable controller for initial enrollment
+so the machine password is visible immediately to the join and trust checks.
+
+Mount a dedicated LUKS2-backed ext4 filesystem at
+`/srv/ocean-smb/volumes/<volume-id>` with `rw,nodev,nosuid,noexec` and
+a root-owned mount directory. The volume ID begins with `vol-`. Add
+`company-files` to `shares` with that `volumeId` and the native domain
+group SIDs in `readerSids` and `writerSids`. Add only the disposable
+`smbreader` user to `OceanShareReaders` and `smbwriter` to
+`OceanShareWriters`. The valid `smbdenied` account has neither grant.
+Rerun `ocean-smb-member` and start `smbd`. It must listen only on the
+private workload address at TCP 445. The member verifies the mounted
+device and Winbind mapping before it publishes the configuration.
+
+Keep the three account passwords in owner-only files named for their users
+inside a separate owner-only fixture directory. Run the test on disposable
+accounts because it removes and restores `smbwriter` group membership.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-25 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The case writes `kerberos-smb-member.json` with the content checksum,
+audited principals, observed group change delay, and its local test bound.
+The 20-second bound is measured with a fresh TGT and new SMB connection
+against the writable controller. The verifier checks the actual Kerberos
+destination so the joined client's SSSD discovery cannot select a replica
+that still holds an earlier membership. A deployment-wide revocation
+budget must account for replication and already established sessions.
+
+For `WORKPLACE-26`, use a dedicated exclusively mapped RBD image in a
+three-replica Ceph pool. Open the volume with LUKS2. Format the newly
+allocated filesystem with `mkfs.ext4 -m 0 -O quota,project -E quotatype=prjquota`.
+Include `prjquota` among the mount options, set the member share's
+`quotaMiB` to 8, and place that volume's ID in the fixture file
+`rbd-volume-id`. Install `quota` on the member and `cifs-utils` and
+`keyutils` on the client. The test needs the disposable SSH user's
+default file credential cache to be empty.
+Remount the standalone fixture before rerunning `WORKPLACE-25` or
+`WORKPLACE-26` after the hard power-off in `WORKPLACE-29`.
+
+The member assigns project ID 1 to the new share directory and enables
+inheritance so every file contributes to the same hard block quota. Keep
+the ext4 image intact when restoring a share to preserve existing project
+assignments. Select `OCEAN_E2E_CASES=WORKPLACE-26` to run the two-connection
+write and lock probe. The evidence records the configured bytes, the
+acknowledged writes, the refusal errno and the lock outcomes.
+
+### Tenant-managed SMB shares
+
+The `Ocean.Storage/smbShares` resource uses API version `2026-11-01`.
+Provide a managed tenant directory, encrypted regional storage, and an enrolled
+Debian compute host dedicated to the tenant's Samba member. Register the
+member in `region.smbMembers` on each control-plane replica. Each entry has
+`tenantId`, `subscriptionId`, `hostId`, and the `member` object described
+above. The member object has an empty `shares` array. The region checks the
+binding against the provisioned AD domain's name and SID.
+
+Install the node package and the SMB dependencies from the member
+fixture. Join the chosen member and configure its private address and
+directory DNS. Set `/etc/ocean-agent/smb-storage.json` to a storage client
+configuration with `pool`, `client`, `cephConfig`, `keyring` and
+`mountRoot`. Set `mountRoot` to `/srv/ocean-smb/volumes`. Enable the
+`ocean-smb-agent.service` unit on this dedicated host. Keep the standalone
+Samba startup disabled so the reconciler owns publication when the host
+boots. The reconciler starts Winbind after it prepares the member state.
+
+Get the group SID through the managed Graph endpoint with
+`az ad group show --group "$OCEAN_GROUP_OBJECT_ID" --query onPremisesSecurityIdentifier -o tsv`.
+Use the native tenant group SIDs in the policy document. The share quota
+is a whole number from 1 to 16 GiB and is set when the volume is allocated.
+Use a combined maximum of 32 distinct groups across the reader and writer
+lists. The initial member profile supports up to 16 shares.
+
+```json
+{
+  "location": "local",
+  "properties": {
+    "quotaGiB": 1,
+    "readerSids": ["S-1-5-21-1122-3344-5566-1101"],
+    "writerSids": ["S-1-5-21-1122-3344-5566-1102"]
+  }
+}
+```
+
+```sh
+share_id="/subscriptions/$OCEAN_SUBSCRIPTION/resourceGroups/$OCEAN_GROUP/providers/Ocean.Storage/smbShares/company-files"
+share_url="${OCEAN_ARM%/}$share_id?api-version=2026-11-01"
+az rest --method put --url "$share_url" --body @share.json -o json
+az rest --method get --url "$share_url" -o json
+az rest --method delete --url "$share_url" -o json
+```
+
+Track a 202 response with a GET to its `Azure-AsyncOperation` URL after
+the `Retry-After` interval. The worker provisions the encrypted volume
+and validates the directory groups before confirming publication.
+Repeat PUT with the same quota and revised groups to change permissions
+on the existing volume. A configuration change restarts Samba on the
+dedicated member and closes its current sessions. An existing file can
+also carry its own Windows or POSIX ACL. Delete withdraws the share,
+closes its storage mapping, and removes the live RBD image. A group
+containing a managed share must release the share before group deletion.
+[ARM asynchronous operation contract](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations)
+
+The managed member refreshes share authorization using sealed Kerberos
+LDAP against the region's current directory writer. It resolves each
+role to enabled tenant user SIDs, including membership through nested
+security groups and primary groups. If effective grants change, the
+member closes Samba sessions and publishes the current admission and write
+lists. Reconnecting with an older service ticket still uses those lists.
+The member continues to refresh during a management API partition when
+it can reach the directory writer. It withdraws the listener when a
+directory refresh fails. Directory promotion selects the new authority
+through regional placement state. Samba enforces individual file ACLs
+using its authenticated filesystem security context.
+
+Select `WORKPLACE-27` against the prepared SMB and RBD lab. Install a
+current `ocean-agent` package in the member guest before starting the
+case. Put its verified member JSON with native reader and writer SIDs
+in `member-rbd.json` under the private fixture directory.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-27 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  OCEAN_E2E_SMB_ETCD=http://127.0.0.1:42453 OCEAN_E2E_SMB_AZ="$(command -v az)" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The harness uses an isolated regional etcd prefix with fixture ARM
+principals. The Debian node goes through real mTLS enrollment and applies
+the actual RBD and Samba operations. The joined client checks Kerberos data
+access and reads an acknowledged file after the ACL update.
+
+Select `WORKPLACE-31` with the same command to verify live share-grant
+revocation. This case also needs the second directory controller at
+`10.232.1.13`, `cifs-utils` and `keyutils` on the Debian client, and
+`nftables` on the member. The probe caches a Kerberos service ticket
+from the second controller and keeps an open CIFS descriptor. It removes
+the writer's share grant on the directory writer while the member
+has lost its management path. The case allows 20 seconds from that
+mutation for the old handle and a new connection using only the cached
+ticket to lose access. An unaffected reader must still read the
+checkpoint and receive a denial on writes.
+
+### Windows and Debian SMB access
+
+For `WORKPLACE-28`, start the joined Server Core fixture on the same
+private network as `company-files` and Debian. Attach
+`lab/verify_windows_smb_member.ps1` to its probe media. Run the following
+from the media in a local Windows administrator session. The script opens a
+separate domain logon with the fixture credential entered at its prompt.
+Use a new GUID for each run and keep the same GUID across the three actions.
+
+```powershell
+$run = [Guid]::NewGuid()
+.\verify_windows_smb_member.ps1 -RunId $run -Action Write -Account smbwriter -AsFixtureUser
+.\verify_windows_smb_member.ps1 -RunId $run -Action ReadOnly -Account smbreader -AsFixtureUser
+.\verify_windows_smb_member.ps1 -RunId $run -Action Denied -Account smbdenied -AsFixtureUser
+$run
+```
+
+Run the harness with `OCEAN_E2E_CASES=WORKPLACE-28` and
+`OCEAN_E2E_SMB_WINDOWS_RUN_ID` set to that GUID. The harness reads the
+recent guest serial evidence and obtains a separate Kerberos ticket from
+Debian for `smbwriter`. It checks the Windows file content and the member
+journal for both source addresses. Keep the nonce file until its Debian
+and journal checks have completed.
+
+### Fenced SMB failover
+
+Use two dedicated enrolled Debian members in one cell. Both need access to
+the same Ceph pool and tenant workload subnet. Add `standbyHostId` and an
+absolute owner-only `stateKeyFile` containing a 32-byte key to the SMB
+binding on each regional replica. Set `member.serviceInterface` to the
+private interface name and `member.stateVolumeId` to the existing
+`smb-state-…` image. Set `member.address` to a reserved floating IPv4
+address. Point the member's directory DNS record to that address and
+keep the original name and CIFS service principal. Configure
+`region.storage.fencePublicKeyFile` with the fencing authority's Ed25519
+public key. Use the same binding, key contents and authority on every
+regional replica.
+
+Initialize the member-state image as exclusively mapped LUKS2 and ext4.
+While the existing member's Samba and Winbind services are stopped, stage
+its joined `private` and `state` directories under `member/` on the
+encrypted filesystem. Keep both hosts' standalone Samba startup disabled.
+The member opens that existing identity, its share volumes and the
+floating address under one writer generation. It announces the address on
+the workload link using gratuitous ARP. A missing previously published
+share image leaves recovery pending.
+[Ceph RBD exclusive locks](https://docs.ceph.com/en/pacific/rbd/rbd-exclusive-locks/)
+
+Lease expiry leaves storage with its current writer. An independent
+fencing authority must confirm the old host is powered off and sign the
+UTF-8 JSON bytes with `tenantId`, `subscriptionId`, `hostId`,
+`generation`, `observation` set to `PoweredOff`, and `observedAt` in RFC 3339
+UTC. Post base64-encoded `attestation` and `signature` fields to
+`/ocean/storage/smb-fences`. A valid fresh proof and absence of the old
+host lease move the writer generation once. Standby or retired hosts
+cannot retrieve volume keys. Each share returns to `Succeeded` when
+the new worker confirms its local mount and listener.
+
+After failover, clients can establish a new Kerberos connection and
+reopen acknowledged data. Samba durable handles are disabled for this
+profile. Applications must be prepared to reopen files and reacquire
+byte-range locks. A CIFS client may retry a read transparently. Record the
+old descriptor's observed result alongside the verified new open.
+[Samba durable handles](https://www.samba.org/samba/docs/current/man-html/smb.conf.5#DURABLEHANDLES)
+
+For `WORKPLACE-29`, use `lab/profiles/smb-ha.yaml` with the directory
+guests, Samba primary `farm-1-node-04`, Ceph nodes 05–07, and standby
+`farm-1-node-08`. Install the node package, Samba, Winbind, `libnss-winbind`, Kerberos,
+ACL, quota, cryptsetup, Ceph, and `iputils-arping` on both members.
+Install `nftables` on the primary and the CIFS tools described for
+`WORKPLACE-26` on the joined client. After preparing the standalone
+member and its RBD configuration, run the fixture preparer. It keeps
+the existing member's local identity and copies its quiesced state to the
+encrypted image. The test connects to the floating address explicitly
+while preserving the fixture's original DNS record and Kerberos name.
+
+```sh
+python3 -B lab/prepare_smb_failover.py --state "$OCEAN_AD_STATE" --fixture "$OCEAN_SMB_FIXTURE"
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-29 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  OCEAN_E2E_SMB_FAILOVER_PROFILE="$PWD/lab/profiles/smb-ha.yaml" \
+  OCEAN_E2E_SMB_ETCD=http://127.0.0.1:42453 OCEAN_E2E_SMB_AZ="$(command -v az)" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The harness records lease expiry, power-off to verified reconnect, old
+descriptor behavior, and a renewed lock and flushed write. It cuts only
+the old worker's management API path, then uses QMP to verify its power-off
+before signing the lab fence. The production fencing authority requires
+independent power control and verification on physically separate hosts.
+
+### Restore SMB from independent backups
+
+Keep regional metadata, encrypted RBD exports, and key escrow in
+independent storage. Restore the etcd snapshot, the RBD export for the
+Samba member state, the exports for each published share, and the
+original binding configuration. Protect the regional storage wrapping
+key and the member-state key separately from those exports. Back up the
+AD domain separately so its SID, SPNs, groups and machine trust are
+available after a wider outage.
+
+For a coordinated cold checkpoint, block regional management mutations,
+drain pending share operations, and stop the SMB agents on both
+members. Confirm SMB and Winbind are stopped and the share and member
+state images have no writer mappings before taking the metadata snapshot
+and exporting the images. Keep the recovery set with its checksums and
+the original pool, image and resource IDs.
+
+The member-state ID is in the registered binding's `member.stateVolumeId`.
+The regional etcd record at
+`/ocean/v1/regions/<region>/smb/members/<initialHostId>` supplies each
+published share's `address` and `volume.id`. Record the IDs before
+backup under operator access. Tenant ARM responses omit the internal
+image names and key envelopes.
+
+```sh
+etcdctl snapshot save "$OCEAN_BACKUP/region.db"
+rbd export --export-format 2 "$SOURCE_POOL/$MEMBER_STATE_ID" "$OCEAN_BACKUP/member.rbd"
+rbd export --export-format 2 "$SOURCE_POOL/$SHARE_VOLUME_ID" "$OCEAN_BACKUP/share.rbd"
+```
+
+Verify the backup checksums before recovery. Keep the source control plane
+and writers isolated throughout restoration. Restore the snapshot into a
+new authenticated etcd cluster. Use an independent Ceph pool and configure
+the approved worker with a Ceph identity scoped to that pool. Import every
+image under its original ID. Preserve the region name and binding and
+configure the restored regional replicas with the escrowed keys and
+their new etcd endpoints. Inspect the original share ID, reconnect with
+a fresh Kerberos session, and verify data, individual file ACLs, quotas
+and numeric ownership before reopening access to users.
+[etcd disaster recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)
+[Ceph RBD export and import](https://docs.ceph.com/en/quincy/man/8/rbd/)
+
+```sh
+rbd import --export-format 2 "$OCEAN_BACKUP/member.rbd" "$RESTORE_POOL/$MEMBER_STATE_ID"
+rbd import --export-format 2 "$OCEAN_BACKUP/share.rbd" "$RESTORE_POOL/$SHARE_VOLUME_ID"
+ocean-recover -config "$RESTORED_REGION_CONFIG" -tenant "$OCEAN_TENANT" \
+  -subscription "$OCEAN_SUBSCRIPTION" -share "$OCEAN_SMB_SHARE_ID" -output "$PRIVATE_DIR/share.key"
+az rest --method get --url "$OCEAN_ARM$OCEAN_SMB_SHARE_ID?api-version=2026-11-01" -o json
+```
+
+`ocean-recover` verifies an operator's ability to recover a single
+published share key. It uses the restored metadata and creates a new
+owner-only file. The enrolled member receives its own authorized key
+grant from the restored control plane.
+
+For `WORKPLACE-30`, boot the joined Server Core VM on the workload
+network and attach both `lab/verify_windows_smb_member.ps1` and
+`lab/verify_windows_smb_restore.ps1` to the same media. Use a new handoff
+path in an owner-only directory. Launch the local case with the prepared
+SMB fixture and the pinned etcd release archive.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-30 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  OCEAN_E2E_SMB_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64.tar.gz" \
+  OCEAN_E2E_SMB_AZ="$(command -v az)" OCEAN_E2E_SMB_RESTORE_WINDOWS_READY="$PRIVATE_DIR/ready.json" \
+  go test -tags=e2e -count=1 -timeout=15m -run '^TestAcceptance$' ./tests/e2e
+```
+
+The case writes the handoff after Debian verifies the restored checkpoint.
+Use its `runId`, `share` and `serverIP` in the Server Core administrator
+session. The fixture selects the restored address locally while keeping
+the original Kerberos name. Enter the three private passwords at the
+prompts for `smbwriter`, `smbreader` and `smbdenied`.
+
+```powershell
+.\verify_windows_smb_restore.ps1 -RunId $runId -Share $share -FixtureServerIP $serverIP
+```
+
+The test verifies the Windows serial records, the original checkpoint and
+the matching Samba audit events before releasing the restored fixture.
+It records backup and restore times and backup artifact hashes. The lab
+uses separate Ceph pools on three virtual storage nodes and an independent
+etcd cluster restored from a file.
+
 ## KVM tenant guest runtime probe
 
 The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`

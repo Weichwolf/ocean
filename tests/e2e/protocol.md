@@ -127,6 +127,34 @@ describes the package and image inputs.
 
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
+Select `WORKPLACE-25` for the native SMB member check. The joined Debian
+guest requests personal CIFS tickets and exercises the read-write, read-only,
+and denied grants with encryption required by the client. The isolated
+foreign guest checks TCP reachability. The verifier checks native user
+identities in the audit journal and measures the delay from group removal
+to denial with a newly issued TGT from the writable controller. Prepare the
+fixture with the [SMB member lab guide](../../lab/README.md#kerberos-smb-member).
+
+Select `WORKPLACE-26` for concurrent writes and byte-range locks over
+two fresh encrypted SMB connections. The member serves a LUKS2 volume
+mapped from Ceph RBD. The case requires a shared eight-MiB project quota,
+checks acknowledged writes across both connections and records the client
+error on a write over budget. One connection holds a lock while the other
+attempts to acquire the same byte before and after release.
+
+Select `WORKPLACE-27` for the managed SMB lifecycle. The stock CLI uses
+the regional handler with isolated ARM fixture principals. The Debian
+member enrolls over mTLS, receives a sealed-volume assignment, and confirms
+the operation after publication. Native Kerberos sessions verify the
+published access and retain an acknowledged file after an ACL update.
+The withdrawal check confirms that the resource, SMB listener, filesystem
+mount and RBD image have been removed.
+
+Select `WORKPLACE-28` to correlate a fresh Windows Server Core write with
+a Debian read using the same Kerberos principal. Windows also verifies
+reader-only and denied grants. The runner checks the supplied nonce
+against the live share and the Samba audit back to each client address.
+
 ## Workload fixtures
 
 Resolve public images as `repository@digest` using [images.lock.yaml](testdata/images.lock.yaml). The stored tags identify the upstream sources for refreshing the lock. Record the digests of the built artifacts and the platform used by the test run.

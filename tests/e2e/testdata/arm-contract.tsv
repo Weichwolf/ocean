@@ -164,3 +164,14 @@ WORKPLACE-22	cli-audience-token	2.93.0	none	v2.0	account get-access-token --reso
 WORKPLACE-22	cli-subscription-read	2.93.0	none	2022-12-01	rest --method get --url {arm}/subscriptions/{subscription}?api-version=2022-12-01 -o json
 WORKPLACE-22	cli-graph-app-read	2.93.0	none	v1.0	ad app show --id {applicationObjectId} -o json
 WORKPLACE-22	cli-web-policy-publish	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/webApplications/{applicationObjectId}?api-version=2026-11-01 --body {groupPolicyJson} -o json
+WORKPLACE-11	directory-group-native-sid	2.93.0	none	v1.0	ad group show --group {groupObjectId} --query onPremisesSecurityIdentifier -o tsv
+WORKPLACE-27	smb-provider	2.93.0	none	2024-11-01	rest --method get --url {arm}/subscriptions/{subscription}/providers/Ocean.Storage?api-version=2024-11-01 -o json
+WORKPLACE-27	smb-share-put	2.93.0	none	2026-11-01	rest --method put --url {arm}{shareId}?api-version=2026-11-01 --body {sharePolicyJson} -o json
+WORKPLACE-27	smb-share-get	2.93.0	none	2026-11-01	rest --method get --url {arm}{shareId}?api-version=2026-11-01 -o json
+WORKPLACE-27	smb-share-delete	2.93.0	none	2026-11-01	rest --method delete --url {arm}{shareId}?api-version=2026-11-01 -o json
+WORKPLACE-27	smb-operation-status	2.93.0	none	2024-11-01	rest --method get --url {asyncOperationUrl} -o json
+WORKPLACE-29	smb-fence-submit	2.93.0	none	unversioned	rest --method post --url {arm}/ocean/storage/smb-fences --skip-authorization-header --body {signedFenceJson}
+WORKPLACE-29	smb-share-after-fence	2.93.0	none	2026-11-01	rest --method get --url {arm}{shareId}?api-version=2026-11-01 -o json
+WORKPLACE-30	smb-restored-share-get	2.93.0	none	2026-11-01	rest --method get --url {arm}{shareId}?api-version=2026-11-01 -o json
+WORKPLACE-31	smb-revocation-share-put	2.93.0	none	2026-11-01	rest --method put --url {arm}{shareId}?api-version=2026-11-01 --body {sharePolicyJson} -o json
+WORKPLACE-31	smb-revocation-share-delete	2.93.0	none	2026-11-01	rest --method delete --url {arm}{shareId}?api-version=2026-11-01 -o json
