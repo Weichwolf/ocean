@@ -39,10 +39,10 @@ type containerRecord struct {
 }
 
 func (c containerRecord) endpoint() netip.Addr {
-	if c.PublicIP.IsValid() {
-		return c.PublicIP
+	if c.Reservation.PrivateIPv4.IsValid() {
+		return c.Reservation.PrivateIPv4
 	}
-	return c.Reservation.PrivateIPv4
+	return c.PublicIP
 }
 
 func (r *Region) containerPrefix(scope arm.SubscriptionScope, group string) string {
@@ -147,7 +147,7 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 			check, write := r.publicIPPoolUpdate(pool, revision)
 			checks, writes = append(checks, check), append(writes, write)
 		} else {
-			conditions, updates, err := r.claimContainerNetwork(ctx, scope, key, res.SubnetID)
+			conditions, updates, err := r.claimContainerNetwork(ctx, scope, key, res.SubnetID, workloadDelegation(wanted))
 			if err != nil {
 				return nil, nil, err
 			}
@@ -162,6 +162,16 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 			checks, writes = append(checks, conditions...), append(writes, updates...)
 		}
 		projection = projectContainer(wanted, record, now, now, arm.OperationInProgress)
+		if wanted.Function != nil {
+			nameKey := r.functionNameKey(wanted.Function.PublicHost)
+			checks = append(checks, clientv3.Compare(clientv3.Version(nameKey), "=", 0))
+			writes = append(writes, clientv3.OpPut(nameKey, key))
+			conditions, updates, err := r.inventoryReferenceChanges(ctx, scope, address, nil, &projection, groups.Header.Revision, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			checks, writes = append(checks, conditions...), append(writes, updates...)
+		}
 		operation = &op
 		writes = append(writes, putJSON(key, record), putJSON(invKey, projection), clientv3.OpPut(hostKey, key), putJSON(opKey, op),
 			r.containerAudit(scope, record, op, "write", now))
@@ -199,6 +209,11 @@ func (r *Region) retryContainerCreate(ctx context.Context, scope arm.Subscriptio
 	if err != nil {
 		return resource, op, true, err
 	}
+	if prior.Function != nil && wanted.Function != nil {
+		wanted.Function.Runtime.MasterKey = prior.Function.Runtime.MasterKey
+		wanted.Function.Runtime.Configuration = prior.Function.Runtime.Configuration
+		wanted.Function.Runtime.Request = prior.Function.Runtime.Request
+	}
 	if !reflect.DeepEqual(prior, wanted) {
 		return resource, op, true, arm.ErrContainerChanged
 	}
@@ -212,6 +227,9 @@ func (r *Region) retryContainerCreate(ctx context.Context, scope arm.Subscriptio
 }
 
 func projectContainer(input workload.ContainerGroup, record containerRecord, created, changed time.Time, status string) arm.InventoryResource {
+	if input.Function != nil {
+		return projectFunction(input, record, created, changed, status)
+	}
 	p := input.Properties
 	container := p.Containers[0]
 	properties := container.Properties
@@ -321,6 +339,9 @@ func (r *Region) MutateContainerGroup(ctx context.Context, scope arm.Subscriptio
 		if err != nil {
 			return nil, err
 		}
+		if input.Function != nil && input.Function.Runtime.Request != nil && now.Before(input.Function.Runtime.Request.ExpiresAt) {
+			return nil, arm.ErrContainerBusy
+		}
 		projection := projectContainer(input, record, prior.CreatedAt, now, arm.OperationInProgress)
 		newKey := r.operationKey(scope, job.ID)
 		writes := []clientv3.Op{putJSON(key, record), putJSON(newKey, job), putJSON(r.inventoryPrefix(scope)+address.Key(), projection),
@@ -344,7 +365,8 @@ func putJSON(key string, value any) clientv3.Op {
 }
 
 func (r *Region) containerAudit(scope arm.SubscriptionScope, record containerRecord, op arm.Operation, action string, now time.Time) clientv3.Op {
-	return r.auditOp(scope, arm.AuditEvent{Time: now, Actor: op.Actor, Action: workload.ContainerGroupType + "/" + action,
+	kind := record.Address.Path[:strings.LastIndexByte(record.Address.Path, '/')]
+	return r.auditOp(scope, arm.AuditEvent{Time: now, Actor: op.Actor, Action: kind + "/" + action,
 		Target: record.Address.ID(scope), Outcome: op.Status})
 }
 

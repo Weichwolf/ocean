@@ -1,0 +1,11 @@
+ARG SDK_IMAGE=mcr.microsoft.com/dotnet/sdk@sha256:cd28130a4da76d2dc11c360b6d9f18c673d6fe15252f91c073ba358a1318cfb0
+ARG BASE_IMAGE=mcr.microsoft.com/azure-functions/dotnet-isolated@sha256:c122d98ee769c5cccf5da079ceb766375fdec43ffafeba13fa82b6e6ebfbc880
+FROM ${SDK_IMAGE} AS build
+WORKDIR /src
+COPY Fixture.csproj packages.lock.json ./
+RUN dotnet restore --locked-mode
+COPY Program.cs host.json ./
+RUN dotnet publish --no-restore -c Release -o /app
+FROM ${BASE_IMAGE}
+ENV FUNCTIONS_WORKER_RUNTIME=dotnet-isolated
+COPY --from=build /app/ /home/site/wwwroot/

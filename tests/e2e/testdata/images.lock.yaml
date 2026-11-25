@@ -27,8 +27,8 @@ images:
     digest: sha256:f49601ed0a16a3356fb30bd97c378d83993279c07474b55c4749c430dc898781
   functions-dotnet:
     repository: mcr.microsoft.com/azure-functions/dotnet-isolated
-    tag: 4-dotnet-isolated10.0-chiseled
-    digest: sha256:086260ee1c2cab89311fda113cf884aa61b5cdfaac146c4b5c70459a514509e3
+    tag: 4-dotnet-isolated10.0
+    digest: sha256:c122d98ee769c5cccf5da079ceb766375fdec43ffafeba13fa82b6e6ebfbc880
   functions-node:
     repository: mcr.microsoft.com/azure-functions/node
     tag: 4-node22
@@ -37,3 +37,23 @@ images:
     repository: mcr.microsoft.com/azure-functions/base
     tag: "4"
     digest: sha256:afde22c6a8966c652fc56420535a24dd4775d02f8e56991134f221946f46e1b7
+  functions-java-jdk:
+    repository: mcr.microsoft.com/openjdk/jdk
+    tag: 21-ubuntu
+    digest: sha256:715fbf5df720b5d5a930cd2f9db06aa79903a1545da0625da6cf055310e0699e
+  azurite:
+    repository: mcr.microsoft.com/azure-storage/azurite
+    tag: 3.35.0
+    digest: sha256:dae2a5f96553962901304b94e72ef87e299d0825e4b679673bcc527a25076fe4
+  functions-go-builder:
+    repository: docker.io/library/golang
+    tag: 1.26-alpine
+    digest: sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38
+  functions-dotnet-sdk:
+    repository: mcr.microsoft.com/dotnet/sdk
+    tag: "10.0"
+    digest: sha256:cd28130a4da76d2dc11c360b6d9f18c673d6fe15252f91c073ba358a1318cfb0
+  fixture-registry:
+    repository: docker.io/library/registry
+    tag: "3"
+    digest: sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8

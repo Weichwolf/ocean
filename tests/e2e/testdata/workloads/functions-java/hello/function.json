@@ -1,0 +1,8 @@
+{
+  "scriptFile": "../ocean-fixture.jar",
+  "entryPoint": "ocean.fixture.Hello.run",
+  "bindings": [
+    {"type": "httpTrigger", "direction": "in", "name": "request", "authLevel": "function", "methods": ["get"], "route": "hello"},
+    {"type": "http", "direction": "out", "name": "$return"}
+  ]
+}

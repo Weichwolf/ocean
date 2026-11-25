@@ -1,0 +1,11 @@
+ARG GO_IMAGE=docker.io/library/golang@sha256:f496f8c537ed506626ee1a6913afb32c45068a48697163c088f604cc775a0c38
+ARG BASE_IMAGE=mcr.microsoft.com/azure-functions/base@sha256:afde22c6a8966c652fc56420535a24dd4775d02f8e56991134f221946f46e1b7
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+COPY main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -o ocean-handler main.go
+FROM ${BASE_IMAGE}
+ENV FUNCTIONS_WORKER_RUNTIME=custom
+COPY host.json /home/site/wwwroot/host.json
+COPY hello /home/site/wwwroot/hello
+COPY --from=build /src/ocean-handler /home/site/wwwroot/ocean-handler

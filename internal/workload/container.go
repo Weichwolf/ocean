@@ -27,6 +27,7 @@ type ContainerGroup struct {
 	Location   string                   `json:"location"`
 	Tags       map[string]string        `json:"tags,omitempty"`
 	Properties ContainerGroupProperties `json:"properties"`
+	Function   *FunctionApp             `json:"oceanFunction,omitempty"`
 }
 
 type ContainerGroupProperties struct {
@@ -138,7 +139,7 @@ func (r ResourceAmounts) Limits() (cpuMillis, memoryMiB int64, valid bool) {
 // contract the same CPU and memory limits apply to placement and execution.
 func (g *ContainerGroup) Validate(name string) error {
 	p := &g.Properties
-	if !ValidName(name) || len(p.Containers) != 1 || p.Containers[0].Name != name || p.OSType != "Linux" ||
+	if g.Function != nil || !ValidName(name) || len(p.Containers) != 1 || p.Containers[0].Name != name || p.OSType != "Linux" ||
 		!slices.Contains([]string{"Always", "Never", "OnFailure"}, p.RestartPolicy) ||
 		p.SKU != "" && p.SKU != "Standard" || p.Priority != "" && p.Priority != "Regular" {
 		return ErrInvalidContainer

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/functions"
 	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
 )
@@ -204,6 +205,13 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 		return report, err
 	}
 	if task.State == workload.Removed {
+		functionConfig := j.functionContainerConfig(name)
+		if _, err := os.Stat(functionConfig); err == nil {
+			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+				return report, err
+			}
+			_ = os.Remove(functionConfig)
+		}
 		if present {
 			if err := podmanAction(ctx, "rm", "--force", "--ignore", "--time", "1", name); err != nil {
 				return report, err
@@ -222,7 +230,34 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 	if task.VolumeID != "" && task.State == workload.Running && !mountReady(task.VolumeID, task.Generation) {
 		return report, nil
 	}
+	if task.Function != nil && task.State == workload.Running && task.Start {
+		if err := prepareFunctionStorage(task); err != nil {
+			report.State = workload.Failed
+			return report, err
+		}
+		path := j.functionContainerConfig(name)
+		saved, _ := os.ReadFile(path)
+		if string(saved) != task.Function.Configuration {
+			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+				return report, err
+			}
+			if present {
+				if err := podmanAction(ctx, "rm", "--force", "--ignore", "--time", "1", name); err != nil {
+					return report, err
+				}
+				present = false
+			}
+			if err := replaceRuntimeFile(path, []byte(task.Function.Configuration)); err != nil {
+				return report, err
+			}
+		}
+	}
 	if task.State == workload.Stopped {
+		if task.Function != nil {
+			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+				return report, err
+			}
+		}
 		if present && status.Running {
 			if err := podmanAction(ctx, "stop", "--time", "1", name); err != nil {
 				return report, err
@@ -235,6 +270,11 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 			return report, err
 		}
 	} else if present && task.Restart {
+		if task.Function != nil && !j.restartApplied(name, task, status) {
+			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+				return report, err
+			}
+		}
 		if err := j.restartContainer(ctx, name, task, status); err != nil {
 			report.State = workload.Failed
 			return report, err
@@ -251,8 +291,28 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 	}
 	if task.State == workload.Running {
 		if present && status.Running {
-			if networkReady(name, status.Pid) {
-				report.State = workload.Running
+			if task.Function == nil {
+				if networkReady(name, status.Pid) {
+					report.State = workload.Running
+				}
+			} else {
+				if err := j.ensureFunctionSidecar(ctx, name, task); err != nil {
+					return report, err
+				}
+				if networkReady(name, status.Pid) {
+					if task.Function.Request != nil && time.Now().Before(task.Function.Request.ExpiresAt) {
+						result, err := functionAdmin(ctx, name, *task.Function, *task.Function.Request)
+						if err == nil && result.Status != http.StatusServiceUnavailable {
+							report.State, report.Function = workload.Running, &result
+						}
+					} else if !task.Start {
+						report.State = workload.Running
+					} else if result, err := functionAdmin(ctx, name, *task.Function, functions.AdminRequest{}); err == nil && result.Status == http.StatusOK {
+						report.State, report.FunctionReady = workload.Running, true
+					} else if started, err := time.Parse(time.RFC3339Nano, status.StartedAt); err == nil && time.Since(started) > 45*time.Second {
+						report.State = workload.Failed
+					}
+				}
 			}
 		} else if !task.Start {
 			report.State = workload.Stopped
@@ -260,7 +320,11 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 	}
 	if present {
 		data, _ := exec.CommandContext(ctx, "/usr/bin/podman", "logs", "--tail", "100", name).CombinedOutput()
-		report.Logs = workload.RedactLogs(string(data), task.Container.EnvironmentVariables)
+		secrets := task.Container.EnvironmentVariables
+		if task.Function != nil {
+			secrets = append(secrets, workload.Variable{SecureValue: &task.Function.MasterKey}, workload.Variable{SecureValue: &task.Function.StorageKey})
+		}
+		report.Logs = workload.RedactLogs(string(data), secrets)
 	}
 	return report, nil
 }
@@ -293,11 +357,21 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 	if err := file.Close(); err != nil {
 		return err
 	}
+	if task.Function != nil {
+		memory -= 88
+		cpu -= 200
+		if memory < 128 || cpu < 100 {
+			return errors.New("invalid Function host limits")
+		}
+	}
 	size := strconv.FormatInt(memory, 10) + "m"
 	args := []string{"run", "--detach", "--pull=missing", "--name", name, "--network=none", "--cpus", strconv.FormatFloat(float64(cpu)/1000, 'f', 3, 64),
 		"--memory", size, "--memory-swap", size, "--restart", policy, "--pids-limit=128", "--security-opt=no-new-privileges",
 		"--cap-drop=ALL", "--cap-add=CHOWN", "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=NET_BIND_SERVICE", "--log-driver=k8s-file", "--log-opt=max-size=256kb", "--env-file", file.Name()}
-	if task.VolumeID != "" {
+	if task.Function != nil {
+		secrets, _ := functionPaths(task.VolumeID)
+		args = append(args, "--mount", "type=bind,source="+secrets+",target=/azure-functions-host/Secrets")
+	} else if task.VolumeID != "" {
 		args = append(args, "--mount", "type=bind,source="+filepath.Join(workloadMountRoot, task.VolumeID)+",target=/data")
 	}
 	args = append(args, "--", c.Image)
@@ -305,19 +379,33 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 	return podmanAction(ctx, args...)
 }
 
-func (j *joinClient) restartContainer(ctx context.Context, name string, task workload.Task, status containerProcess) error {
+func (j *joinClient) restartApplied(name string, task workload.Task, status containerProcess) bool {
 	path := filepath.Join(j.config.StateDirectory, name+".restart")
-	if saved, err := os.ReadFile(path); err == nil {
-		revision, prior, _ := strings.Cut(string(saved), "\n")
-		if revision == task.Revision {
-			if status.Running && status.StartedAt != prior {
-				return nil
-			}
-			return podmanAction(ctx, "restart", "--time", "1", name)
-		}
+	saved, err := os.ReadFile(path)
+	revision, prior, _ := strings.Cut(string(saved), "\n")
+	return err == nil && revision == task.Revision && status.Running && status.StartedAt != prior
+}
+
+func (j *joinClient) restartContainer(ctx context.Context, name string, task workload.Task, status containerProcess) error {
+	if j.restartApplied(name, task, status) {
+		return nil
 	}
-	if err := publishFile(path, []byte(task.Revision+"\n"+status.StartedAt)); err != nil {
+	path := filepath.Join(j.config.StateDirectory, name+".restart")
+	if err := replaceRuntimeFile(path, []byte(task.Revision+"\n"+status.StartedAt)); err != nil {
 		return err
 	}
 	return podmanAction(ctx, "restart", "--time", "1", name)
+}
+
+func replaceRuntimeFile(path string, data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".runtime-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, writeErr := file.Write(data)
+	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }

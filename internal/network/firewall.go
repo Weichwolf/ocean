@@ -24,14 +24,15 @@ func ValidRoutingLink(name string) bool {
 // WorkloadFirewall describes the policy on the router side of one workload
 // link. Prefixes other than the VNet and security rules are operator policy.
 type WorkloadFirewall struct {
-	Interface         string
-	Address           netip.Addr
-	PublicPort        int
-	VNetPrefixes      []netip.Prefix
-	ProtectedPrefixes []netip.Prefix
-	InternetPrefixes  []netip.Prefix
-	Rules             []SecurityRule
-	Lease             time.Duration
+	Interface          string
+	Address            netip.Addr
+	PublicPort         int
+	BlockPublicIngress bool
+	VNetPrefixes       []netip.Prefix
+	ProtectedPrefixes  []netip.Prefix
+	InternetPrefixes   []netip.Prefix
+	Rules              []SecurityRule
+	Lease              time.Duration
 }
 
 // Apply installs a complete policy in an existing isolated routing namespace.
@@ -173,7 +174,9 @@ func (f WorkloadFirewall) ruleset() (string, error) {
 		policy.securityRule(chain, key, properties)
 	}
 	if public {
-		policy.rule("ingress", fmt.Sprintf("tcp dport %d ct state new counter return", f.PublicPort))
+		if !f.BlockPublicIngress {
+			policy.rule("ingress", fmt.Sprintf("tcp dport %d ct state new counter return", f.PublicPort))
+		}
 	} else {
 		for _, chain := range []string{"ingress", "egress"} {
 			policy.rule(chain, "ip saddr @virtual_network ip daddr @virtual_network counter return")

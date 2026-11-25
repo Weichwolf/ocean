@@ -216,7 +216,7 @@ func (r *Region) networkPlacementGuards(ctx context.Context, scope arm.Subscript
 		for _, child := range prior.Subnets {
 			index := updated.SubnetIndex(child.Name)
 			if index < 0 || !sameSubnetPrefixes(child.Properties, updated.Subnets[index].Properties) ||
-				child.Properties.AllowsContainerGroups() && !updated.Subnets[index].Properties.AllowsContainerGroups() {
+				len(child.Properties.Delegations) != 0 && !updated.Subnets[index].Properties.HasDelegation(child.Properties.Delegations[0].Properties.ServiceName) {
 				prefixes = append(prefixes, r.subnetNetworkPlacements(scope, previous.Address, child.Name))
 			}
 		}

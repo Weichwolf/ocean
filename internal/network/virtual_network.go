@@ -14,6 +14,7 @@ const (
 	SubnetAPIVersion           = "2024-07-01"
 	ContainerSubnetAPIVersion  = "2022-01-01"
 	ContainerDelegationService = "Microsoft.ContainerInstance/containerGroups"
+	FunctionDelegationService  = "Microsoft.Web/serverFarms"
 	SubnetType                 = "Microsoft.Network/virtualNetworks/subnets"
 )
 
@@ -59,8 +60,8 @@ type SubnetDelegationProperties struct {
 
 const subnetDelegationAction = "Microsoft.Network/virtualNetworks/subnets/action"
 
-func (s SubnetProperties) AllowsContainerGroups() bool {
-	return len(s.Delegations) == 1 && s.Delegations[0].Properties.ServiceName == ContainerDelegationService
+func (s SubnetProperties) HasDelegation(service string) bool {
+	return len(s.Delegations) == 1 && strings.EqualFold(s.Delegations[0].Properties.ServiceName, service)
 }
 
 type SubnetProperties struct {
@@ -87,10 +88,11 @@ func (s SubnetProperties) Prefixes() ([]netip.Prefix, error) {
 	if len(s.Delegations) != 0 {
 		typeName := SubnetType + "/delegations"
 		delegation := s.Delegations[0]
-		if !s.AllowsContainerGroups() || delegation.Name != ContainerDelegationService && !ValidName(delegation.Name) ||
+		allowed := s.HasDelegation(ContainerDelegationService) || s.HasDelegation(FunctionDelegationService)
+		if !allowed || !strings.EqualFold(delegation.Name, delegation.Properties.ServiceName) && !ValidName(delegation.Name) ||
 			delegation.Type != "" && delegation.Type != typeName || len(delegation.Properties.Actions) != 0 &&
 			!slices.Equal(delegation.Properties.Actions, []string{subnetDelegationAction}) {
-			return nil, errors.New("only the Container Instance subnet delegation is supported")
+			return nil, errors.New("the requested workload subnet delegation is unsupported")
 		}
 	}
 	prefixes := s.AddressPrefixes
