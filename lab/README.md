@@ -1000,13 +1000,23 @@ The register and read contract stores exact HTTPS callback URIs and returns
 them under `web.redirectUris`. Replay uses the same callback list and retains
 the existing object and client IDs. A replay that changes the callback list
 returns a conflict. The Graph probe uses signed fixture identities and a
-disposable loopback etcd.
+disposable loopback etcd. Register a separate automation application for
+service principals and Graph password credentials.
 
 ```sh
 OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-17 \
   OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
   go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
+
+`WORKPLACE-18` exercises preparation of the native OIDC clients on a disposable
+Keycloak 26.8.2 instance. Set `OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN` to its HTTPS
+origin, `OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT` to an admin service account client
+with the `kc-admin-api` scope, and `OCEAN_E2E_KEYCLOAK_ADMIN_SECRET` to its
+private secret file. The Go client must trust the instance's TLS certificate.
+The test creates and removes an isolated tenant realm. It confirms that two
+web registrations preserve their callback and browser-flow bindings, and
+that the prepared clients reject authorization before a policy is published.
 
 ## ARM resource groups
 

@@ -229,8 +229,9 @@ func lookupGraphApplication(ctx context.Context, store ApplicationStore, tenant,
 }
 
 var (
-	errDirectoryNotFound = errors.New("directory object not found")
-	errCredentialLimit   = errors.New("application credential limit reached")
+	errDirectoryNotFound        = errors.New("directory object not found")
+	errCredentialLimit          = errors.New("application credential limit reached")
+	errWebApplicationCredential = errors.New("the application has a dedicated web client")
 )
 
 func updateGraphApplication(ctx context.Context, store ApplicationStore, tenant, id string, update func(*Application) error) (*Application, error) {
@@ -264,6 +265,8 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		graphError(w, http.StatusNotFound, "Request_ResourceNotFound", "The directory object was not found.")
 	case errors.Is(err, errCredentialLimit):
 		graphError(w, http.StatusConflict, "Request_Conflict", "The application already has 64 credentials.")
+	case errors.Is(err, errWebApplicationCredential):
+		graphError(w, http.StatusConflict, "Request_Conflict", "Use a separate automation application for service principals and password credentials.")
 	case errors.Is(err, errApplicationRedirectChange):
 		graphError(w, http.StatusConflict, "Request_Conflict", "Use the registered web redirect URIs when replaying the application request.")
 	default:
@@ -337,6 +340,9 @@ func (c *Compatibility) graphAppCredential(w http.ResponseWriter, req *http.Requ
 	secret := newClientSecret()
 	credential := ClientCredential{ID: newUUID(), DisplayName: requested.DisplayName, Start: requested.Start.UTC(), End: requested.End.UTC()}
 	_, err := updateGraphApplication(ctx, store, tenant.TenantID, id, func(app *Application) error {
+		if len(app.WebRedirectURIs) != 0 {
+			return errWebApplicationCredential
+		}
 		if len(app.Credentials) >= 64 {
 			return errCredentialLimit
 		}

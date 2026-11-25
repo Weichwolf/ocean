@@ -118,6 +118,14 @@ func TestRegionalWebApplicationRegistration(t *testing.T) {
 	if !bytes.Contains(wildcard, []byte("Specify unique, exact HTTPS web redirect URIs")) {
 		t.Fatalf("wildcard redirects were not rejected: %s", wildcard)
 	}
+	for _, args := range [][]string{
+		{"ad", "sp", "create", "--id", first.AppID},
+		{"ad", "app", "credential", "reset", "--id", first.AppID, "--append"},
+	} {
+		if denial := az(true, args...); !bytes.Contains(denial, []byte("Use a separate automation application")) {
+			t.Fatalf("web application accepted an automation credential request: %s", denial)
+		}
+	}
 	stored := decode(az(false, "ad", "app", "show", "--id", first.AppID, "-o", "json"))
 	if stored.Web == nil || !slices.Equal(stored.Web.RedirectURIs, first.Web.RedirectURIs) {
 		t.Fatal("a rejected callback request changed the persisted registration")

@@ -92,6 +92,13 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if webRegistration.BlockedReason == "" {
 		webRegistration.BlockedReason = cli.BlockedReason
 	}
+	webClientPreparation := harness.Step{Name: "keycloak-web-client-preparation", Cases: []string{"WORKPLACE-18"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWebClientsLab$", "./internal/identity"}}
+	if os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN") == "" || os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT") == "" {
+		webClientPreparation.BlockedReason = "Provide the HTTPS origin and admin client for a disposable Keycloak lab."
+	}
+	webClientPreparation = requireFile(webClientPreparation, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin credential")
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
@@ -143,5 +150,6 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery, windowsGraph, packaged, webRegistration)
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
+		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation)
 }
