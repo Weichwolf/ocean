@@ -260,7 +260,7 @@ func (b Backend) Mount(ctx context.Context, id string, key []byte, uid, gid int)
 	return b.mount(ctx, id, key, func(path string) error { return os.Chown(path, uid, gid) })
 }
 
-func (b Backend) mount(ctx context.Context, id string, key []byte, prepare func(string) error) (_ string, err error) {
+func (b Backend) mount(ctx context.Context, id string, key []byte, prepare func(string) error, options ...string) (_ string, err error) {
 	path := b.MountPath(id)
 	if err := os.MkdirAll(b.config.MountRoot, 0755); err != nil {
 		return "", err
@@ -298,14 +298,17 @@ func (b Backend) mount(ctx context.Context, id string, key []byte, prepare func(
 			return "", errors.New("mount point is owned by another device")
 		}
 	} else {
-		if err := action(exec.CommandContext(ctx, "/usr/bin/mount", "-t", "ext4", "-o", "nodev,nosuid,noexec", mapped, path),
+		mountOptions := strings.Join(append([]string{"nodev", "nosuid", "noexec"}, options...), ",")
+		if err := action(exec.CommandContext(ctx, "/usr/bin/mount", "-t", "ext4", "-o", mountOptions, mapped, path),
 			"mount encrypted volume"); err != nil {
 			return "", err
 		}
 		mountedHere = true
 	}
-	if err := prepare(path); err != nil {
-		return "", err
+	if prepare != nil {
+		if err := prepare(path); err != nil {
+			return "", err
+		}
 	}
 	return path, nil
 }

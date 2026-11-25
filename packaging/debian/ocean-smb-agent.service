@@ -1,0 +1,15 @@
+[Unit]
+Description=ocean Kerberos SMB member reconciler
+After=network-online.target winbind.service
+Wants=network-online.target winbind.service
+ConditionPathExists=/etc/ocean-agent/smb-storage.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode smb
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

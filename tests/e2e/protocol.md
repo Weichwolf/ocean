@@ -142,6 +142,14 @@ checks acknowledged writes across both connections and records the client
 error on a write over budget. One connection holds a lock while the other
 attempts to acquire the same byte before and after release.
 
+Select `WORKPLACE-27` for the managed SMB lifecycle. The stock CLI uses
+the regional handler with isolated ARM fixture principals. The Debian
+member enrolls over mTLS, receives a sealed-volume assignment, and confirms
+the operation after publication. Native Kerberos sessions verify the
+published access and retain an acknowledged file after an ACL update.
+The withdrawal check confirms that the resource, SMB listener, filesystem
+mount and RBD image have been removed.
+
 ## Workload fixtures
 
 Resolve public images as `repository@digest` using [images.lock.yaml](testdata/images.lock.yaml). The stored tags identify the upstream sources for refreshing the lock. Record the digests of the built artifacts and the platform used by the test run.

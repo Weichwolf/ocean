@@ -62,7 +62,7 @@ func (m Member) Validate() error {
 	}
 	names, volumes := make(map[string]bool), make(map[string]bool)
 	for _, share := range m.Shares {
-		if !storage.ValidShare(share.Name) || slices.Contains([]string{"global", "homes", "printers"}, share.Name) ||
+		if !ValidName(share.Name) ||
 			!storage.ValidID(share.VolumeID) || !strings.HasPrefix(share.VolumeID, "vol-") || names[share.Name] || volumes[share.VolumeID] {
 			return errors.New("invalid or duplicate Samba share name or volume")
 		}
@@ -82,6 +82,11 @@ func (m Member) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ValidName accepts only ordinary SMB share names in the Ocean file service.
+func ValidName(name string) bool {
+	return storage.ValidShare(name) && name != "global" && name != "homes" && name != "printers"
 }
 
 func validDomainSID(sid string) bool {

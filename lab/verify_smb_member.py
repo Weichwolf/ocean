@@ -27,6 +27,7 @@ IFS= read -r password
 account=$1
 mode=$2
 file=$3
+share=$4
 private=$(mktemp -d)
 cleanup() {
     for name in ticket krb5.conf kdc.trace payload downloaded auth; do
@@ -47,7 +48,8 @@ if ! grep -Eq ' (dgram|stream) 10\.232\.1\.11:88' "$KRB5_TRACE" ||
     echo 'The ticket probe must use the writable controller' >&2
     exit 1
 fi
-smb=(smbclient //files04.ad.ocean.test/company-files
+endpoint="//files04.ad.ocean.test/$share"
+smb=(smbclient "$endpoint"
     --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" --client-protection=encrypt)
 
 expect_denial() {
@@ -68,7 +70,7 @@ case "$mode" in
         sha256sum "$private/downloaded" | cut -d ' ' -f 1
         printf '%s\n' "username = $account" "password = $password" 'domain = OCEANLAB' > "$private/auth"
         expect_denial 'session setup failed: NT_STATUS_' \
-            smbclient //files04.ad.ocean.test/company-files -A "$private/auth" \
+            smbclient "$endpoint" -A "$private/auth" \
             --use-kerberos=off --client-protection=encrypt -c ls
         ;;
     reader)
@@ -78,6 +80,9 @@ case "$mode" in
         ;;
     denied)
         expect_denial 'tree connect failed: NT_STATUS_ACCESS_DENIED' "${smb[@]}" -c ls
+        ;;
+    checkpoint)
+        "${smb[@]}" -c "put $private/payload $file"
         ;;
     cleanup)
         "${smb[@]}" -c "get $file $private/downloaded; del $file"
@@ -97,7 +102,12 @@ def private_password(path):
     return password + b"\n"
 
 
-def verify(state, fixture):
+def probe_client(state, share, user, mode, marker, password):
+    command = shlex.join(["bash", "-c", CLIENT_PROBE, "--", user, mode, marker, share])
+    return ssh(state, CLIENT, command, password, timeout=10).decode().strip()
+
+
+def verify(state, fixture, share):
     passwords = {user: private_password(fixture / user) for user in ACCOUNTS}
     marker = "ocean-smb-" + secrets.token_hex(8) + ".bin"
 
@@ -105,8 +115,7 @@ def verify(state, fixture):
         return ssh(state, guest, command, payload, timeout=10).decode().strip()
 
     def client(user, mode):
-        command = shlex.join(["bash", "-c", CLIENT_PROBE, "--", user, mode, marker])
-        return on(CLIENT, command, passwords[user])
+        return probe_client(state, share, user, mode, marker, passwords[user])
 
     def membership(action):
         on(DC, shlex.join(["sudo", "samba-tool", "group", action, WRITER_GROUP, "smbwriter"]))
@@ -133,7 +142,7 @@ with closing(socket.socket()) as sock:
         audit = on(MEMBER, "sudo journalctl --no-pager -t smbd_audit -o cat -n 150")
         entries = [line for line in audit.splitlines() if line.endswith("/" + marker)]
         for user, event in (("smbwriter", "pwrite_recv"), ("smbreader", "create_file")):
-            if not any(line.startswith(f"OCEANLAB|{user}|10.232.1.12|{SHARE}|{event}|ok|") for line in entries):
+            if not any(line.startswith(f"OCEANLAB|{user}|10.232.1.12|{share}|{event}|ok|") for line in entries):
                 raise RuntimeError(f"The SMB audit lacks the native identity and operation for {user}")
 
         start = time.monotonic()
@@ -202,16 +211,32 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--rbd-quota", action="store_true")
+    parser.add_argument("--share", default=SHARE)
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument("--rbd-quota", action="store_true")
+    variants.add_argument("--reader-denied", action="store_true")
+    variants.add_argument("--checkpoint", choices=("write", "verify"))
     args = parser.parse_args()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", args.share):
+        parser.error("--share must be a simple SMB share name")
     for directory in (args.state, args.fixture):
         if not directory.is_dir() or directory.stat().st_mode & 0o077:
             parser.error(f"{directory} must be an owner-only fixture directory")
     if args.rbd_quota:
+        if args.share != SHARE:
+            parser.error("--rbd-quota requires the dedicated company-files fixture")
         write_evidence(args.state, "kerberos-smb-quota.json", verify_quota(args.state, args.fixture))
         print("Verified concurrent SMB writes, the RBD volume quota, and byte-range lock conflicts.")
+    elif args.reader_denied:
+        probe_client(args.state, args.share, "smbreader", "denied", "unused", private_password(args.fixture / "smbreader"))
+        print("Verified that the SMB member denied the previous reader.")
+    elif args.checkpoint:
+        mode = "checkpoint" if args.checkpoint == "write" else "cleanup"
+        probe_client(args.state, args.share, "smbwriter", mode, "ocean-managed-checkpoint.bin",
+                     private_password(args.fixture / "smbwriter"))
+        print(f"Completed the SMB data checkpoint action {args.checkpoint}.")
     else:
-        write_evidence(args.state, "kerberos-smb-member.json", verify(args.state, args.fixture))
+        write_evidence(args.state, "kerberos-smb-member.json", verify(args.state, args.fixture, args.share))
         print("Verified the native Debian Kerberos SMB session and fresh-ticket group revocation.")
 
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/functions"
 	"github.com/Weichwolf/ocean/internal/network"
+	"github.com/Weichwolf/ocean/internal/smb"
 	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
 )
@@ -94,6 +95,13 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		}
 		namespace = "Microsoft.ContainerInstance"
 		types = []providerResourceType{{ResourceType: "containerGroups", Locations: []string{s.Location}, APIVersions: []string{workload.ContainerGroupAPIVersion}}}
+	case "ocean.storage":
+		if s.SMBShares == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = "Ocean.Storage"
+		types = []providerResourceType{{ResourceType: "smbShares", Locations: []string{s.Location}, APIVersions: []string{smb.APIVersion}}}
 	case "ocean.compute":
 		if s.ReplicaSets == nil {
 			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")

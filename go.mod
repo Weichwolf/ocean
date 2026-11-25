@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
+	go.etcd.io/etcd/api/v3 v3.6.17
 	go.etcd.io/etcd/client/v3 v3.6.17
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/sys v0.49.0
@@ -17,7 +18,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	go.etcd.io/etcd/api/v3 v3.6.17 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.17 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect

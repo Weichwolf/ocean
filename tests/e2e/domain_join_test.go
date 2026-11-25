@@ -234,7 +234,14 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		[]string{"kerberos-smb-quota.json"}, "--fixture", smbFixture, "--rbd-quota")
 	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "smbwriter"), "the disposable SMB writer credential")
 	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "rbd-volume-id"), "the encrypted RBD fixture volume ID")
+	smbManaged := harness.Step{Name: "managed-smb-cli", Cases: []string{"WORKPLACE-27"}, Timeout: 6 * time.Minute,
+		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v", "-run", "^TestPackagedSMBWorker$", "./internal/controlplane"},
+		Evidence: []harness.EvidenceSource{{Name: "managed-smb-cli.json", Path: filepath.Join(options.domain, "evidence", "managed-smb-cli.json")}}}
+	if options.domain == "" || smbFixture == "" || os.Getenv("OCEAN_E2E_SMB_ETCD") == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" {
+		smbManaged.BlockedReason = "Provide the prepared SMB member lab, a disposable etcd endpoint and the pinned Azure CLI."
+	}
+	smbManaged = requireFile(smbManaged, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB member identity and native group grants")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged)
 }

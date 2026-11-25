@@ -3,13 +3,14 @@
 import ldb
 from samba import dsdb
 from samba.dcerpc.misc import GUID
-from samba.ndr import ndr_pack
+from samba.dcerpc.security import dom_sid
+from samba.ndr import ndr_pack, ndr_unpack
 
 from directory_users import ALIAS, USER_FILTER, GraphFailure, ensure_ou, get_user, lookup, page, user_view, workforce_dn
 from domain_join import REQUEST_ID, object_guid, replace
 
 GROUP_OU = "OU=Ocean Workforce Groups"
-GROUP_FIELDS = ["objectGUID", "displayName", "sAMAccountName", "description"]
+GROUP_FIELDS = ["objectGUID", "objectSid", "displayName", "sAMAccountName", "description"]
 GLOBAL_SECURITY = dsdb.GTYPE_SECURITY_GLOBAL_GROUP
 # LDAP represents the unsigned flags as a signed 32-bit value.
 GROUP_FILTER = (f"(&(objectClass=group)(!(isCriticalSystemObject=TRUE))(!(adminCount=1))"
@@ -23,6 +24,7 @@ def field(entry, name):
 def group_view(database, group):
     return {"id": object_guid(database, group), "displayName": field(group, "displayName"),
             "mailNickname": field(group, "sAMAccountName"), "description": field(group, "description"),
+            "onPremisesSecurityIdentifier": str(ndr_unpack(dom_sid, group["objectSid"][0])),
             "securityEnabled": True, "mailEnabled": False}
 
 

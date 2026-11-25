@@ -66,6 +66,8 @@ func (f regionalGraphFixture) verifyGroups(t *testing.T, cli func(bool, ...strin
 	groupSID := directory("group", alias, "objectSid")
 	if !regexp.MustCompile(`^S-1-5-21(-[0-9]{1,10}){4}$`).MatchString(groupSID) ||
 		!strings.HasPrefix(groupSID, f.sid+"-") ||
+		shown.SID != groupSID ||
+		strings.TrimSpace(string(cli(false, "show", "--group", scope.ID, "--query", "onPremisesSecurityIdentifier", "-o", "tsv"))) != groupSID ||
 		directory("group", alias, "objectGUID") != scope.ID {
 		t.Fatal("the Graph group does not point at the native group SID and GUID")
 	}

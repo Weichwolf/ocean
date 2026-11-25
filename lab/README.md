@@ -229,6 +229,79 @@ assignments. Select `OCEAN_E2E_CASES=WORKPLACE-26` to run the two-connection
 write and lock probe. The evidence records the configured bytes, the
 acknowledged writes, the refusal errno and the lock outcomes.
 
+### Tenant-managed SMB shares
+
+The `Ocean.Storage/smbShares` resource uses API version `2026-11-01`.
+Provide a managed tenant directory, encrypted regional storage, and an enrolled
+Debian compute host dedicated to the tenant's Samba member. Register the
+member in `region.smbMembers` on each control-plane replica. Each entry has
+`tenantId`, `subscriptionId`, `hostId`, and the `member` object described
+above. The member object has an empty `shares` array. The region checks the
+binding against the provisioned AD domain's name and SID.
+
+Install the node package and the SMB dependencies from the member
+fixture. Join the chosen member and configure its private address and
+directory DNS. Set `/etc/ocean-agent/smb-storage.json` to a storage client
+configuration with `pool`, `client`, `cephConfig`, `keyring` and
+`mountRoot`. Set `mountRoot` to `/srv/ocean-smb/volumes`. Enable the
+`ocean-smb-agent.service` unit on this dedicated host. Keep the standalone
+Samba startup disabled so the reconciler owns publication when the host
+boots. The reconciler starts Winbind through its unit dependency.
+
+Get the group SID through the managed Graph endpoint with
+`az ad group show --group "$OCEAN_GROUP_OBJECT_ID" --query onPremisesSecurityIdentifier -o tsv`.
+Use the native tenant group SIDs in the policy document. The share quota
+is a whole number from 1 to 16 GiB and is set when the volume is allocated.
+Use a combined maximum of 32 distinct groups across the reader and writer
+lists. The initial member profile supports up to 16 shares.
+
+```json
+{
+  "location": "local",
+  "properties": {
+    "quotaGiB": 1,
+    "readerSids": ["S-1-5-21-1122-3344-5566-1101"],
+    "writerSids": ["S-1-5-21-1122-3344-5566-1102"]
+  }
+}
+```
+
+```sh
+share_id="/subscriptions/$OCEAN_SUBSCRIPTION/resourceGroups/$OCEAN_GROUP/providers/Ocean.Storage/smbShares/company-files"
+share_url="${OCEAN_ARM%/}$share_id?api-version=2026-11-01"
+az rest --method put --url "$share_url" --body @share.json -o json
+az rest --method get --url "$share_url" -o json
+az rest --method delete --url "$share_url" -o json
+```
+
+Track a 202 response with a GET to its `Azure-AsyncOperation` URL after
+the `Retry-After` interval. The worker provisions the encrypted volume
+and validates the directory groups before confirming publication.
+Repeat PUT with the same quota and revised groups to change permissions
+on the existing volume. A configuration change restarts Samba on the
+dedicated member and closes its current sessions. An existing file can
+also carry its own Windows or POSIX ACL. Delete withdraws the share,
+closes its storage mapping, and removes the live RBD image. A group
+containing a managed share must release the share before group deletion.
+[ARM asynchronous operation contract](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations)
+
+Select `WORKPLACE-27` against the prepared SMB and RBD lab. Install a
+current `ocean-agent` package in the member guest before starting the
+case. Put its verified member JSON with native reader and writer SIDs
+in `member-rbd.json` under the private fixture directory.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-27 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  OCEAN_E2E_SMB_ETCD=http://127.0.0.1:42453 OCEAN_E2E_SMB_AZ="$(command -v az)" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The harness uses an isolated regional etcd prefix with fixture ARM
+principals. The Debian node goes through real mTLS enrollment and applies
+the actual RBD and Samba operations. The joined client checks Kerberos data
+access and reads an acknowledged file after the ACL update.
+
 ## KVM tenant guest runtime probe
 
 The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`

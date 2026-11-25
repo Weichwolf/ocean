@@ -21,6 +21,7 @@ install -D -m 0644 "$source_dir/ocean-agent.service" "$staging/usr/lib/systemd/u
 install -D -m 0644 "$source_dir/ocean-network-agent.service" "$staging/usr/lib/systemd/system/ocean-network-agent.service"
 install -D -m 0644 "$source_dir/ocean-https-agent.service" "$staging/usr/lib/systemd/system/ocean-https-agent.service"
 install -D -m 0644 "$source_dir/ocean-storage-agent.service" "$staging/usr/lib/systemd/system/ocean-storage-agent.service"
+install -D -m 0644 "$source_dir/ocean-smb-agent.service" "$staging/usr/lib/systemd/system/ocean-smb-agent.service"
 install -D -m 0644 "$source_dir/ocean-vm-agent.service" "$staging/usr/lib/systemd/system/ocean-vm-agent.service"
 install -D -m 0644 "$source_dir/ocean-container-network.service" "$staging/usr/lib/systemd/system/ocean-container-network.service"
 install -D -m 0644 "$source_dir/ocean-wireguard-agent.service" "$staging/usr/lib/systemd/system/ocean-wireguard-agent.service"
@@ -36,7 +37,7 @@ Section: admin
 Priority: optional
 Maintainer: ocean contributors <development@ocean.invalid>
 Depends: podman, uidmap, passt | slirp4netns, fuse-overlayfs, passwd (>= 1:4.15), systemd, dbus-user-session, iproute2, nftables
-Suggests: haproxy, dnsmasq-base, keepalived, curl, wireguard-tools, iputils-ping, iputils-arping, qemu-system-x86, qemu-utils, ovmf, ceph-common, cryptsetup-bin
+Suggests: haproxy, dnsmasq-base, keepalived, curl, wireguard-tools, iputils-ping, iputils-arping, qemu-system-x86, qemu-utils, ovmf, ceph-common, cryptsetup-bin, samba, winbind, acl, quota
 Description: ocean node agent
  Runs the ocean node agent under a dedicated systemd user manager and checks
  the host's rootless Podman runtime before reporting readiness. Includes a

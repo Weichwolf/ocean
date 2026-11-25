@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "firewall", "firewall, https, wireguard, containers, storage, or vm")
+	mode := flag.String("mode", "firewall", "firewall, https, wireguard, containers, storage, smb, or vm")
 	vmAction := flag.String("vm-action", "", "internal unprivileged VM control action")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -24,6 +24,8 @@ func main() {
 		err = nodeagent.RunNetworkPolicies(ctx, config+"config.json", config+"network.json", slog.Default())
 	case "storage":
 		err = nodeagent.RunStorage(ctx, config+"storage.json", config+"config.json", slog.Default())
+	case "smb":
+		err = nodeagent.RunSMB(ctx, config+"smb-storage.json", config+"config.json", slog.Default())
 	case "vm":
 		err = nodeagent.RunVMWorker(ctx, config, slog.Default())
 	case "vm-guest":

@@ -17,6 +17,10 @@ import (
 // encrypted filesystems and local POSIX grants for every published share.
 // With no shares it prepares the private member configuration for enrollment.
 func Prepare(ctx context.Context, member Member, destination string) error {
+	return prepare(ctx, member, destination, nil)
+}
+
+func prepare(ctx context.Context, member Member, destination string, beforeApply func() error) error {
 	if err := member.Validate(); err != nil {
 		return err
 	}
@@ -37,16 +41,17 @@ func Prepare(ctx context.Context, member Member, destination string) error {
 	if _, err := run(ctx, "/usr/bin/testparm", "-s", file.Name()); err != nil {
 		return fmt.Errorf("validate the generated Samba configuration: %w", err)
 	}
+	var root *os.Root
+	acls := make([][]string, len(member.Shares))
 	if len(member.Shares) != 0 {
 		if err := verifyDomain(ctx, member, file.Name()); err != nil {
 			return err
 		}
-		root, err := os.OpenRoot(MountRoot)
+		root, err = os.OpenRoot(MountRoot)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = root.Close() }()
-		acls := make([][]string, len(member.Shares))
 		for i, share := range member.Shares {
 			acl, err := validateShare(ctx, root, member.DomainSID, share)
 			if err != nil {
@@ -54,10 +59,15 @@ func Prepare(ctx context.Context, member Member, destination string) error {
 			}
 			acls[i] = acl
 		}
-		for i, share := range member.Shares {
-			if err := applySharePolicy(ctx, root, share, acls[i]); err != nil {
-				return fmt.Errorf("apply policy on share %s: %w", share.Name, err)
-			}
+	}
+	if beforeApply != nil {
+		if err := beforeApply(); err != nil {
+			return err
+		}
+	}
+	for i, share := range member.Shares {
+		if err := applySharePolicy(ctx, root, share, acls[i]); err != nil {
+			return fmt.Errorf("apply policy on share %s: %w", share.Name, err)
 		}
 	}
 	return os.Rename(file.Name(), destination)
