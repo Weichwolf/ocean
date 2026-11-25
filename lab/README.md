@@ -299,6 +299,28 @@ record on startup with the system UUID, Windows machine GUID, hostname,
 build and boot timestamp. Keep the image and test credentials private.
 [Windows Server SMB shares](https://learn.microsoft.com/powershell/module/smbshare/new-smbshare?view=windowsserver2025-ps)
 
+For the full `vm-worker` acceptance profile, also prepare `farm-1-node-06`
+with the packaged service, storage configuration and `smbclient`. The test
+will start this worker after initial provisioning and use it as the private
+SMB client and the eligible replacement. Place the SMB username, password
+and Windows computer name in the `smbclient` authentication file as
+`username`, `password` and `domain`, respectively. Restrict it to mode `0600`.
+The lab storage authority must have its existing Ed25519 key pair in
+`$LAB_STATE/storage-pki`. Set `OCEAN_E2E_VM_FENCE_PROFILE` to the original
+profile used to start the lab so the test can reboot the retired worker.
+
+Use the same image and CLI variables as the single-worker probe, plus the
+following inputs. The acceptance harness writes Markdown and TSV reports and
+captures the cold boot, restart and fenced recovery durations.
+
+```sh
+OCEAN_E2E_PROFILE=vm-worker \
+  OCEAN_E2E_VM_SMB_AUTH="$PRIVATE_SMB_AUTH_FILE" \
+  OCEAN_E2E_VM_FENCE_PROFILE="$ORIGINAL_LAB_PROFILE" \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=30m -v \
+    -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Regional VM store probe
 
 The optional `region.virtualMachines` configuration registers the catalog

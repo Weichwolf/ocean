@@ -89,8 +89,8 @@ parameters and operations.
    renews a capacity lease and reads only its authorized assignments. Pool,
    hardware, role, capacity and drain policy determine placement eligibility.
 4. The worker applies the assigned network and storage policy and starts the
-   workload under rootless Podman. The regional controllers reconcile the
-   recorded intent with observed host and workload state.
+   workload with its configured runtime. The regional controllers reconcile
+   the recorded intent with observed host and workload state.
 
 The operator admits hosts through an approved inventory with management MAC,
 address, cell, pool, profile and roles. A short-lived enrollment credential
@@ -100,6 +100,22 @@ seed at first boot. A lost response or restart preserves the enrolled identity.
 Adding or draining eligible workers leaves voter membership under regional
 operator control. See [host enrollment](lab/README.md#host-identity-enrollment)
 and [capacity reservations](lab/README.md#leased-host-capacity-and-reservations).
+
+### Optional tenant VMs
+
+The VM profile admits prepared Windows Server 2025 Core images on
+qualified Debian KVM workers. Its ARM contract covers image registration,
+private NIC allocation, VM and disk reads, VM start, graceful power-off and
+deletion. A single transaction reserves CPU, RAM and the persistent OS disk
+when the VM is created. The reservations stay charged while it is stopped.
+
+The worker imports the digest-pinned disk and UEFI variables into encrypted
+Ceph RBD and starts QEMU under an unprivileged runtime account. The private
+TAP has a fixed MAC derived from the VM identity and a lease-bound network
+policy. Regional placement transfers the writable disk generation only after
+the original writer's lease expires and an authorized fencer confirms its
+power-off. Recovery preserves the image, guest identity and private IP.
+See the [KVM worker and acceptance guide](lab/README.md#debian-kvm-worker-service).
 
 Pool policy constrains initial placement and recovery. The enrolled agent
 gets only the workload material required by its assignments. Regional key
@@ -191,8 +207,7 @@ Debian installation to the demonstrated first-boot enrollment path. Physical
 qualification also covers fencing, independent infrastructure failure
 domains and measured performance under load. IPsec compatibility, Functions
 ZIP deployment and slots, and monetary Cost Management have separate
-conditional gates. A tenant VM provider would require a separate compatibility
-contract.
+conditional gates.
 See the [objective](objective.md) and the production and conditional gates in
 the [acceptance matrix](acceptance.tsv).
 

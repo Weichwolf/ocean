@@ -133,3 +133,17 @@ HA-05	management-group-exists	2.93.0	none	2024-11-01	group exists --name {group}
 HA-06	voter-container-create	2.93.0	none	2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Public --ports {port} --protocol TCP --os-type Linux --cpu 0.25 --memory 0.0625 --restart-policy Always -o json
 HA-06	voter-container-show	2.93.0	none	2024-05-01-preview	container show --resource-group {group} --name {name} -o json
 HA-06	voter-container-delete	2.93.0	none	2024-05-01-preview	container delete --resource-group {group} --name {name} --yes -o none
+VM-01	vm-image-put	2.93.0	none	2024-07-01	rest --method put --url {imageId}?api-version=2024-07-01 --body @{imageBody} -o json
+VM-01	vm-image-get	2.93.0	none	2024-07-01	rest --method get --url {imageId}?api-version=2024-07-01 -o json
+VM-01	vm-private-nic-put	2.93.0	none	2024-05-01	rest --method put --url {nicId}?api-version=2024-05-01 --body @{nicBody} -o json
+VM-01	vm-private-nic-get	2.93.0	none	2024-05-01	rest --method get --url {nicId}?api-version=2024-05-01 -o json
+VM-01	vm-os-disk-get	2.93.0	none	2024-03-02	rest --method get --url {diskId}?api-version=2024-03-02 -o json
+VM-01	vm-put-replay	2.93.0	none	2024-03-01	rest --method put --url {vmId}?api-version=2024-03-01 --body @{vmBody} -o json
+VM-01	vm-get	2.93.0	none	2024-03-01	rest --method get --url {vmId}?api-version=2024-03-01 -o json
+VM-01	vm-power-state	2.93.0	none	2024-03-01	rest --method get --url {vmId}/instanceView?api-version=2024-03-01 -o json
+VM-01	vm-power-off	2.93.0	none	2024-03-01	rest --method post --url {vmId}/powerOff?api-version=2024-03-01 -o json
+VM-01	vm-start	2.93.0	none	2024-03-01	rest --method post --url {vmId}/start?api-version=2024-03-01 -o json
+VM-01	vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {vmId}?api-version=2024-03-01 -o json
+VM-01	vm-private-nic-delete	2.93.0	none	2024-05-01	rest --method delete --url {nicId}?api-version=2024-05-01 -o json
+VM-01	vm-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId}?api-version=2024-07-01 -o json
+VM-02	vm-replacement-power-state	2.93.0	none	2024-03-01	rest --method get --url {vmId}/instanceView?api-version=2024-03-01 -o json
