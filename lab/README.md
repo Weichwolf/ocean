@@ -427,3 +427,45 @@ python3 lab/verify_storage_mounts.py --state "$LAB_STATE" --observer farm-1-node
 ```
 
 The recovery profile quiesces the writer and releases its RBD map. It saves metadata with `etcdctl snapshot save` and exports the encrypted RBD checkpoint to a separate backup file. It starts a fresh etcd instance and ARM API in a dedicated test guest. The unchanged CLI verifies the share ID, quota, tenant scope, and account credential against the recovered metadata. With the separately held regional wrapping key, `ocean-recover` writes the authorized volume key to a new owner-only file. The recovery guest imports the encrypted image and verifies the workload's checksum. The evidence records artifact hashes and rejects recovery with a different wrapping key or a different tenant identity.
+
+### Linux HTTP Functions
+
+The Functions contract uses the pinned Azure CLI and one Linux B1 plan with one
+worker. The supported deployment is a digest-pinned OCI image with an HTTP
+trigger and Functions runtime v4. Java 21 is the acceptance fixture. Node.js,
+.NET isolated and Go custom handler fixtures have independent source and pinned
+base images under `tests/e2e/testdata/workloads`.
+
+Use an enrolled regional lab with the replicated storage pool, two storage
+workers, the workload network agent and the HTTPS gateway roles. Build the Debian
+agent locally with `make deb-agent`. Run `python3 lab/prepare_functions.py --state DIR
+--package PACKAGE` to build and stage both Java revisions through the lab's
+loopback TLS registry. The setup gives each enrolled storage worker an 8 GiB
+boot disk for the native Functions images. The worker preloads the pinned
+storage companion image before the CLI test runs. Run `python3 lab/verify_functions.py
+--state DIR` to verify the private subnet, public HTTPS, native Function keys,
+image and settings changes, lifecycle operations and fixed egress through one
+gateway failure. Evidence is written to `DIR/evidence/http-functions.json`.
+
+The Functions host runs the selected OCI image in rootless Podman. A loopback
+storage companion provides the blob, queue and table operations required by the
+supported HTTP host. Both host storage and the native key directory live on a
+dedicated encrypted Ceph-backed share. The share is retained when the app is
+deleted and remains under the tenant's storage account until the tenant removes
+it. The ARM compatibility profile manages this host storage through the Function
+workflow. The account-level Azure Blob, Queue and Table data APIs remain outside
+the profile.
+
+Ingress opens through the selected Application Gateway and its certificate.
+Provision the app, integrate the private subnet and attach the HTTPS gateway.
+The Function hostname uses the operator-configured Functions domain. Use the
+gateway's DNS path in the lab, or publish the gateway's address in the
+operator's DNS. The initial app placement does not accept direct public HTTP.
+The Functions Worker config, native master key and storage credentials are
+controlled by the platform. Tenant users with resource write access can manage
+app settings and Function keys. A Reader can see the app and discover functions.
+
+Run `python3 lab/verify_function_fixtures.py --output FILE` for a local Podman check of
+both Java revisions and the Node.js, .NET and Go fixtures. This check verifies
+each native trigger and the valid, missing and invalid key paths. The regional
+acceptance run uses the Java fixture for gateway, network and lifecycle checks.

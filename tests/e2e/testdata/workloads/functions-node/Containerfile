@@ -1,0 +1,5 @@
+ARG BASE_IMAGE=mcr.microsoft.com/azure-functions/node@sha256:76b0a2318403992100bdc72f2698e9d938e1a3b1e210c28c11aaaeb57221a6c1
+FROM ${BASE_IMAGE}
+ENV FUNCTIONS_WORKER_RUNTIME=node
+COPY host.json /home/site/wwwroot/host.json
+COPY hello /home/site/wwwroot/hello

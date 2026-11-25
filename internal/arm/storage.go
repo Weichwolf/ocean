@@ -2,6 +2,7 @@ package arm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -22,7 +23,7 @@ type StorageStore interface {
 	ApplyStorageFence(context.Context, storage.SignedFence) error
 	StorageNameAvailable(context.Context, string) (bool, error)
 	PutStorageAccount(context.Context, SubscriptionScope, string, ResourceAddress, storage.AccountRequest) (InventoryResource, bool, error)
-	GetStorageAccountKey(context.Context, SubscriptionScope, string, ResourceAddress) (string, error)
+	GetStorageAccountKeys(context.Context, SubscriptionScope, string, ResourceAddress) ([2]string, error)
 	DeleteStorageAccount(context.Context, SubscriptionScope, string, ResourceAddress) error
 	PutFileShare(context.Context, SubscriptionScope, string, ResourceAddress, ResourceAddress, storage.ShareProperties) (InventoryResource, *Operation, bool, error)
 	DeleteFileShare(context.Context, SubscriptionScope, string, ResourceAddress) (*Operation, error)
@@ -103,13 +104,16 @@ func (s Server) storageAccount(ctx context.Context, w http.ResponseWriter, r *ht
 		return
 	}
 	if listKeys {
-		key, err := s.Storage.GetStorageAccountKey(ctx, scope, actor, account)
+		keys, err := s.Storage.GetStorageAccountKeys(ctx, scope, actor, account)
 		if err != nil {
 			storageError(w, err)
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]any{"keys": []map[string]string{{"keyName": "key1", "permissions": "Full", "value": key}}})
+		writeJSON(w, http.StatusOK, map[string]any{"keys": []map[string]string{
+			{"keyName": "key1", "permissions": "Full", "value": keys[0]},
+			{"keyName": "key2", "permissions": "Full", "value": keys[1]},
+		}})
 		return
 	}
 	if len(parts) != 1 {
@@ -130,7 +134,7 @@ func (s Server) storageAccount(ctx context.Context, w http.ResponseWriter, r *ht
 			storageError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, resource.view(scope))
+		writeJSON(w, http.StatusOK, s.storageView(scope, resource))
 	case http.MethodDelete:
 		if err := s.Storage.DeleteStorageAccount(ctx, scope, actor, account); err != nil {
 			storageError(w, err)
@@ -220,8 +224,27 @@ func (s Server) showStorageResource(ctx context.Context, w http.ResponseWriter, 
 	} else if resource == nil {
 		storageError(w, ErrStorageMissing)
 	} else {
-		writeJSON(w, http.StatusOK, resource.view(scope))
+		writeJSON(w, http.StatusOK, s.storageView(scope, *resource))
 	}
+}
+
+func (s Server) storageView(scope SubscriptionScope, resource InventoryResource) map[string]any {
+	view := resource.view(scope)
+	name, kind, _ := resource.Address.parts()
+	if kind != storage.AccountType || s.StorageSuffix == "" {
+		return view
+	}
+	var properties map[string]any
+	if json.Unmarshal(resource.Properties, &properties) != nil {
+		return view
+	}
+	endpoints := make(map[string]string, 3)
+	for _, service := range []string{"blob", "queue", "table"} {
+		endpoints[service] = "https://" + name + "." + service + "." + s.StorageSuffix + "/"
+	}
+	properties["primaryEndpoints"] = endpoints
+	view["properties"] = properties
+	return view
 }
 
 func storageError(w http.ResponseWriter, err error) {

@@ -38,6 +38,9 @@ type regionConfig struct {
 	WireGuard           *wireGuardConfig          `json:"wireGuard"`
 	Workloads           *workloadConfig           `json:"workloads"`
 	Storage             *storageConfig            `json:"storage"`
+	FunctionPlans       bool                      `json:"functionPlans"`
+	FunctionDomain      string                    `json:"functionDomain,omitempty"`
+	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
 }
 
 type etcdConfig struct {
@@ -111,14 +114,20 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			}
 			if cfg.Identity.Cloud != nil {
 				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
-				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name,
+				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name, StorageSuffix: cfg.Identity.Cloud.StorageEndpoint,
 					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region, Networks: region, Deployments: region,
-					GatewayDeployments: region, SiteConnections: region, PrincipalExists: compatibility.RolePrincipalExists}
+					GatewayDeployments: region, SiteConnections: region, FunctionPlans: cfg.Region.FunctionPlans, PrincipalExists: compatibility.RolePrincipalExists}
 				if region.workloads != nil {
 					resources.Containers = region
 				}
 				if region.storage != nil {
 					resources.Storage = region
+				}
+				if cfg.Region.FunctionPlans && cfg.Region.FunctionDomain != "" && cfg.Identity.Cloud.StorageEndpoint != "" &&
+					region.workloads != nil && region.storage != nil {
+					resources.Functions = region
+					resources.FunctionDomain = cfg.Region.FunctionDomain
+					resources.FunctionRegistry = cfg.Region.FunctionRegistry
 				}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}

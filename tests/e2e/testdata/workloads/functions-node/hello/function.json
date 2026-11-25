@@ -1,0 +1,6 @@
+{
+  "bindings": [
+    {"type": "httpTrigger", "direction": "in", "name": "req", "authLevel": "function", "methods": ["get"], "route": "hello"},
+    {"type": "http", "direction": "out", "name": "res"}
+  ]
+}

@@ -157,7 +157,7 @@ func (cfg containerNetworkConfig) syncContainerNetwork(ctx context.Context, task
 		}
 		pinned[name] = true
 		current := installed[name]
-		setup := current.process != process.Pid
+		setup := current.process != process.Pid || current.policy.Address != task.Address
 		policy, fabric, prefixes, gateway, err := cfg.planContainerNetwork(task)
 		if err != nil {
 			failures = append(failures, err, removeContainerNetwork(ctx, name))
@@ -217,6 +217,7 @@ func (c containerNetworkConfig) planContainerNetwork(task workload.Task) (networ
 			return policy, "", nil, netip.Addr{}, errors.New("the workload IP is outside the public fabric")
 		}
 		policy.PublicPort = task.Port
+		policy.BlockPublicIngress = task.BlockPublicIngress
 		return policy, c.PublicFabric, c.PublicPrefixes, c.PublicGateway, nil
 	}
 	if !task.Policy.ValidFor(task.Address) {

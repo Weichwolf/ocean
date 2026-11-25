@@ -2,7 +2,9 @@ package controlplane
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -114,34 +116,42 @@ func (r *Region) storageAccountSecret(record storageAccountRecord, key string) (
 	return secret, nil
 }
 
-func (r *Region) GetStorageAccountKey(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress) (string, error) {
+func secondaryStorageKey(primary []byte) []byte {
+	mac := hmac.New(sha512.New, primary)
+	mac.Write([]byte("ocean/storage/account/key2"))
+	return mac.Sum(nil)
+}
+
+func (r *Region) GetStorageAccountKeys(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress) ([2]string, error) {
 	key := r.storageAccountKey(scope, address)
 	lookup, err := r.client.Get(ctx, key)
 	if err != nil {
-		return "", err
+		return [2]string{}, err
 	}
 	if len(lookup.Kvs) != 1 {
-		return "", arm.ErrStorageMissing
+		return [2]string{}, arm.ErrStorageMissing
 	}
 	var record storageAccountRecord
 	if err := json.Unmarshal(lookup.Kvs[0].Value, &record); err != nil || record.Address.Key() != address.Key() {
-		return "", errors.New("invalid storage account record")
+		return [2]string{}, errors.New("invalid storage account record")
 	}
 	secret, err := r.storageAccountSecret(record, key)
 	if err != nil {
-		return "", err
+		return [2]string{}, err
 	}
 	defer clear(secret)
 	event := arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: storage.AccountType + "/listKeys/action",
 		Target: record.Address.ID(scope), Outcome: arm.OperationSucceeded}
 	result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", lookup.Kvs[0].ModRevision)).Then(r.auditOp(scope, event)).Commit()
 	if err != nil {
-		return "", err
+		return [2]string{}, err
 	}
 	if !result.Succeeded {
-		return "", arm.ErrStorageMissing
+		return [2]string{}, arm.ErrStorageMissing
 	}
-	return base64.StdEncoding.EncodeToString(secret), nil
+	secondary := secondaryStorageKey(secret)
+	defer clear(secondary)
+	return [2]string{base64.StdEncoding.EncodeToString(secret), base64.StdEncoding.EncodeToString(secondary)}, nil
 }
 
 func (r *Region) storageSharesPrefix(scope arm.SubscriptionScope, account arm.ResourceAddress) string {

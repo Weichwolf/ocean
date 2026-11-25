@@ -36,7 +36,7 @@ func (r *Region) containerNetworkClaims(ctx context.Context) (map[string]contain
 	return claims, clientv3.Compare(clientv3.ModRevision(key), "=", revision), key, nil
 }
 
-func (r *Region) claimContainerNetwork(ctx context.Context, scope arm.SubscriptionScope, owner, subnet string) ([]clientv3.Cmp, []clientv3.Op, error) {
+func (r *Region) claimContainerNetwork(ctx context.Context, scope arm.SubscriptionScope, owner, subnet, service string) ([]clientv3.Cmp, []clientv3.Op, error) {
 	parent, name, ok := arm.SubnetParent(scope, subnet)
 	if !ok {
 		return nil, nil, ErrPlacementSubnetUnavailable
@@ -59,7 +59,7 @@ func (r *Region) claimContainerNetwork(ctx context.Context, scope arm.Subscripti
 		return nil, nil, err
 	}
 	index := vnet.SubnetIndex(name)
-	if index < 0 || !vnet.Subnets[index].Properties.AllowsContainerGroups() {
+	if index < 0 || !vnet.Subnets[index].Properties.HasDelegation(service) {
 		return nil, nil, arm.ErrContainerDelegationRequired
 	}
 	claims, guard, key, err := r.containerNetworkClaims(ctx)

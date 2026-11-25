@@ -88,3 +88,28 @@ func (s Server) operation(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 	writeJSON(w, http.StatusOK, status)
 }
+
+// AwaitOperation waits until an assigned worker has confirmed a provider operation.
+func AwaitOperation(ctx context.Context, store OperationStore, scope SubscriptionScope, operation *Operation) error {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for operation != nil && operation.Status == OperationInProgress {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			current, err := store.GetOperation(ctx, scope, operation.ID)
+			if err != nil {
+				return err
+			}
+			if current == nil {
+				return ErrContainerMissing
+			}
+			operation = current
+		}
+	}
+	if operation != nil && operation.Status != OperationSucceeded {
+		return ErrContainerBusy
+	}
+	return nil
+}

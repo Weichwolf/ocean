@@ -56,7 +56,7 @@ func (r *Region) HostContainerTasks(ctx context.Context, host string, certificat
 		}
 		task := workload.Task{AssignmentID: workload.AssignmentID{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, ID: record.Reservation.ID,
 			Generation: record.Reservation.Generation, Revision: record.Operation}, State: record.Desired, Address: record.endpoint(),
-			Port: record.Port, Restart: record.Restart}
+			Port: record.Port, Restart: record.Restart, BlockPublicIngress: isFunctionRecord(record)}
 		if networkOnly && record.Desired != workload.Removed && record.Reservation.SubnetID != "" {
 			placement := enrollment.Assignment{Generation: record.Reservation.Generation, SubnetID: record.Reservation.SubnetID,
 				PrivateIPv4: record.Reservation.PrivateIPv4}
@@ -79,6 +79,9 @@ func (r *Region) HostContainerTasks(ctx context.Context, host string, certificat
 				return workload.Page{}, err
 			}
 			task.Container, task.RestartPolicy = &config.Properties.Containers[0].Properties, config.Properties.RestartPolicy
+			if config.Function != nil {
+				task.Function = &config.Function.Runtime
+			}
 		}
 		page.Tasks = append(page.Tasks, task)
 	}
@@ -130,6 +133,9 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 			}
 			return r.finishContainerDeletion(ctx, scope, record, *op, hostKey, checks, nil, false)
 		}
+		if isFunctionRecord(record) && op.Status == arm.OperationInProgress && report.State == workload.Running && !report.FunctionReady {
+			return enrollment.ErrWorkloadChanged
+		}
 		if report.State != record.Desired && report.State != workload.Failed && !(record.Desired == workload.Running && report.State == workload.Stopped) {
 			return enrollment.ErrWorkloadChanged
 		}
@@ -145,6 +151,13 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 		}
 		now := time.Now().UTC()
 		var writes []clientv3.Op
+		if report.Function != nil {
+			conditions, updates, err := r.finishFunctionAdmin(ctx, scope, &record, config, *report.Function)
+			if err != nil {
+				return err
+			}
+			checks, writes = append(checks, conditions...), append(writes, updates...)
+		}
 		var logsRevision int64
 		if len(previousLogs.Kvs) == 1 {
 			logsRevision = previousLogs.Kvs[0].ModRevision
@@ -161,7 +174,15 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 			}
 			writes = append(writes, putJSON(r.operationKey(scope, op.ID), op), r.containerAudit(scope, record, *op, "reconcile", now))
 		}
-		if record.Observed != report.State || complete {
+		if complete && op.Status == arm.OperationSucceeded && isFunctionRecord(record) &&
+			record.Reservation.PrivateIPv4.IsValid() && record.PublicIP.IsValid() {
+			guard, write, err := r.releaseFunctionPublicAddress(ctx, scope, &record)
+			if err != nil {
+				return err
+			}
+			checks, writes = append(checks, guard), append(writes, write)
+		}
+		if record.Observed != report.State || complete || report.Function != nil {
 			record.Observed, record.Restart = report.State, false
 			projection := projectContainer(config, record, prior.CreatedAt, now, op.Status)
 			writes = append(writes, putJSON(key, record), putJSON(r.inventoryPrefix(scope)+address.Key(), projection))
@@ -189,6 +210,28 @@ func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.Subscrip
 			clientv3.OpDelete(r.inventoryPrefix(scope) + record.Address.Key()), putJSON(r.operationKey(scope, op.ID), op),
 			r.containerAudit(scope, record, op, "delete", now)}
 		writes = append(writes, finalWrites...)
+		if isFunctionRecord(record) {
+			config, err := r.decryptContainer(scope, record)
+			if err != nil {
+				return nil, nil, err
+			}
+			nameKey := r.functionNameKey(config.Function.PublicHost)
+			owners, err := r.client.Get(ctx, nameKey)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(owners.Kvs) != 0 && string(owners.Kvs[0].Value) == key {
+				conditions = append(conditions, clientv3.Compare(clientv3.ModRevision(nameKey), "=", owners.Kvs[0].ModRevision))
+				writes = append(writes, clientv3.OpDelete(nameKey))
+			}
+			writes = append(writes, clientv3.OpDelete(key+"/function-admin-actor"))
+			previous := projectContainer(config, record, now, now, arm.OperationSucceeded)
+			_, removals, err := r.inventoryReferenceChanges(ctx, scope, record.Address, &previous, nil, 0, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			writes = append(writes, removals...)
+		}
 		if record.Volume != nil && !fenced {
 			receipt := r.unmountReceiptKey(scope, record.Volume.ID, record.Reservation.Generation, record.Operation)
 			proof, err := r.client.Get(ctx, receipt)
@@ -219,7 +262,8 @@ func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.Subscrip
 			delete(pool.Allocations, key)
 			poolCheck, poolWrite := r.publicIPPoolUpdate(pool, revision)
 			conditions, writes = append(conditions, poolCheck), append(writes, poolWrite)
-		} else {
+		}
+		if res.SubnetID != "" {
 			check, write, err := r.releaseContainerNetwork(ctx, key)
 			if err != nil {
 				return nil, nil, err

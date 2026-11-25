@@ -30,6 +30,11 @@ type Server struct {
 	SiteConnections    SiteConnectionStore
 	Containers         ContainerGroupStore
 	Storage            StorageStore
+	FunctionPlans      bool
+	Functions          FunctionStore
+	FunctionDomain     string
+	FunctionRegistry   string
+	StorageSuffix      string
 	PrincipalExists    func(context.Context, string, string, string) (bool, error)
 }
 
@@ -51,6 +56,9 @@ func parseRoute(segments []string) armRoute {
 	}
 	if len(segments) == 5 && strings.EqualFold(segments[2], "providers") {
 		if route, ok := storageRoute("", segments[3:]); ok {
+			return route
+		}
+		if route, ok := functionSiteRoute("", segments[3:]); ok {
 			return route
 		}
 		if route, ok := containerRoute("", segments[3:]); ok {
@@ -83,6 +91,12 @@ func parseRoute(segments []string) armRoute {
 			return armRoute{collection: "inventory", group: group}
 		}
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
+			if route, ok := functionSiteRoute(group, segments[5:]); ok {
+				return route
+			}
+			if route, ok := functionPlanRoute(group, segments[5:]); ok {
+				return route
+			}
 			if route, ok := storageRoute(group, segments[5:]); ok {
 				return route
 			}
@@ -162,6 +176,12 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.storageFence(ctx, w, r)
 			return
 		}
+		if strings.EqualFold(r.URL.Path, functionStacksPath) && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			s.functionStacks(w, r.WithContext(ctx))
+			return
+		}
 		segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 		route := parseRoute(segments)
 		if route.collection == "" || !strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
@@ -169,6 +189,9 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			return
 		}
 		timeout := 5 * time.Second
+		if route.collection == "functionSite" {
+			timeout = 27 * time.Second
+		}
 		if route.collection == "storageAccount" && (r.Method == http.MethodPut || r.Method == http.MethodDelete) && strings.Contains(strings.ToLower(route.name), "/fileservices/default/shares/") {
 			timeout = 25 * time.Second
 		}
@@ -204,6 +227,10 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "applicationGateway":
 			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "functionSite":
+			s.functionSite(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "functionPlan":
+			s.functionPlan(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "storageNameAvailability":
 			s.storageNameAvailability(ctx, w, r)
 		case "storageAccount":
@@ -231,7 +258,11 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
 	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress"
-	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "storageAccount" ||
+	functionRead := route.collection == "functionSite" && !strings.Contains(strings.ToLower(route.name), "/keys")
+	if functionRead && r.Method == http.MethodPost && strings.HasSuffix(strings.ToLower(route.name), "/publishxml") {
+		return true // The handler applies group scope and returns only the OCI deployment method.
+	}
+	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}
@@ -249,6 +280,17 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 		}
 		if granted {
 			return true
+		}
+	}
+	if route.collection == "functionSite" && strings.Contains(strings.ToLower(route.name), "/functions/") && !read {
+		action := "Microsoft.Web/sites/functions/keys/write"
+		if r.Method == http.MethodPost {
+			action = "Microsoft.Web/sites/functions/listKeys/action"
+		}
+		event := AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action, Target: r.URL.Path, Outcome: "Denied"}
+		if err := s.Roles.RecordAudit(ctx, scope, event); err != nil {
+			unavailable(w)
+			return false
 		}
 	}
 	if route.collection == "deployment" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
@@ -305,7 +347,7 @@ func (s Server) subscriptionPrincipal(ctx context.Context, w http.ResponseWriter
 		}
 		return identity.ARMPrincipal{}, false
 	}
-	if !strings.EqualFold(principal.Subscription.SubscriptionID, subscription) {
+	if subscription != "" && !strings.EqualFold(principal.Subscription.SubscriptionID, subscription) {
 		writeError(w, http.StatusNotFound, "SubscriptionNotFound", "The subscription could not be found.")
 		return identity.ARMPrincipal{}, false
 	}

@@ -3,6 +3,7 @@ package workload
 import (
 	"net/netip"
 
+	"github.com/Weichwolf/ocean/internal/functions"
 	"github.com/Weichwolf/ocean/internal/network"
 )
 
@@ -23,15 +24,17 @@ type AssignmentID struct {
 
 type Task struct {
 	AssignmentID
-	State         string                `json:"state"`
-	Start         bool                  `json:"start,omitempty"`
-	Restart       bool                  `json:"restart,omitempty"`
-	Address       netip.Addr            `json:"address"`
-	Policy        *network.SubnetPolicy `json:"policy,omitempty"`
-	VolumeID      string                `json:"volumeId,omitempty"`
-	Port          int                   `json:"port"`
-	RestartPolicy string                `json:"restartPolicy,omitempty"`
-	Container     *ContainerProperties  `json:"container,omitempty"`
+	State              string                `json:"state"`
+	Start              bool                  `json:"start,omitempty"`
+	Restart            bool                  `json:"restart,omitempty"`
+	Address            netip.Addr            `json:"address"`
+	Policy             *network.SubnetPolicy `json:"policy,omitempty"`
+	VolumeID           string                `json:"volumeId,omitempty"`
+	Port               int                   `json:"port"`
+	BlockPublicIngress bool                  `json:"blockPublicIngress,omitempty"`
+	RestartPolicy      string                `json:"restartPolicy,omitempty"`
+	Container          *ContainerProperties  `json:"container,omitempty"`
+	Function           *functions.Runtime    `json:"function,omitempty"`
 }
 
 type Page struct {
@@ -41,6 +44,8 @@ type Page struct {
 
 type Report struct {
 	AssignmentID
-	State string `json:"state"`
-	Logs  string `json:"logs,omitempty"`
+	State         string                 `json:"state"`
+	Logs          string                 `json:"logs,omitempty"`
+	Function      *functions.AdminResult `json:"function,omitempty"`
+	FunctionReady bool                   `json:"functionReady,omitempty"`
 }

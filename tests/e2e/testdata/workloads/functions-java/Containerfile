@@ -1,0 +1,18 @@
+ARG JDK_IMAGE=mcr.microsoft.com/openjdk/jdk@sha256:715fbf5df720b5d5a930cd2f9db06aa79903a1545da0625da6cf055310e0699e
+ARG BASE_IMAGE=mcr.microsoft.com/azure-functions/java@sha256:f49601ed0a16a3356fb30bd97c378d83993279c07474b55c4749c430dc898781
+FROM ${JDK_IMAGE} AS build
+WORKDIR /src
+COPY Hello.java azure-functions-java-library-3.1.0.jar azure-functions-java-core-library-1.2.0.jar ./
+RUN echo 'b7af2c4aca4f506f957ea260c2884ac92557fdb5bf3f71eda9584e5eb1326093  azure-functions-java-library-3.1.0.jar' | sha256sum -c - \
+    && echo '3271b9c138cbfddb5b3d9090ca8578eb95084423bf57dc6bd7b22492c60c2bbf  azure-functions-java-core-library-1.2.0.jar' | sha256sum -c - \
+    && mkdir -p classes \
+    && javac --release 21 -parameters -cp azure-functions-java-core-library-1.2.0.jar:azure-functions-java-library-3.1.0.jar -d classes Hello.java \
+    && jar --create --date=2024-01-01T00:00:00Z --file ocean-fixture.jar -C classes .
+FROM ${BASE_IMAGE}
+ARG FIXTURE_VERSION=v1
+ENV OCEAN_FIXTURE_VERSION=${FIXTURE_VERSION}
+COPY host.json /home/site/wwwroot/host.json
+COPY hello/function.json /home/site/wwwroot/hello/function.json
+COPY --from=build /src/ocean-fixture.jar /home/site/wwwroot/ocean-fixture.jar
+COPY --from=build /src/azure-functions-java-library-3.1.0.jar /home/site/wwwroot/lib/azure-functions-java-library-3.1.0.jar
+COPY --from=build /src/azure-functions-java-core-library-1.2.0.jar /home/site/wwwroot/lib/azure-functions-java-core-library-1.2.0.jar

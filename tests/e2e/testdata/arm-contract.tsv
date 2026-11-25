@@ -66,3 +66,22 @@ STORAGE-01	storage-share-create	2.93.0	none	2024-01-01	storage share-rm create -
 STORAGE-01	storage-share-show	2.93.0	none	2024-01-01	storage share-rm show --resource-group {group} --storage-account {account} --name {share} -o json
 STORAGE-01	storage-share-delete	2.93.0	none	2024-01-01	storage share-rm delete --resource-group {group} --storage-account {account} --name {share} --yes -o none
 STORAGE-01	container-create-mounted	2.93.0	none	2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Public --ports 8080 --protocol TCP --os-type Linux --cpu 0.25 --memory 0.0625 --restart-policy Always --command-line {command_line} --azure-file-volume-account-name {account} --azure-file-volume-account-key {mount_key} --azure-file-volume-share-name {share} --azure-file-volume-mount-path /data -o json
+FUNCTION-01	function-plan-create	2.93.0	none	2025-05-01	functionapp plan create --resource-group {group} --name {plan} --location {location} --is-linux --sku B1 --number-of-workers 1 -o json
+FUNCTION-01	function-plan-show	2.93.0	none	2025-05-01	functionapp plan show --resource-group {group} --name {plan} -o json
+FUNCTION-01	function-app-create	2.93.0	none	2023-12-01+2025-05-01+2026-09-01	functionapp create --resource-group {group} --name {app} --plan {plan} --storage-account {account} --image {image} --functions-version 4 --runtime java --runtime-version 21 --os-type Linux --https-only true --configure-networking-later true --disable-app-insights true -o json
+FUNCTION-01	function-app-show	2.93.0	none	2023-12-01+2025-05-01	functionapp show --resource-group {group} --name {app} -o json
+FUNCTION-01	function-list	2.93.0	none	2025-05-01	functionapp function list --resource-group {group} --name {app} -o json
+FUNCTION-01	function-key-set	2.93.0	none	2025-05-01	functionapp function keys set --resource-group {group} --name {app} --function-name hello --key-name e2e --key-value {key} -o none
+FUNCTION-01	function-key-list	2.93.0	none	2025-05-01	functionapp function keys list --resource-group {group} --name {app} --function-name hello -o json
+FUNCTION-02	function-container-set	2.93.0	none	2023-12-01+2025-05-01	functionapp config container set --resource-group {group} --name {app} --image {image} -o json
+FUNCTION-02	function-container-show	2.93.0	none	2023-12-01+2025-05-01	functionapp config container show --resource-group {group} --name {app} -o json
+FUNCTION-02	function-settings-set	2.93.0	none	2023-12-01+2025-05-01	functionapp config appsettings set --resource-group {group} --name {app} --settings OCEAN_SETTING={setting} OCEAN_OBSERVER_URL={observer} -o none
+FUNCTION-02	function-settings-list	2.93.0	none	2023-12-01+2025-05-01	functionapp config appsettings list --resource-group {group} --name {app} -o json
+FUNCTION-02	function-app-list	2.93.0	none	2025-05-01	functionapp list --resource-group {group} -o json
+FUNCTION-02	function-app-stop	2.93.0	none	2025-05-01	functionapp stop --resource-group {group} --name {app} -o none
+FUNCTION-02	function-app-start	2.93.0	none	2025-05-01	functionapp start --resource-group {group} --name {app} -o none
+FUNCTION-02	function-app-restart	2.93.0	none	2025-05-01	functionapp restart --resource-group {group} --name {app} -o none
+FUNCTION-02	function-app-delete	2.93.0	none	2025-05-01	functionapp delete --resource-group {group} --name {app} --keep-empty-plan -o none
+FUNCTION-02	function-plan-delete	2.93.0	none	2025-05-01	functionapp plan delete --resource-group {group} --name {plan} --yes -o none
+NETWORK-03	function-vnet-add	2.93.0	none	2022-01-01+2022-12-01+2023-12-01+2025-05-01	functionapp vnet-integration add --resource-group {group} --name {app} --vnet {vnet} --subnet {subnet} -o json
+NETWORK-03	function-vnet-list	2.93.0	none	2025-05-01	functionapp vnet-integration list --resource-group {group} --name {app} -o json

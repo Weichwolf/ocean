@@ -77,6 +77,10 @@ func (s Server) network(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	}
 	collection := path.VNet == "" || path.Child && path.Subnet == ""
 	version := path.version()
+	if s.Functions != nil && !path.Child && path.VNet != "" && r.Method == http.MethodGet &&
+		r.URL.Query().Get("api-version") == network.ContainerSubnetAPIVersion {
+		version = network.ContainerSubnetAPIVersion
+	}
 	if path.Child && path.Subnet != "" && r.URL.Query().Get("api-version") == network.ContainerSubnetAPIVersion &&
 		(r.Method == http.MethodGet || r.Method == http.MethodPut) {
 		version = network.ContainerSubnetAPIVersion
@@ -121,7 +125,7 @@ func (s Server) network(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if index := properties.SubnetIndex(path.Subnet); index >= 0 {
-			writeJSON(w, http.StatusOK, properties.Subnets[index])
+			writeJSON(w, http.StatusOK, subnetReadView(properties.Subnets[index]))
 			return
 		}
 		writeError(w, http.StatusNotFound, "SubnetNotFound", "The subnet could not be found.")
@@ -406,4 +410,15 @@ func upsertSubnet(properties *network.VNetProperties, parentID string, requested
 		properties.Subnets = append(properties.Subnets, network.NewSubnet(parentID, requested.Name, requested.Properties))
 	}
 	return nil
+}
+
+func subnetReadView(subnet network.Subnet) map[string]any {
+	delegations := subnet.Properties.Delegations
+	if delegations == nil {
+		delegations = []network.SubnetDelegation{}
+	}
+	return map[string]any{"id": subnet.ID, "name": subnet.Name, "type": subnet.Type, "properties": struct {
+		network.SubnetProperties
+		Delegations []network.SubnetDelegation `json:"delegations"`
+	}{subnet.Properties, delegations}}
 }

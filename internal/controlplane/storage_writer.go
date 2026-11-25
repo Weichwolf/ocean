@@ -63,7 +63,9 @@ func (r *Region) claimVolume(ctx context.Context, scope arm.SubscriptionScope, r
 	defer clear(secret)
 	provided, err := base64.StdEncoding.DecodeString(volume.StorageAccountKey)
 	defer clear(provided)
-	if err != nil || subtle.ConstantTimeCompare(secret, provided) != 1 {
+	secondary := secondaryStorageKey(secret)
+	defer clear(secondary)
+	if err != nil || subtle.ConstantTimeCompare(secret, provided)|subtle.ConstantTimeCompare(secondary, provided) != 1 {
 		return binding, nil, nil, arm.ErrStorageAccess
 	}
 	address := arm.ResourceAddress{Group: account.Address.Group, Path: account.Address.Path + "/fileServices/default/shares/" + volume.ShareName}

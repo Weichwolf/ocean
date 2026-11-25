@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from region import DEST, NODES, ROOT, ca, ssh, upload
+from region import ARM, DEST, NODES, ROOT, ca, ssh, upload
 from verify_operations import wait_api
 
 
@@ -45,7 +45,7 @@ def deploy(state, node, public_ips=None):
     publish(state, public_ips)
 
 
-def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None):
+def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None, function_plans=None, function_domain=None, function_registry=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
@@ -60,6 +60,17 @@ def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wiregu
             extra["pki/application-gateway.key"] = gateway_key.read_bytes()
         if wireguard is not None:
             config["region"]["wireGuard"] = wireguard
+        if function_plans is not None:
+            config["region"]["functionPlans"] = function_plans
+            cloud = config["identity"]["cloud"]
+            if function_plans:
+                cloud["storageEndpoint"] = "storage." + ARM.removeprefix("arm.")
+            else:
+                cloud.pop("storageEndpoint", None)
+        if function_domain is not None:
+            config["region"]["functionDomain"] = function_domain
+        if function_registry is not None:
+            config["region"]["functionRegistry"] = function_registry
         if storage is not None:
             config["region"]["storage"] = {**storage, "keyFile": f"{DEST}/pki/storage-envelope.key"}
             extra["pki/storage-envelope.key"] = storage_key.read_bytes()

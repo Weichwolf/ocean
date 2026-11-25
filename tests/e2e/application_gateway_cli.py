@@ -14,7 +14,7 @@ from arm_cli import GroupContract, command_args, create_customers, load_matrix
 from identity_cli import AzureCLI
 
 
-def issue_test_certificate(folder):
+def issue_test_certificate(folder, hostname="ingress.ocean.test"):
     certificate = folder / "ingress.pem"
     private_key = folder / "ingress.key"
     bundle = folder / "ingress.pfx"
@@ -22,7 +22,7 @@ def issue_test_certificate(folder):
     valid_from = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).strftime("%Y%m%d%H%M%SZ")
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ed25519", "-noenc", "-days", "1",
                     "-not_before", valid_from,
-                    "-subj", "/CN=ingress.ocean.test", "-addext", "subjectAltName=DNS:ingress.ocean.test",
+                    "-subj", f"/CN={hostname}", "-addext", f"subjectAltName=DNS:{hostname}",
                     "-keyout", private_key, "-out", certificate], check=True, capture_output=True)
     subprocess.run(["openssl", "pkcs12", "-export", "-inkey", private_key, "-in", certificate,
                     "-out", bundle, "-passout", "pass:" + password], check=True, capture_output=True)
