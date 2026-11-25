@@ -125,6 +125,9 @@ func (j *joinClient) reconcileContainers(ctx context.Context, logger *slog.Logge
 		if err != nil && ctx.Err() == nil {
 			logger.Warn("workload assignment reconciliation will retry", "error", err)
 		}
+		if err == nil && j.config.TelemetryBufferBytes > 0 {
+			j.setTelemetryTargets(tasks)
+		}
 		for _, task := range tasks {
 			name := containerName(task.AssignmentID)
 			if inFlight[name] || len(inFlight) >= cap(completed) {
@@ -207,7 +210,7 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 	if task.State == workload.Removed {
 		functionConfig := j.functionContainerConfig(name)
 		if _, err := os.Stat(functionConfig); err == nil {
-			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+			if err := j.removeFunctionSidecars(ctx, name); err != nil {
 				return report, err
 			}
 			_ = os.Remove(functionConfig)
@@ -237,8 +240,12 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 		}
 		path := j.functionContainerConfig(name)
 		saved, _ := os.ReadFile(path)
-		if string(saved) != task.Function.Configuration {
-			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+		configuration := task.Function.Configuration
+		if j.config.TelemetryBufferBytes > 0 {
+			configuration += ".otlp"
+		}
+		if string(saved) != configuration {
+			if err := j.removeFunctionSidecars(ctx, name); err != nil {
 				return report, err
 			}
 			if present {
@@ -247,14 +254,14 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 				}
 				present = false
 			}
-			if err := replaceRuntimeFile(path, []byte(task.Function.Configuration)); err != nil {
+			if err := replaceRuntimeFile(path, []byte(configuration)); err != nil {
 				return report, err
 			}
 		}
 	}
 	if task.State == workload.Stopped {
 		if task.Function != nil {
-			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+			if err := j.removeFunctionSidecars(ctx, name); err != nil {
 				return report, err
 			}
 		}
@@ -271,7 +278,7 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 		}
 	} else if present && task.Restart {
 		if task.Function != nil && !j.restartApplied(name, task, status) {
-			if err := j.removeFunctionSidecar(ctx, name); err != nil {
+			if err := j.removeFunctionSidecars(ctx, name); err != nil {
 				return report, err
 			}
 		}
@@ -353,6 +360,14 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 			file.Close()
 			return err
 		}
+	}
+	if task.Function != nil && j.config.TelemetryBufferBytes > 0 {
+		if _, err := fmt.Fprintln(file, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces\nOTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json"); err != nil {
+			file.Close()
+			return err
+		}
+		memory -= 24
+		cpu -= 40
 	}
 	if err := file.Close(); err != nil {
 		return err

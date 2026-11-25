@@ -1,6 +1,6 @@
 .PHONY: build check deb-agent
 
-DEB_VERSION ?= 0.1.0~dev10
+DEB_VERSION ?= 0.1.0~dev11
 export DEB_VERSION
 
 build:
@@ -13,4 +13,4 @@ check:
 	go test -mod=readonly -race -count=1 ./...
 
 deb-agent: build
-	sh packaging/debian/build-agent.sh "$$DEB_VERSION" bin/ocean-agent bin/ocean-network-agent bin
+	sh packaging/debian/build-agent.sh "$$DEB_VERSION" bin/ocean-agent bin/ocean-network-agent bin/ocean-telemetry-relay bin

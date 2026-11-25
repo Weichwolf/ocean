@@ -36,13 +36,13 @@ def command(cli, rows, version, values, label, *, expected=None):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def exercise(settings, matrix, fixture, phase, images):
+def exercise(settings, matrix, fixture, phase, images, runtime="v1"):
     if phase == "setup":
         tenant, foreign = create_customers(settings)
         nonce = uuid4().hex[:10]
         state = {"tenant": tenant, "foreign": foreign, "group": "fx-" + nonce, "plan": "b1", "app": "fx" + nonce,
                  "account": "oceanfunc" + nonce, "key": secrets.token_urlsafe(32), "setting": "configured",
-                 "observer": "http://198.51.100.30:8080/source"}
+                 "observer": "http://198.51.100.30:8080/source", "image": runtime}
         with os.fdopen(os.open(fixture, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
             json.dump(state, stream)
     elif fixture.exists():
@@ -55,7 +55,7 @@ def exercise(settings, matrix, fixture, phase, images):
     app_id = (f"/subscriptions/{tenant['subscription']}/resourceGroups/{state['group']}/providers/Microsoft.Web/sites/" + state["app"])
     state["share"] = "func-" + hashlib.sha256(app_id.encode()).hexdigest()[:24]
     rows = {}
-    for case in ("FUNCTION-01", "FUNCTION-02", "NETWORK-01", "NETWORK-02", "NETWORK-03", "STORAGE-01"):
+    for case in ("FUNCTION-01", "FUNCTION-02", "NETWORK-01", "NETWORK-02", "NETWORK-03", "STORAGE-01", "OBS-02"):
         rows.update(load_matrix(matrix, case))
     with tempfile.TemporaryDirectory(prefix="ocean-functions-cli-") as folder:
         folder = Path(folder)
@@ -63,7 +63,7 @@ def exercise(settings, matrix, fixture, phase, images):
         cli.login_device()
         contract = GroupContract(cli, load_matrix(matrix))
         defaults = fixture_bindings(tenant, state["group"])
-        params = defaults | state | {"image": images["v1"], "backend_port": "80", "nat": "fixed-egress"}
+        params = defaults | state | {"image": images[state.get("image", "v1")], "backend_port": "80", "nat": "fixed-egress"}
 
         def run(label, *, expected=None, **override):
             return command(cli, rows, contract.version, params | override, label, expected=expected)
@@ -80,13 +80,13 @@ def exercise(settings, matrix, fixture, phase, images):
             if profile["sku"]["name"] != "B1" or not public_properties(profile)["reserved"]:
                 raise RuntimeError("the ARM Functions plan did not round-trip")
             if phase == "setup":
-                run("function-app-create")
+                run("function-node-create" if state.get("image") == "node" else "function-app-create")
             shown = run("function-app-show")
             if shown["id"] != app_id or public_properties(shown)["state"] != "Running":
                 raise RuntimeError("the Azure CLI returned before the native Function host was ready")
             discovered = run("function-list")
             if len(discovered) != 1 or discovered[0]["name"].split("/")[-1] != "hello":
-                raise RuntimeError("the native Java Function was not discovered")
+                raise RuntimeError("the native HTTP Function was not discovered")
             if phase == "setup":
                 run("function-key-set")
             listed = run("function-key-list")
@@ -195,8 +195,9 @@ def main():
     parser.add_argument("--phase", required=True,
                         choices=("setup", "inspect", "authorize", "update", "publish", "egress", "integrate",
                                  "integration-status", "start", "stop", "restart", "cleanup"))
+    parser.add_argument("--runtime", choices=("v1", "node"), default="v1")
     args = parser.parse_args()
-    result = exercise(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.phase, json.loads(args.images.read_text()))
+    result = exercise(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.phase, json.loads(args.images.read_text()), args.runtime)
     print(json.dumps(result, sort_keys=True))
 
 

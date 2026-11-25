@@ -4,7 +4,8 @@ set -eu
 version=$1
 agent=$2
 network_agent=$3
-output=$4
+relay=$4
+output=$5
 source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 dpkg --validate-version "$version"
 architecture=$(dpkg-architecture -qDEB_HOST_ARCH)
@@ -14,6 +15,7 @@ chmod 0755 "$staging"
 
 install -D -m 0755 "$agent" "$staging/usr/bin/ocean-agent"
 install -D -m 0755 "$network_agent" "$staging/usr/bin/ocean-network-agent"
+install -D -m 0755 "$relay" "$staging/usr/libexec/ocean/ocean-telemetry-relay"
 install -D -m 0755 "$source_dir/https-ready" "$staging/usr/libexec/ocean/https-ready"
 install -D -m 0644 "$source_dir/ocean-agent.service" "$staging/usr/lib/systemd/user/ocean-agent.service"
 install -D -m 0644 "$source_dir/ocean-network-agent.service" "$staging/usr/lib/systemd/system/ocean-network-agent.service"
