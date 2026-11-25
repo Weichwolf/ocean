@@ -226,6 +226,27 @@ The `identity.onboarding` configuration contains the operator tenant and client 
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE"` after the identity deployment and CLI installation. The test discards a successful response body, retries through `az rest`, creates a second tenant, and verifies independent administrator sign-ins and cross-tenant denials. It records the resulting IDs and assertions in `evidence/tenant-onboarding.json` under the disposable lab state.
 
+### Managed directory request
+
+The development profile exposes directory requests when `region.managedDirectories`
+is enabled with tenant onboarding. Sign in as the initial tenant administrator.
+Submit `dnsName`, `netbiosName`, and `subnetId` in a JSON file. Use a private
+subnet in the tenant subscription. DNS names use ASCII labels, and NetBIOS
+names use up to 15 ASCII characters.
+
+```sh
+directory_url="https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID/directory?api-version=2026-11-01"
+az rest --method put --url "$directory_url" --body @directory-request.json
+az rest --method get --url "$directory_url"
+```
+
+HTTP 202 means the region saved the request. The response contains an opaque
+`directoryId`, a polling URL in the `Location` header, and
+`provisioningState: Creating`. Identical requests return the same ID,
+including after an interrupted response. A different configuration for the
+same tenant returns HTTP 409. Controller provisioning and health reporting
+are pending in this development profile.
+
 ## Tenant directory users
 
 The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph access token. The CLI workflow uses `az ad user create`, `list`, `show`, `update`, and `delete`. Lists support an exact UPN or a display-name prefix, with server paging. Object lookup accepts a UUID or a UPN. The administrator can change a user's display name, mail alias, login status, and password. The original administrator can update their profile and password and must remain enabled.

@@ -36,6 +36,7 @@ type Compatibility struct {
 	signingKeys    sync.Map
 	subscriptions  *subscriptionReader
 	onboarding     *onboarding
+	directories    ManagedDirectoryStore
 }
 
 // verifyAccessToken checks tokens against the known tenant issuer and its
@@ -116,6 +117,10 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /v1.0/servicePrincipals", c.graphPrincipal)
 		mux.HandleFunc("POST /v1.0/servicePrincipals", c.graphPrincipal)
 		mux.HandleFunc("GET /v1.0/servicePrincipals/{principal}", c.graphPrincipal)
+	}
+	if c.directories != nil {
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory", c.managedDirectory)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory", c.managedDirectory)
 	}
 	return mux
 }

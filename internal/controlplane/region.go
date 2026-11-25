@@ -45,6 +45,7 @@ type regionConfig struct {
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
+	ManagedDirectories  bool                      `json:"managedDirectories,omitempty"`
 }
 
 type etcdConfig struct {
@@ -67,6 +68,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	}
 	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
 		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
+	}
+	if cfg.Region != nil && cfg.Region.ManagedDirectories &&
+		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil) {
+		return config.Server{}, service.Hooks{}, errors.New("managed directories require tenant onboarding and ARM identity")
 	}
 	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil || cfg.Region.Storage != nil || cfg.Region.Telemetry != nil) && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("gateway and workload execution require enrolled hosts")
@@ -124,6 +129,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
 			if cfg.Identity.Onboarding != nil {
 				if err := compatibility.EnableOnboarding(*cfg.Identity.Onboarding, region); err != nil {
+					_ = region.close()
+					return config.Server{}, service.Hooks{}, err
+				}
+			}
+			if cfg.Region.ManagedDirectories {
+				if err := compatibility.EnableManagedDirectories(region); err != nil {
 					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
 				}
