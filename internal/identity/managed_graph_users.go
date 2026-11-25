@@ -12,14 +12,14 @@ import (
 	"github.com/Weichwolf/ocean/internal/enrollment"
 )
 
-var ErrDirectoryUsersBusy = errors.New("the tenant directory is processing another user request")
+var ErrDirectoryGraphBusy = errors.New("the tenant directory is processing another Graph request")
 
-type managedGraphUserStore interface {
-	RunDirectoryUser(context.Context, TenantReservation, enrollment.DirectoryUserInput) (enrollment.DirectoryUserResult, error)
+type managedGraphStore interface {
+	RunDirectoryGraph(context.Context, TenantReservation, enrollment.DirectoryGraphInput) (enrollment.DirectoryGraphResult, error)
 }
 
-func (c *Compatibility) managedGraphUsers(ctx context.Context, w http.ResponseWriter, req *http.Request, tenant TenantReservation) bool {
-	store, enabled := c.directories.(managedGraphUserStore)
+func (c *Compatibility) managedGraph(ctx context.Context, w http.ResponseWriter, req *http.Request, tenant TenantReservation, groups bool) bool {
+	store, enabled := c.directories.(managedGraphStore)
 	if !enabled {
 		return false
 	}
@@ -36,49 +36,64 @@ func (c *Compatibility) managedGraphUsers(ctx context.Context, w http.ResponseWr
 		graphUnavailable(w)
 		return true
 	}
-	input, query, err := managedUserInput(w, req)
+	parse := managedUserInput
+	resource := "user"
+	if groups {
+		resource = "group"
+		parse = func(w http.ResponseWriter, req *http.Request) (enrollment.DirectoryGraphInput, url.Values, error) {
+			return managedGroupInput(w, req, c.cloud.MicrosoftGraph)
+		}
+	}
+	input, query, err := parse(w, req)
 	if err != nil {
 		graphError(w, http.StatusBadRequest, "Request_BadRequest", err.Error())
 		return true
 	}
 	if input.Operation == "" {
-		graphError(w, http.StatusMethodNotAllowed, "Request_UnsupportedOperation", "This operation is outside the managed user profile.")
+		graphError(w, http.StatusMethodNotAllowed, "Request_UnsupportedOperation", "This operation is outside the managed "+resource+" profile.")
 		return true
 	}
-	result, err := store.RunDirectoryUser(ctx, tenant, input)
+	result, err := store.RunDirectoryGraph(ctx, tenant, input)
 	switch {
-	case errors.Is(err, ErrDirectoryUsersBusy):
+	case errors.Is(err, ErrDirectoryGraphBusy):
 		w.Header().Set("Retry-After", "2")
-		graphError(w, http.StatusTooManyRequests, "TooManyRequests", ErrDirectoryUsersBusy.Error())
+		graphError(w, http.StatusTooManyRequests, "TooManyRequests", ErrDirectoryGraphBusy.Error())
 	case err != nil:
 		graphUnavailable(w)
 	case result.Status == http.StatusBadRequest:
-		graphError(w, result.Status, "Request_BadRequest", "The directory rejected the managed user properties.")
+		graphError(w, result.Status, "Request_BadRequest", "The directory rejected the managed "+resource+" properties.")
 	case result.Status == http.StatusConflict:
-		graphError(w, result.Status, "Request_Conflict", "The user name or operation conflicts with the directory.")
+		graphError(w, result.Status, "Request_Conflict", "The "+resource+" name or operation conflicts with the directory.")
 	case result.Status == http.StatusNotFound:
-		graphError(w, result.Status, "Request_ResourceNotFound", "The managed user was not found.")
-	case input.Operation == enrollment.DirectoryUserList:
-		users := result.Users
-		if users == nil {
-			users = []enrollment.DirectoryUserView{}
-		}
-		body := map[string]any{"value": users}
-		if result.More {
-			query.Set("$skip", strconv.Itoa(input.Query.Offset+enrollment.DirectoryUserPageSize))
-			body["@odata.nextLink"] = c.cloud.MicrosoftGraph + "/v1.0/users?" + query.Encode()
-		}
-		writeJSON(w, result.Status, body)
+		graphError(w, result.Status, "Request_ResourceNotFound", "The managed "+resource+" was not found.")
+	case input.Operation == enrollment.DirectoryGroupList:
+		writeManagedGraphPage(w, c.cloud.MicrosoftGraph+req.URL.EscapedPath(), query, input.Query.Offset, result.Groups, result.More)
+	case input.Operation == enrollment.DirectoryUserList || input.Operation == enrollment.DirectoryGroupMembers:
+		writeManagedGraphPage(w, c.cloud.MicrosoftGraph+req.URL.EscapedPath(), query, input.Query.Offset, result.Users, result.More)
 	case result.Status == http.StatusNoContent:
 		w.WriteHeader(result.Status)
+	case groups:
+		writeJSON(w, result.Status, result.Group)
 	default:
 		writeJSON(w, result.Status, result.User)
 	}
 	return true
 }
 
-func managedUserInput(w http.ResponseWriter, req *http.Request) (enrollment.DirectoryUserInput, url.Values, error) {
-	input := enrollment.DirectoryUserInput{Selector: strings.ToLower(req.PathValue("user"))}
+func writeManagedGraphPage[T any](w http.ResponseWriter, path string, query url.Values, offset int, entries []T, more bool) {
+	if entries == nil {
+		entries = []T{}
+	}
+	body := map[string]any{"value": entries}
+	if more {
+		query.Set("$skip", strconv.Itoa(offset+enrollment.DirectoryGraphPageSize))
+		body["@odata.nextLink"] = path + "?" + query.Encode()
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func managedUserInput(w http.ResponseWriter, req *http.Request) (enrollment.DirectoryGraphInput, url.Values, error) {
+	input := enrollment.DirectoryGraphInput{Selector: strings.ToLower(req.PathValue("user"))}
 	query, err := url.ParseQuery(req.URL.RawQuery)
 	if err != nil {
 		return input, nil, errors.New("invalid directory query")
@@ -108,7 +123,7 @@ func managedUserInput(w http.ResponseWriter, req *http.Request) (enrollment.Dire
 			break
 		}
 		input.Operation = enrollment.DirectoryUserList
-		input.Query = new(enrollment.DirectoryUserQuery)
+		input.Query = new(enrollment.DirectoryGraphQuery)
 		for name, values := range query {
 			if len(values) != 1 || (name != "$filter" && name != "$skip") {
 				return input, nil, errors.New("unsupported directory query parameter")

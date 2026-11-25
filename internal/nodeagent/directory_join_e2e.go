@@ -16,9 +16,9 @@ func RunDirectoryJoinFixture(ctx context.Context, origin, host string, client *h
 	return j.runDirectoryJoinTask(ctx, name, assignment)
 }
 
-// RunDirectoryUserFixture exercises the production user task worker on the
+// RunDirectoryGraphFixture exercises the production user task worker on the
 // isolated controller used by the Graph CLI probe.
-func RunDirectoryUserFixture(ctx context.Context, origin, host string, client *http.Client, name string, assignment enrollment.Assignment) error {
+func RunDirectoryGraphFixture(ctx context.Context, origin, host string, client *http.Client, name string, assignment enrollment.Assignment) error {
 	j := joinClient{config: joinConfig{Origin: origin, HostID: host}, client: client}
-	return j.runDirectoryUserTask(ctx, name, assignment)
+	return j.runDirectoryGraphTask(ctx, name, assignment)
 }

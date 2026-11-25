@@ -76,6 +76,12 @@ uses the Graph endpoint. The mTLS worker applies user operations to the Samba
 workforce OU. The Debian fixture requests a fresh Kerberos ticket before and
 after the user is disabled.
 
+Select `WORKPLACE-11` with the same prerequisites to exercise managed
+security groups. The pinned CLI creates and finds the native group, adds and
+removes a workforce user, and verifies the actual membership. A Debian SMB
+client opens a fresh Kerberos session at each step and checks its access
+to a share restricted to the AD group.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

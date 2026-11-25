@@ -522,7 +522,8 @@ user's display name, mail alias, login status, and password.
 
 For a tenant with a managed domain, `az ad user create`, `list`, `show` and
 `update` operate on Samba accounts in `OU=Ocean Workforce Users`. Use the
-domain's DNS suffix in the UPN and an account name of up to 20 characters.
+domain's DNS suffix in the UPN. The account name starts with an ASCII letter
+and can contain up to 20 letters, digits, dots, underscores, or hyphens.
 Graph uses the AD object GUID as the ID and derives `mailNickname` from the
 configured mail alias at the AD domain. Built-in accounts, privileged
 system accounts, and delegated join principals are outside the workforce
@@ -547,6 +548,28 @@ its admin API. Realm-scoped device login uses the bounded offline session
 policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users` to exercise the user lifecycle with two freshly onboarded tenants. The check verifies that updates preserve the mail alias, regular users are denied directory administration, and deleted users cannot start a new login. Evidence is written to `evidence/graph-users.json`.
+
+## Managed security groups
+
+`az ad group create`, `list`, and `show` manage global security groups in
+`OU=Ocean Workforce Groups`. Graph uses the native AD object GUID as the ID
+and the AD account name as the mail nickname. The corresponding AD group
+SID can be used in ACLs. Managed groups contain direct workforce users from
+the same domain.
+
+| CLI operation | Graph v1.0 requests |
+| --- | --- |
+| `az ad group create` | `GET /groups` with a display-name and mail-nickname equality filter, then `POST /groups` on a miss |
+| `az ad group list` | `GET /groups` with optional display-name prefix and pagination |
+| `az ad group show --group <id>` | `GET /groups/<id>` |
+| `az ad group member add` | `POST /groups/<id>/members/$ref` with a member object reference under the configured Graph origin |
+| `az ad group member list` | `GET /groups/<id>/members` with pagination |
+| `az ad group member remove` | `DELETE /groups/<id>/members/<member-id>/$ref` |
+
+Repeated membership adds and removals preserve the same AD membership.
+Use a fresh authentication session to observe new group permissions. Run
+`WORKPLACE-11` to exercise the stock CLI workflow and a real Kerberos SMB
+access check against a share restricted to the native group.
 
 ## Tenant applications and service principals
 

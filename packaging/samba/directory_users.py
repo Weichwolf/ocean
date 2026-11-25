@@ -1,15 +1,13 @@
 """Apply the managed Graph user profile to the workforce OU."""
 
-import json
 import re
-import time
 
 import ldb
 from samba import dsdb
 from samba.dcerpc.misc import GUID
 from samba.ndr import ndr_pack
 
-from domain_join import REQUEST_ID, object_guid, replace, transaction
+from domain_join import REQUEST_ID, object_guid, replace
 
 WORKFORCE = "OU=Ocean Workforce Users"
 USER_FILTER = "(&(objectClass=user)(objectCategory=person)(!(isCriticalSystemObject=TRUE))(!(adminCount=1)))"
@@ -29,9 +27,9 @@ def workforce_dn(database):
     return ldb.Dn(database, f"{WORKFORCE},{database.domain_dn()}")
 
 
-def lookup(database, scope, expression):
+def lookup(database, scope, expression, properties=PROPERTIES):
     try:
-        return database.search(base=scope, scope=ldb.SCOPE_ONELEVEL, expression=expression, attrs=list(PROPERTIES))
+        return database.search(base=scope, scope=ldb.SCOPE_ONELEVEL, expression=expression, attrs=list(properties))
     except ldb.LdbError as error:
         if error.args[0] != ldb.ERR_NO_SUCH_OBJECT:
             raise
@@ -100,7 +98,7 @@ def update_user(database, scope, user, fields, domain, marker):
     return user_view(database, get_user(database, scope, user["userPrincipalName"][0].decode()))
 
 
-def ensure_workforce(database, scope):
+def ensure_ou(database, scope):
     try:
         if database.search(base=scope, scope=ldb.SCOPE_BASE, attrs=[]):
             return
@@ -116,10 +114,13 @@ def list_users(database, scope, query):
         expression = f"(&{expression}(userPrincipalName={ldb.binary_encode(query['upn'])}))"
     if "displayPrefix" in query:
         expression = f"(&{expression}(displayName={ldb.binary_encode(query['displayPrefix'])}*))"
-    offset = query.get("offset", 0)
-    entries = sorted(lookup(database, scope, expression), key=lambda user: user["sAMAccountName"][0].lower())
-    return {"users": [user_view(database, user) for user in entries[offset:offset + PAGE_SIZE]],
-            "more": len(entries) > offset + PAGE_SIZE}
+    users, more = page(database, lookup(database, scope, expression), query.get("offset", 0), user_view)
+    return {"users": users, "more": more}
+
+
+def page(database, entries, offset, view):
+    rows = sorted(entries, key=lambda entry: entry["sAMAccountName"][0].lower())
+    return [view(database, entry) for entry in rows[offset:offset + PAGE_SIZE]], len(rows) > offset + PAGE_SIZE
 
 
 def validate_fields(fields, create):
@@ -144,41 +145,24 @@ def validate_fields(fields, create):
             raise GraphFailure(400)
 
 
-def directory_users(database, domain, stream):
-    body = stream.read(4097)
-    if len(body) > 4096:
-        raise ValueError("directory user task exceeds its size limit")
-    task = json.loads(body)
-    operation, attempt = task["operation"], task["id"]
-    if not REQUEST_ID.fullmatch(attempt) or type(task["expiresAt"]) is not int:
-        raise ValueError("invalid directory user task")
-    marker = f"Ocean Graph write {attempt}"
+def user_operation(database, domain, task):
+    operation = task["operation"]
+    marker = f"Ocean Graph write {task['id']}"
     scope = workforce_dn(database)
-    try:
-        with transaction(database):
-            if int(time.time()) >= task["expiresAt"]:
-                raise GraphFailure(409)
-            if operation == "userList":
-                return {"status": 200} | list_users(database, scope, task.get("query", {}))
-            if operation == "userGet":
-                return {"status": 200, "user": user_view(database, get_user(database, scope, task["selector"]))}
-            fields = task["fields"]
-            if operation == "userCreate":
-                validate_fields(fields, True)
-                ensure_workforce(database, scope)
-                return {"status": 201, "user": stage_user(database, scope, fields, domain, marker)}
-            if operation == "userUpdate":
-                validate_fields(fields, False)
-                user = get_user(database, scope, task["selector"])
-                if user.get("description", [b""])[0].decode() != marker:
-                    update_user(database, scope, user, fields, domain, marker)
-                return {"status": 204}
-            raise GraphFailure(400)
-    except GraphFailure as error:
-        return {"status": error.status}
-    except ldb.LdbError as error:
-        if error.args[0] == ldb.ERR_ENTRY_ALREADY_EXISTS:
-            return {"status": 409}
-        if error.args[0] in (ldb.ERR_CONSTRAINT_VIOLATION, ldb.ERR_UNWILLING_TO_PERFORM):
-            return {"status": 400}
-        raise
+    if operation == "userList":
+        return {"status": 200} | list_users(database, scope, task.get("query", {}))
+    if operation == "userGet":
+        return {"status": 200, "user": user_view(database, get_user(database, scope, task["selector"]))}
+    if operation == "userCreate":
+        fields = task["fields"]
+        validate_fields(fields, True)
+        ensure_ou(database, scope)
+        return {"status": 201, "user": stage_user(database, scope, fields, domain, marker)}
+    if operation == "userUpdate":
+        fields = task["fields"]
+        validate_fields(fields, False)
+        user = get_user(database, scope, task["selector"])
+        if user.get("description", [b""])[0].decode() != marker:
+            update_user(database, scope, user, fields, domain, marker)
+        return {"status": 204}
+    raise GraphFailure(400)

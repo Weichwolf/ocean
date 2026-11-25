@@ -36,14 +36,18 @@ import (
 )
 
 func TestRegionalDirectoryJoin(t *testing.T) {
-	testRegionalDirectory(t, false)
+	testRegionalDirectory(t, "join")
 }
 
 func TestRegionalDirectoryUsers(t *testing.T) {
-	testRegionalDirectory(t, true)
+	testRegionalDirectory(t, "users")
 }
 
-func testRegionalDirectory(t *testing.T, users bool) {
+func TestRegionalDirectoryGroups(t *testing.T) {
+	testRegionalDirectory(t, "groups")
+}
+
+func testRegionalDirectory(t *testing.T, mode string) {
 	t.Helper()
 	endpoint, samba, adcli := os.Getenv("OCEAN_E2E_DIRECTORY_ETCD"), os.Getenv("OCEAN_E2E_SAMBA_IMAGE"), os.Getenv("OCEAN_E2E_ADCLI_IMAGE")
 	if endpoint == "" || samba == "" || adcli == "" {
@@ -56,7 +60,8 @@ func testRegionalDirectory(t *testing.T, users bool) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	container, network, address, sid := holdDirectoryForJoin(t, root, dir, samba)
+	directoryFixture := holdDirectory(t, root, dir, samba)
+	container, network, address, sid := directoryFixture.container, directoryFixture.network, directoryFixture.address, directoryFixture.sid
 	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -245,18 +250,19 @@ func testRegionalDirectory(t *testing.T, users bool) {
 		return &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	}
 	writer, peer := mtls(writerCert), mtls(replicaCert)
-	if users {
+	if mode != "join" {
 		loginClient, loginSecret := operationID(), rand.Text()
 		enableLogin(api.URL, graph.URL, loginClient, loginSecret, tenant.Administrator)
-		fixture := regionalUserFixture{ctx: ctx, root: root, private: dir, api: api, graph: graph,
+		fixture := regionalGraphFixture{ctx: ctx, root: root, private: dir, api: api, graph: graph,
 			issuer: issuer, tenant: tenant, app: loginClient, secret: loginSecret, member: member,
-			clientImage: adcli, network: network, address: address,
+			clientImage: adcli, network: network, address: address, sambaImage: samba,
+			container: container, sid: sid,
 			work: func(ctx context.Context) error {
-				return nodeagent.RunDirectoryUserFixture(ctx, api.URL, primary.HostID, writer, container, assignments[0])
+				return nodeagent.RunDirectoryGraphFixture(ctx, api.URL, primary.HostID, writer, container, assignments[0])
 			},
 			observe: observe, sign: sign,
 		}
-		fixture.verify(t)
+		fixture.verify(t, mode == "groups")
 		return
 	}
 	taskURL := func(controller Reservation) string {
@@ -329,7 +335,11 @@ func testRegionalDirectory(t *testing.T, users bool) {
 	t.Log("Azure CLI 2.93.0 issued and closed a real AD join through etcd and the authenticated node agent. Debian verified machine trust and rejected the revoked principal.")
 }
 
-func holdDirectoryForJoin(t *testing.T, root, temp, image string) (string, string, string, string) {
+type directoryLab struct {
+	container, network, address, sid string
+}
+
+func holdDirectory(t *testing.T, root, temp, image string) directoryLab {
 	t.Helper()
 	path := filepath.Join(temp, "controller-ready")
 	cmd := exec.Command("bash", filepath.Join(root, "lab/verify_samba_controller.sh"), image, "--hold-controller")
@@ -379,11 +389,11 @@ func holdDirectoryForJoin(t *testing.T, root, temp, image string) (string, strin
 			if len(fields) != 4 {
 				t.Fatal("invalid directory fixture handoff")
 			}
-			return fields[0], fields[1], fields[2], fields[3]
+			return directoryLab{container: fields[0], network: fields[1], address: fields[2], sid: fields[3]}
 		}
 	}
 	t.Fatal("the directory fixture did not report ready")
-	return "", "", "", ""
+	return directoryLab{}
 }
 
 func directoryJoinClientCertificates(t *testing.T) (*x509.Certificate, ed25519.PrivateKey, tls.Certificate, tls.Certificate) {

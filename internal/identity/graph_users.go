@@ -100,7 +100,7 @@ func (c *Compatibility) graphUser(w http.ResponseWriter, req *http.Request) {
 	if tenant == nil {
 		return
 	}
-	if c.managedGraphUsers(ctx, w, req, *tenant) {
+	if c.managedGraph(ctx, w, req, *tenant, false) {
 		return
 	}
 	k := c.onboarding.admin

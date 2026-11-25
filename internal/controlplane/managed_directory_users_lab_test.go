@@ -22,19 +22,20 @@ import (
 	"github.com/Weichwolf/ocean/internal/identity"
 )
 
-type regionalUserFixture struct {
+type regionalGraphFixture struct {
 	ctx                           context.Context
 	root, private                 string
 	api, graph, issuer            *httptest.Server
 	tenant                        identity.TenantReservation
 	app, secret, member           string
 	clientImage, network, address string
+	sambaImage, container, sid    string
 	work                          func(context.Context) error
 	observe                       func()
 	sign                          func(string, string) string
 }
 
-func (f regionalUserFixture) verify(t *testing.T) {
+func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
 	t.Helper()
 	workerCtx, stop := context.WithCancel(f.ctx)
 	workerExit := make(chan error, 1)
@@ -57,7 +58,7 @@ func (f regionalUserFixture) verify(t *testing.T) {
 	defer func() {
 		stop()
 		if err := <-workerExit; err != nil {
-			t.Errorf("directory user worker: %v", err)
+			t.Errorf("directory Graph worker: %v", err)
 		}
 	}()
 	rootPEM := filepath.Join(f.private, "graph-ca.pem")
@@ -75,7 +76,9 @@ func (f regionalUserFixture) verify(t *testing.T) {
 		cmd := exec.CommandContext(f.ctx, "az", args...)
 		cmd.Env = append(os.Environ(), "AZURE_CONFIG_DIR="+filepath.Join(f.private, "graph-az"), "REQUESTS_CA_BUNDLE="+rootPEM,
 			"AZURE_CORE_INSTANCE_DISCOVERY=false", "AZURE_CORE_COLLECT_TELEMETRY=0", "AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no")
-		out, err := cmd.CombinedOutput()
+		var diagnostics bytes.Buffer
+		cmd.Stderr = &diagnostics
+		out, err := cmd.Output()
 		if (err != nil) != reject {
 			label := args[:2]
 			if len(args) > 2 && args[0] == "ad" {
@@ -83,7 +86,10 @@ func (f regionalUserFixture) verify(t *testing.T) {
 			}
 			t.Fatalf("Azure CLI %s returned %v: %s", strings.Join(label, " "), err,
 				strings.NewReplacer(f.secret, "[fixture secret]", password, "[directory password]",
-					replacementPassword, "[directory password]").Replace(string(out)))
+					replacementPassword, "[directory password]").Replace(string(out)+diagnostics.String()))
+		}
+		if reject {
+			return diagnostics.Bytes()
 		}
 		return out
 	}
@@ -114,6 +120,15 @@ func (f regionalUserFixture) verify(t *testing.T) {
 		created.UPN != upn || !enrollment.ValidDirectoryJoinID(created.ID) || !created.Enabled ||
 		created.Alias != alias || created.Mail != alias+"@ad.runtime.test" {
 		t.Fatal("Graph creation did not return the Samba workforce user")
+	}
+	if groups {
+		group := func(reject bool, args ...string) []byte {
+			t.Helper()
+			f.observe()
+			return run(reject, append([]string{"ad", "group"}, args...)...)
+		}
+		f.verifyGroups(t, group, created.ID, password)
+		return
 	}
 	for _, filter := range [][]string{{"--upn", upn}, {"--display-name", "Marine"}} {
 		var listed []enrollment.DirectoryUserView

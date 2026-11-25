@@ -66,6 +66,10 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
 			"-run", "^TestRegionalDirectoryUsers$", "./internal/controlplane"},
 		BlockedReason: regionalJoin.BlockedReason}
+	regionalGroups := harness.Step{Name: "regional-directory-groups", Cases: []string{"WORKPLACE-11"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDirectoryGroups$", "./internal/controlplane"},
+		BlockedReason: regionalJoin.BlockedReason}
 	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
 		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
 			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
@@ -78,5 +82,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
 		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
 	}
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers)
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups)
 }

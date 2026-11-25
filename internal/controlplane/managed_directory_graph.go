@@ -13,7 +13,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-type directoryUserQueue struct {
+type directoryGraphQueue struct {
 	ID         string `json:"id"`
 	Generation string `json:"generation"`
 	Operation  string `json:"operation"`
@@ -22,23 +22,23 @@ type directoryUserQueue struct {
 	Sealed     []byte `json:"sealed"`
 }
 
-func (p directoryUserQueue) label(queue string) []byte {
+func (p directoryGraphQueue) label(queue string) []byte {
 	return []byte(queue + "/" + p.Generation + "/" + p.ID + "/" + p.Operation)
 }
 
-func (r *Region) directoryUserTaskKey(d identity.ManagedDirectory) string {
-	return r.root + "/managed-directory-users/" + d.TenantID + "/" + d.ID
+func (r *Region) directoryGraphTaskKey(d identity.ManagedDirectory) string {
+	return r.root + "/managed-directory-graph/" + d.TenantID + "/" + d.ID
 }
 
-func directoryUserAudit(actor, operation, id, outcome string) arm.AuditEvent {
-	return arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Ocean.Identity/directories/users/" + operation,
+func directoryGraphAudit(actor, operation, id, outcome string) arm.AuditEvent {
+	return arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Ocean.Identity/directories/graph/" + operation,
 		Target: id, Outcome: outcome}
 }
 
-func (r *Region) RunDirectoryUser(ctx context.Context, tenant identity.TenantReservation, input enrollment.DirectoryUserInput) (enrollment.DirectoryUserResult, error) {
-	var empty enrollment.DirectoryUserResult
+func (r *Region) RunDirectoryGraph(ctx context.Context, tenant identity.TenantReservation, input enrollment.DirectoryGraphInput) (enrollment.DirectoryGraphResult, error) {
+	var empty enrollment.DirectoryGraphResult
 	if r.workloads == nil || !input.Valid() {
-		return empty, errors.New("invalid directory user operation")
+		return empty, errors.New("invalid directory Graph operation")
 	}
 	for range 6 {
 		directory, guards, revision, err := r.managedDirectorySnapshot(ctx, tenant)
@@ -53,19 +53,19 @@ func (r *Region) RunDirectoryUser(ctx context.Context, tenant identity.TenantRes
 			return empty, err
 		}
 		scope := arm.SubscriptionScope{TenantID: directory.TenantID, SubscriptionID: directory.SubscriptionID}
-		key := r.directoryUserTaskKey(*directory)
+		key := r.directoryGraphTaskKey(*directory)
 		active, err := r.client.Get(ctx, key, clientv3.WithRev(revision), clientv3.WithCountOnly())
 		if err != nil {
 			return empty, err
 		}
 		if active.Count != 0 {
-			return empty, identity.ErrDirectoryUsersBusy
+			return empty, identity.ErrDirectoryGraphBusy
 		}
 		lease, err := r.client.Grant(ctx, 20)
 		if err != nil {
 			return empty, err
 		}
-		queued := directoryUserQueue{ID: operationID(), Generation: writer.Generation, Operation: input.Operation,
+		queued := directoryGraphQueue{ID: operationID(), Generation: writer.Generation, Operation: input.Operation,
 			ExpiresAt: time.Now().Unix() + 18, Actor: tenant.Administrator}
 		data, _ := json.Marshal(input)
 		queued.Sealed = r.workloads.sealer.Seal(nil, nil, data, queued.label(key))
@@ -73,7 +73,7 @@ func (r *Region) RunDirectoryUser(ctx context.Context, tenant identity.TenantRes
 		serialized, _ := json.Marshal(queued)
 		writes := []clientv3.Op{clientv3.OpPut(key, string(serialized), clientv3.WithLease(lease.ID))}
 		if input.Mutates() {
-			writes = append(writes, r.auditOp(scope, directoryUserAudit(tenant.Administrator, input.Operation, queued.ID, arm.OperationInProgress)))
+			writes = append(writes, r.auditOp(scope, directoryGraphAudit(tenant.Administrator, input.Operation, queued.ID, arm.OperationInProgress)))
 		}
 		guards = append(guards, writerGuards...)
 		guards = append(guards, clientv3.Compare(clientv3.Version(key), "=", 0))
@@ -82,15 +82,15 @@ func (r *Region) RunDirectoryUser(ctx context.Context, tenant identity.TenantRes
 			return empty, err
 		}
 		if result.Succeeded {
-			return r.waitDirectoryUser(ctx, key+"/results/"+queued.ID, queued)
+			return r.waitDirectoryGraph(ctx, key+"/results/"+queued.ID, queued)
 		}
 		_, _ = r.client.Revoke(ctx, lease.ID)
 	}
-	return empty, identity.ErrDirectoryUsersBusy
+	return empty, identity.ErrDirectoryGraphBusy
 }
 
-func (r *Region) waitDirectoryUser(ctx context.Context, key string, queued directoryUserQueue) (enrollment.DirectoryUserResult, error) {
-	var result enrollment.DirectoryUserResult
+func (r *Region) waitDirectoryGraph(ctx context.Context, key string, queued directoryGraphQueue) (enrollment.DirectoryGraphResult, error) {
+	var result enrollment.DirectoryGraphResult
 	ctx, cancel := context.WithDeadline(ctx, time.Unix(queued.ExpiresAt, 0))
 	defer cancel()
 	ticker := time.NewTicker(150 * time.Millisecond)
@@ -107,7 +107,7 @@ func (r *Region) waitDirectoryUser(ctx context.Context, key string, queued direc
 			}
 			defer clear(decoded)
 			if json.Unmarshal(decoded, &result) != nil || result.ID != queued.ID || !result.Valid(queued.Operation) {
-				return result, errors.New("invalid directory user result")
+				return result, errors.New("invalid directory Graph result")
 			}
 			return result, nil
 		}
@@ -119,14 +119,14 @@ func (r *Region) waitDirectoryUser(ctx context.Context, key string, queued direc
 	}
 }
 
-type activeDirectoryUserTask struct {
+type activeDirectoryGraphTask struct {
 	binding  *authorizedDirectoryController
 	key      string
-	queued   directoryUserQueue
+	queued   directoryGraphQueue
 	revision int64
 }
 
-func (r *Region) readHostDirectoryUserTask(ctx context.Context, host string, certificate []byte, tenant, generation string) (*activeDirectoryUserTask, error) {
+func (r *Region) readHostDirectoryGraphTask(ctx context.Context, host string, certificate []byte, tenant, generation string) (*activeDirectoryGraphTask, error) {
 	binding, err := r.authorizeDirectoryController(ctx, host, certificate, tenant, generation)
 	if err != nil {
 		return nil, err
@@ -137,7 +137,7 @@ func (r *Region) readHostDirectoryUserTask(ctx context.Context, host string, cer
 	if binding.directory.ProvisionedAt.IsZero() {
 		return nil, nil
 	}
-	key := r.directoryUserTaskKey(binding.directory)
+	key := r.directoryGraphTaskKey(binding.directory)
 	rows, err := r.client.Txn(ctx).If(binding.guards...).Then(clientv3.OpGet(key)).Commit()
 	if err != nil {
 		return nil, err
@@ -149,18 +149,18 @@ func (r *Region) readHostDirectoryUserTask(ctx context.Context, host string, cer
 	if len(items) == 0 {
 		return nil, nil
 	}
-	var queued directoryUserQueue
+	var queued directoryGraphQueue
 	if json.Unmarshal(items[0].Value, &queued) != nil || !enrollment.ValidDirectoryJoinID(queued.ID) || queued.Generation != generation {
 		return nil, enrollment.ErrDirectoryAssignmentChanged
 	}
 	if time.Now().Unix() >= queued.ExpiresAt {
 		return nil, nil
 	}
-	return &activeDirectoryUserTask{binding: binding, key: key, queued: queued, revision: items[0].ModRevision}, nil
+	return &activeDirectoryGraphTask{binding: binding, key: key, queued: queued, revision: items[0].ModRevision}, nil
 }
 
-func (r *Region) HostDirectoryUserTask(ctx context.Context, host string, certificate []byte, tenant, generation string) (*enrollment.DirectoryUserTask, error) {
-	task, err := r.readHostDirectoryUserTask(ctx, host, certificate, tenant, generation)
+func (r *Region) HostDirectoryGraphTask(ctx context.Context, host string, certificate []byte, tenant, generation string) (*enrollment.DirectoryGraphTask, error) {
+	task, err := r.readHostDirectoryGraphTask(ctx, host, certificate, tenant, generation)
 	if err != nil || task == nil {
 		return nil, err
 	}
@@ -169,15 +169,15 @@ func (r *Region) HostDirectoryUserTask(ctx context.Context, host string, certifi
 		return nil, err
 	}
 	defer clear(data)
-	result := enrollment.DirectoryUserTask{ID: task.queued.ID, ExpiresAt: task.queued.ExpiresAt}
-	if json.Unmarshal(data, &result.DirectoryUserInput) != nil || !result.Valid() || result.Operation != task.queued.Operation {
-		return nil, errors.New("invalid queued directory user task")
+	result := enrollment.DirectoryGraphTask{ID: task.queued.ID, ExpiresAt: task.queued.ExpiresAt}
+	if json.Unmarshal(data, &result.DirectoryGraphInput) != nil || !result.Valid() || result.Operation != task.queued.Operation {
+		return nil, errors.New("invalid queued directory Graph task")
 	}
 	return &result, nil
 }
 
-func (r *Region) FinishDirectoryUserTask(ctx context.Context, host string, certificate []byte, tenant, generation string, result enrollment.DirectoryUserResult) error {
-	task, err := r.readHostDirectoryUserTask(ctx, host, certificate, tenant, generation)
+func (r *Region) FinishDirectoryGraphTask(ctx context.Context, host string, certificate []byte, tenant, generation string, result enrollment.DirectoryGraphResult) error {
+	task, err := r.readHostDirectoryGraphTask(ctx, host, certificate, tenant, generation)
 	if err != nil {
 		return err
 	}
@@ -193,13 +193,13 @@ func (r *Region) FinishDirectoryUserTask(ctx context.Context, host string, certi
 	sealed := r.workloads.sealer.Seal(nil, nil, data, []byte(key))
 	clear(data)
 	writes := []clientv3.Op{clientv3.OpPut(key, string(sealed), clientv3.WithLease(lease.ID)), clientv3.OpDelete(task.key)}
-	if (enrollment.DirectoryUserInput{Operation: task.queued.Operation}).Mutates() {
+	if (enrollment.DirectoryGraphInput{Operation: task.queued.Operation}).Mutates() {
 		outcome := arm.OperationSucceeded
 		if result.Status >= http.StatusBadRequest {
 			outcome = arm.OperationFailed
 		}
 		scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: task.binding.directory.SubscriptionID}
-		writes = append(writes, r.auditOp(scope, directoryUserAudit(task.queued.Actor, task.queued.Operation, task.queued.ID, outcome)))
+		writes = append(writes, r.auditOp(scope, directoryGraphAudit(task.queued.Actor, task.queued.Operation, task.queued.ID, outcome)))
 	}
 	guards := append(task.binding.guards, clientv3.Compare(clientv3.ModRevision(task.key), "=", task.revision))
 	completed, err := r.client.Txn(ctx).If(guards...).Then(writes...).Commit()
