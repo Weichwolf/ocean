@@ -149,6 +149,19 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	joinedBrowser = requireFile(joinedBrowser, filepath.Join(options.domain, "known-hosts"), "the verified SSH host keys for the lab")
 	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "service.keytab"), "the lab HTTP service keytab")
+	windowsBrowser := harness.Step{Name: "joined-windows-web-kerberos", Cases: []string{"WORKPLACE-24"}, Timeout: 4 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWindowsDomainBrowserLab$", "./internal/identity"}, BlockedReason: joinedBrowser.BlockedReason}
+	if windowsBrowser.BlockedReason == "" && os.Getenv("OCEAN_E2E_JOINED_WEB_WINDOWS") != "1" {
+		windowsBrowser.BlockedReason = "Prepare the disposable Windows domain desktop and set OCEAN_E2E_JOINED_WEB_WINDOWS=1."
+	}
+	for _, program := range []string{"genisoimage", "python3", "ssh"} {
+		if _, err := exec.LookPath(program); err != nil && windowsBrowser.BlockedReason == "" {
+			windowsBrowser.BlockedReason = "Install " + program + " for the Windows browser probe."
+		}
+	}
+	windowsBrowser = requireFile(windowsBrowser, filepath.Join(joinedState, "primary-ssh-port"), "the primary controller's loopback SSH port")
+	windowsBrowser = requireFile(windowsBrowser, filepath.Join(joinedState, "oauth.key"), "the lab callback TLS key")
 	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "guest-ssh-port"), "the joined guest's loopback SSH port")
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
@@ -202,5 +215,6 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
-		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser, webCLIRegression, joinedBrowser)
+		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
+		webCLIRegression, joinedBrowser, windowsBrowser)
 }

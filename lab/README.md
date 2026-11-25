@@ -1132,6 +1132,9 @@ keys. In the isolated domain, keep the primary at `farm-1-node-01`, promote
 modules. Create `webemployee@ad.ocean.test` in the workforce user OU and
 assign it to `OceanWebJoined`, a security group in the workforce group OU.
 Keep both LDAPS connectors authenticated and reachable from Keycloak.
+Synchronize SYSVOL, including policy ACLs, before offering the replica to
+clients. Verify that both controllers publish only their workload addresses
+in AD DNS and that the replica serves both default policy files.
 
 Set `OCEAN_E2E_JOINED_WEB_STATE` to a private fixture directory containing
 `directory-id`, `sid`, `reader`, `employee`, `group-guid`, `port1`, `port2`,
@@ -1146,6 +1149,23 @@ The probe checks the machine join and opens a fresh PAM session. Firefox
 uses the session's TGT to obtain an AES service ticket without a browser password
 prompt. The test validates the code and signed token for the same federated
 subject. The callback is HTTPS through an SSH reverse forward to the host.
+
+`WORKPLACE-24` uses the same test directory and an unlocked Windows 11 KVM
+guest signed in as `webemployee@ad.ocean.test`. Use a fresh OS sign-in after
+boot and leave the desktop available to the QEMU console. Install the lab
+CA in the guest's machine root store and apply the Edge `AuthServerAllowlist`
+policy to `oauth.ad.ocean.test`. Set `EnableAuthNegotiatePort` to disabled
+for the lab's nonstandard HTTPS port. [Edge integrated authentication policy](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/authserverallowlist) · [SPN port policy](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/enableauthnegotiateport)
+
+Set `OCEAN_E2E_JOINED_WEB_WINDOWS=1` and include `primary-ssh-port`,
+`oauth.pem` and `oauth.key` in the private state directory. Use `socat` on
+the primary controller to relay the probe's HTTPS callback from workload
+port `18444` to the bounded loopback SSH reverse forward. Keep these ports
+free before running the verifier. The launcher reads the native ticket
+cache in the desktop user's own session, starts Edge with an empty profile,
+and verifies the newly acquired AES service ticket and signed OIDC token.
+The probe submits no credentials to Edge and restores the lab CD after the
+test.
 
 ## ARM resource groups
 

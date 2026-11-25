@@ -5,6 +5,7 @@ package identity
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,9 +26,21 @@ import (
 )
 
 func TestKeycloakDebianDomainBrowserLab(t *testing.T) {
+	testKeycloakJoinedDomainBrowserLab(t, "Debian Firefox")
+}
+
+func TestKeycloakWindowsDomainBrowserLab(t *testing.T) {
+	if os.Getenv("OCEAN_E2E_JOINED_WEB_WINDOWS") != "1" {
+		t.Skip("provide the disposable Windows domain employee desktop")
+	}
+	testKeycloakJoinedDomainBrowserLab(t, "Windows Edge")
+}
+
+func testKeycloakJoinedDomainBrowserLab(t *testing.T, browser string) {
+	t.Helper()
 	fixture, state := os.Getenv("OCEAN_E2E_JOINED_WEB_STATE"), os.Getenv("OCEAN_E2E_DOMAIN_STATE")
 	if fixture == "" || state == "" {
-		t.Skip("provide the enabled two-controller and joined Debian browser fixture")
+		t.Skip("provide the enabled two-controller and joined browser fixture")
 	}
 	keytab := filepath.Join(fixture, "service.keytab")
 	if info, err := os.Stat(keytab); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
@@ -88,7 +101,7 @@ func TestKeycloakDebianDomainBrowserLab(t *testing.T) {
 	}
 	queries := make(chan string, 1)
 	var complete atomic.Bool
-	callback, callbackCA := kerberosBrowserCallback(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	receiveCode := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.URL.Path == "/oidc" && req.URL.Query().Get("code") != "":
 			select {
@@ -102,9 +115,19 @@ func TestKeycloakDebianDomainBrowserLab(t *testing.T) {
 		default:
 			http.NotFound(w, req)
 		}
-	}))
-	app := Application{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: "Joined Debian browser",
-		WebRedirectURIs: []string{callback.URL + "/oidc"}}
+	})
+	var callback *httptest.Server
+	var callbackCA []byte
+	var callbackOrigin string
+	if browser == "Windows Edge" {
+		callback = windowsBrowserCallback(t, fixture, receiveCode)
+		callbackOrigin = "https://" + host + ":18444"
+	} else {
+		callback, callbackCA = kerberosBrowserCallback(t, receiveCode)
+		callbackOrigin = callback.URL
+	}
+	app := Application{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: "Joined " + browser + " browser",
+		WebRedirectURIs: []string{callbackOrigin + "/oidc"}}
 	az := startWebPolicyLab(t, lab, api, []Application{app}, keytab)
 	output := az("put", directoryPath(tenant.TenantID)+"/webApplications/"+app.ID, []string{value("group-guid")}, "")
 	var published struct {
@@ -121,14 +144,20 @@ func TestKeycloakDebianDomainBrowserLab(t *testing.T) {
 	authorization := newBrowserAuthorization(app)
 	realm := strings.ToUpper(domain)
 	principal, ticket := "webemployee@"+realm, "HTTP/"+host+"@"+realm
-	result := joinedFirefox(t, ctx, root, state, value("guest-ssh-port"), callback.Listener.Addr().String(), map[string]any{
-		"user": employee, "password": value("employee"), "principal": principal, "servicePrincipal": ticket,
-		"ticketGrantingPrincipal": "krbtgt/" + realm + "@" + realm, "providerCA": ca, "callbackCA": callbackCA,
-		"origin": origin, "authorize": issuer + "/protocol/openid-connect/auth?" + authorization.params.Encode(), "completed": callback.URL + "/complete",
-	})
+	config := map[string]any{"user": employee, "principal": principal, "servicePrincipal": ticket,
+		"authorize": issuer + "/protocol/openid-connect/auth?" + authorization.params.Encode(), "completed": callbackOrigin + "/complete"}
+	var result joinedBrowserResult
+	if browser == "Windows Edge" {
+		config["run"], config["domain"], config["realm"], config["account"], config["serviceHost"] = newUUID(), domain, realm, "webemployee", host
+		result = joinedEdge(t, ctx, root, state, value("primary-ssh-port"), callback.Listener.Addr().String(), config)
+	} else {
+		config["password"], config["origin"], config["providerCA"], config["callbackCA"] = value("employee"), origin, ca, callbackCA
+		config["ticketGrantingPrincipal"] = "krbtgt/" + realm + "@" + realm
+		result = joinedFirefox(t, ctx, root, state, value("guest-ssh-port"), callback.Listener.Addr().String(), config)
+	}
 	if result.User != employee || result.Principal != principal || result.ServicePrincipal != ticket || result.DurationMS <= 0 ||
 		(result.Encryption != "aes128-cts-hmac-sha1-96" && result.Encryption != "aes256-cts-hmac-sha1-96") {
-		t.Fatal("the guest did not acquire the expected HTTP service ticket in the employee's PAM session")
+		t.Fatal("the guest did not acquire the expected HTTP service ticket in the employee's domain session")
 	}
 	select {
 	case response := <-queries:
@@ -141,18 +170,22 @@ func TestKeycloakDebianDomainBrowserLab(t *testing.T) {
 	default:
 		t.Fatal("the browser did not return an authorization code")
 	}
-	t.Logf("joined Debian Firefox acquired the %s HTTP ticket and reached the OIDC callback in %d ms from browser launch", result.Encryption, result.DurationMS)
+	t.Logf("joined %s acquired the %s HTTP ticket and reached the OIDC callback in %d ms from browser launch", browser, result.Encryption, result.DurationMS)
 }
 
-type joinedFirefoxResult struct {
+type joinedBrowserResult struct {
 	User             string `json:"user"`
 	Principal        string `json:"principal"`
 	ServicePrincipal string `json:"servicePrincipal"`
 	Encryption       string `json:"encryption"`
 	DurationMS       int    `json:"durationMs"`
+	EdgeVersion      string `json:"edgeVersion"`
+	WindowsEdition   string `json:"windowsEdition"`
+	ErrorStage       string `json:"errorStage"`
+	Message          string `json:"message"`
 }
 
-func joinedFirefox(t *testing.T, ctx context.Context, root, state, port, callback string, config map[string]any) joinedFirefoxResult {
+func joinedFirefox(t *testing.T, ctx context.Context, root, state, port, callback string, config map[string]any) joinedBrowserResult {
 	t.Helper()
 	if parsed, err := strconv.ParseUint(port, 10, 16); err != nil || parsed == 0 {
 		t.Fatal("the joined Debian SSH port must be numeric")
@@ -185,7 +218,7 @@ python3 "$workspace/probe.py" "$workspace/probe.py"`
 	}
 	for _, line := range strings.Split(string(output), "\n") {
 		if record, found := strings.CutPrefix(line, "OCEAN_BROWSER "); found {
-			var result joinedFirefoxResult
+			var result joinedBrowserResult
 			if err := json.Unmarshal([]byte(record), &result); err != nil {
 				t.Fatal(err)
 			}
@@ -193,5 +226,42 @@ python3 "$workspace/probe.py" "$workspace/probe.py"`
 		}
 	}
 	t.Fatal("the joined guest did not return browser evidence")
-	return joinedFirefoxResult{}
+	return joinedBrowserResult{}
+}
+
+func windowsBrowserCallback(t *testing.T, fixture string, handler http.Handler) *httptest.Server {
+	t.Helper()
+	pair, err := tls.LoadX509KeyPair(filepath.Join(fixture, "oauth.pem"), filepath.Join(fixture, "oauth.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	t.Cleanup(server.Close)
+	server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}}
+	server.StartTLS()
+	return server
+}
+
+func joinedEdge(t *testing.T, ctx context.Context, root, state, port, callback string, config map[string]any) joinedBrowserResult {
+	t.Helper()
+	input, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(ctx, "python3", filepath.Join(root, "lab", "windows_web_browser.py"),
+		"--state", state, "--primary-port", port, "--callback", callback)
+	command.Stdin = bytes.NewReader(input)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run the joined Windows desktop browser probe: %v\n%s", err, output)
+	}
+	var result joinedBrowserResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("read Windows browser evidence: %v: %s", err, output)
+	}
+	if result.ErrorStage != "" || result.EdgeVersion == "" || result.WindowsEdition == "" {
+		t.Fatalf("Windows browser probe failed in %q: %s", result.ErrorStage, result.Message)
+	}
+	t.Logf("Microsoft Edge %s on Windows 11 %s", result.EdgeVersion, result.WindowsEdition)
+	return result
 }
