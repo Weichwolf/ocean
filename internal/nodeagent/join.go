@@ -31,12 +31,13 @@ import (
 )
 
 type joinConfig struct {
-	Origin         string `json:"origin"`
-	HostID         string `json:"hostId"`
-	Interface      string `json:"managementInterface"`
-	CAFile         string `json:"caFile"`
-	TokenFile      string `json:"tokenFile"`
-	StateDirectory string `json:"stateDirectory"`
+	Origin               string `json:"origin"`
+	HostID               string `json:"hostId"`
+	Interface            string `json:"managementInterface"`
+	CAFile               string `json:"caFile"`
+	TokenFile            string `json:"tokenFile"`
+	StateDirectory       string `json:"stateDirectory"`
+	TelemetryBufferBytes int    `json:"telemetryBufferBytes,omitempty"`
 }
 
 type settings struct {
@@ -63,6 +64,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		hooks.Readiness = client.ready
 		hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
 			go client.reportCapacity(ctx, logger)
+			go client.runTelemetry(ctx, logger)
 			client.reconcileContainers(ctx, logger)
 		}
 	}
@@ -74,6 +76,7 @@ type joinClient struct {
 	trust             *x509.CertPool
 	client            *http.Client
 	lastAdvertisement atomic.Pointer[time.Time]
+	telemetryTargets  atomic.Pointer[[]telemetryTarget]
 }
 
 func loadEnrolledClient(path string) (*joinClient, error) {
@@ -103,6 +106,9 @@ func loadEnrolledClient(path string) (*joinClient, error) {
 }
 
 func newJoinClient(cfg joinConfig) (*joinClient, error) {
+	if cfg.TelemetryBufferBytes != 0 && (cfg.TelemetryBufferBytes < 4096 || cfg.TelemetryBufferBytes > 4<<20) {
+		return nil, errors.New("telemetry buffer must be between 4 KiB and 4 MiB")
+	}
 	origin, err := url.Parse(cfg.Origin)
 	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" ||
 		cfg.HostID == "" || url.PathEscape(cfg.HostID) != cfg.HostID || strings.ContainsAny(cfg.HostID, "/%") ||

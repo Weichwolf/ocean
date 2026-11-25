@@ -97,8 +97,8 @@ func (j *joinClient) functionContainerConfig(name string) string {
 	return filepath.Join(j.config.StateDirectory, name+".function")
 }
 
-func (j *joinClient) removeFunctionSidecar(ctx context.Context, name string) error {
-	return podmanAction(ctx, "rm", "--force", "--ignore", "--time", "1", name+"-storage")
+func (j *joinClient) removeFunctionSidecars(ctx context.Context, name string) error {
+	return podmanAction(ctx, "rm", "--force", "--ignore", "--time", "1", name+"-telemetry", name+"-storage")
 }
 
 func functionAdmin(ctx context.Context, name string, runtime functions.Runtime, request functions.AdminRequest) (functions.AdminResult, error) {

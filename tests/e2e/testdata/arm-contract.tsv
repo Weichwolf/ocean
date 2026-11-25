@@ -85,3 +85,12 @@ FUNCTION-02	function-app-delete	2.93.0	none	2025-05-01	functionapp delete --reso
 FUNCTION-02	function-plan-delete	2.93.0	none	2025-05-01	functionapp plan delete --resource-group {group} --name {plan} --yes -o none
 NETWORK-03	function-vnet-add	2.93.0	none	2022-01-01+2022-12-01+2023-12-01+2025-05-01	functionapp vnet-integration add --resource-group {group} --name {app} --vnet {vnet} --subnet {subnet} -o json
 NETWORK-03	function-vnet-list	2.93.0	none	2025-05-01	functionapp vnet-integration list --resource-group {group} --name {app} -o json
+OBS-01	activity-log-list	2.93.0	none	2015-04-01	monitor activity-log list --resource-group {group} --offset 1h --max-events 50 -o json
+OBS-01	resource-health-show	2.93.0	none	2025-05-01	rest --method get --url {origin}{id}/providers/Microsoft.ResourceHealth/availabilityStatuses/current?api-version=2025-05-01 -o json
+OBS-03	regional-usage-show	2.93.0	none	2025-09-01	rest --method get --url {origin}/subscriptions/{subscription}/providers/Microsoft.ContainerInstance/locations/{location}/usages?api-version=2025-09-01 -o json
+OBS-03	quota-container-create	2.93.0	none	2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Public --ports 80 --protocol TCP --os-type Linux --cpu 0.6 --memory 0.25 --restart-policy Always -o json
+OBS-02	container-metrics-list	2.93.0	none	2018-01-01	monitor metrics list --resource {id} --metrics CpuUsage MemoryUsage --interval PT1M --aggregation Average --start-time {start} --end-time {end} -o json
+OBS-02	insights-query	2.93.0	none	v1	rest --method post --url {origin}/v1{id}/query --headers Content-Type=application/json --body @{body} -o json
+OBS-04	telemetry-gap-query	2.93.0	none	v1	rest --method post --url {origin}/v1{id}/query --headers Content-Type=application/json --body @{body} -o json
+OBS-02	function-node-create	2.93.0	none	2023-12-01+2025-05-01+2026-09-01	functionapp create --resource-group {group} --name {app} --plan {plan} --storage-account {account} --image {image} --functions-version 4 --runtime node --runtime-version 22 --os-type Linux --https-only true --configure-networking-later true --disable-app-insights true -o json
+OBS-02	telemetry-load-create	2.93.0	none	2022-01-01+2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Private --subnet {subnet_id} --ports 8080 --protocol TCP --os-type Linux --cpu {cpu} --memory {memory} --restart-policy Always --command-line {program} -o json

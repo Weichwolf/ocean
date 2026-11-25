@@ -17,6 +17,7 @@ from enrollment import publish
 from prepare_storage_provider import WORKERS
 from region import DOMAIN, ca, leaf, ssh, upload
 from verify_agent_package import INSTALL
+from verify_function_fixtures import build_fixture
 from verify_enrollment import agent_command, wait_ready
 
 REGISTRY_IMAGE = "docker.io/library/registry@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8"
@@ -83,17 +84,19 @@ def prepare(state, package, cache, registry_port):
            "--volume", f"{store}:/var/lib/registry",
            "--volume", f"{certs}/registry.pem:/registry.pem:ro", "--volume", f"{certs}/registry.key:/registry.key:ro",
            "--env", "REGISTRY_HTTP_TLS_CERTIFICATE=/registry.pem", "--env", "REGISTRY_HTTP_TLS_KEY=/registry.key", REGISTRY_IMAGE)
-    images = build(cache)
+    images = {version: details["image"] for version, details in build(cache).items()}
+    images["node"] = build_fixture("node")
     refs = {}
     with tempfile.TemporaryDirectory(prefix="ocean-function-registry-") as folder:
         trust = Path(folder) / "certs"
         trust.mkdir()
         (trust / "ca.crt").write_bytes(authority[0].read_bytes())
         digest = Path(folder) / "digest"
-        for version, details in images.items():
+        for version, image in images.items():
+            runtime = "node" if version == "node" else "java"
             podman("push", "--cert-dir", trust, "--digestfile", digest,
-                   details["image"], f"docker://{local_registry}/ocean-fixtures/java:{version}")
-            refs[version] = f"{registry}/ocean-fixtures/java@{digest.read_text().strip()}"
+                   image, f"docker://{local_registry}/ocean-fixtures/{runtime}:{version}")
+            refs[version] = f"{registry}/ocean-fixtures/{runtime}@{digest.read_text().strip()}"
     if len(set(refs.values())) != len(refs):
         raise RuntimeError("Function image revisions did not produce different manifests")
 
@@ -114,7 +117,7 @@ def prepare(state, package, cache, registry_port):
         list(pool.map(provision, WORKERS))
     publish(state, function_plans=True, function_domain=FUNCTION_DOMAIN, function_registry=registry)
     (certs / "images.json").write_text(json.dumps(refs, indent=2) + "\n")
-    print("Staged two digest-pinned Function images on both storage-capable workers.", flush=True)
+    print("Staged digest-pinned Java and Node.js Function images on both storage-capable workers.", flush=True)
 
 
 def main():

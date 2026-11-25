@@ -23,6 +23,7 @@ type Server struct {
 	Groups             GroupStore
 	Roles              RoleStore
 	Operations         OperationStore
+	Monitor            MonitorStore
 	Inventory          InventoryStore
 	Networks           NetworkStore
 	Deployments        NetworkDeploymentStore
@@ -47,6 +48,9 @@ type armRoute struct {
 func parseRoute(segments []string) armRoute {
 	if len(segments) < 3 || !strings.EqualFold(segments[0], "subscriptions") {
 		return armRoute{}
+	}
+	if route, ok := monitorRoute(segments); ok {
+		return route
 	}
 	if len(segments) == 4 && strings.EqualFold(segments[2], "providers") {
 		return armRoute{collection: "providers", name: segments[3]}
@@ -184,6 +188,10 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 		}
 		segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 		route := parseRoute(segments)
+		if len(segments) == 10 && segments[0] == "v1" {
+			segments = segments[1:]
+			route = resourceLogsRoute(segments)
+		}
 		if route.collection == "" || !strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
 			fallback.ServeHTTP(w, r)
 			return
@@ -227,6 +235,10 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "applicationGateway":
 			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "resourceLogs":
+			s.resourceLogs(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
+		case "activityLog", "regionUsage", "resourceHealth", "workloadMetrics":
+			s.monitor(ctx, w, r, scope, reader, route)
 		case "functionSite":
 			s.functionSite(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "functionPlan":
@@ -262,7 +274,11 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 	if functionRead && r.Method == http.MethodPost && strings.HasSuffix(strings.ToLower(route.name), "/publishxml") {
 		return true // The handler applies group scope and returns only the OCI deployment method.
 	}
-	if read && (route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||
+	if route.collection == "resourceLogs" && r.Method == http.MethodPost {
+		return true // Log queries apply the group grant in the same store read.
+	}
+	if read && (route.collection == "workloadMetrics" || route.collection == "resourceHealth" || route.collection == "activityLog" ||
+		route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||
 		route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}

@@ -71,6 +71,23 @@ Build each Function fixture on its locked public runtime base. Generate Function
 
 Use Bicep CLI 0.49.2 with Azure CLI 2.93.0 for the network template run. The fixture declares a VNet, an independently managed subnet, a regional Standard static IPv4 address, and a Standard NAT gateway. `namePrefix` gives each run its own resource IDs. The subnet declares the gateway reference and disables implicit outbound access. Record the compiler version and compiled template with the deployment evidence. [Network Bicep fixture](testdata/bicep/network.bicep) · [Bicep CLI release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
 
+## Observability profile
+
+Check CPU and memory against a controlled BusyBox load and independent cgroup
+readings, with tolerances of 100 millicores and 4 MiB. Compare the Node.js
+Function's Insights records against the trusted external HTTPS probe. Require
+matching status codes, request and error counts, dependency outcomes and
+exception types. Use a 10 ms tolerance for application duration and
+percentiles and a 60-second limit for the first complete CLI result. The fixtures verify that a foreign token cannot query either
+resource's telemetry.
+
+For the telemetry outage profile, use a 4 KiB persistent buffer on each test
+worker and stop all members of the independent telemetry store. Provision a
+private canary and complete real writer fencing and volume recovery before
+restoring the store. The recovery limit is 45 seconds and the profile allows at
+most 160 evicted observations on the monitored worker. Capture worker buffer
+sizes, tenant-visible gaps and measurements both before and after recovery.
+
 ## Execution and evidence
 
 1. Record the source revision, platform and CLI versions, API versions, selected cases, image digests, topology, resource budgets, and pass limits before running the suite. Give the run its own Azure CLI configuration directory and its own test resources.

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
@@ -38,6 +39,7 @@ type regionConfig struct {
 	WireGuard           *wireGuardConfig          `json:"wireGuard"`
 	Workloads           *workloadConfig           `json:"workloads"`
 	Storage             *storageConfig            `json:"storage"`
+	Telemetry           *telemetryConfig          `json:"telemetry"`
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
@@ -64,7 +66,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
 		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
 	}
-	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil || cfg.Region.Storage != nil) && cfg.HostEnrollment == nil {
+	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil || cfg.Region.Storage != nil || cfg.Region.Telemetry != nil) && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("gateway and workload execution require enrolled hosts")
 	}
 	var hooks service.Hooks
@@ -80,17 +82,24 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		}
 	}
 	if cfg.Region != nil {
+		if cfg.Region.Telemetry != nil {
+			for _, endpoint := range cfg.Region.Telemetry.Etcd.Endpoints {
+				if slices.Contains(cfg.Region.Etcd.Endpoints, endpoint) {
+					return config.Server{}, service.Hooks{}, errors.New("telemetry requires separate etcd endpoints")
+				}
+			}
+		}
 		region, err := openRegion(*cfg.Region)
 		if err != nil {
 			return config.Server{}, service.Hooks{}, err
 		}
 		hooks.Startup = region.bootstrap
 		hooks.Readiness = region.ready
-		hooks.Close = region.client.Close
+		hooks.Close = region.close
 		if cfg.HostEnrollment != nil {
 			authority, inventory, err := enrollment.Open(*cfg.HostEnrollment, region)
 			if err != nil {
-				_ = region.client.Close()
+				_ = region.close()
 				return config.Server{}, service.Hooks{}, err
 			}
 			hosts = authority
@@ -108,14 +117,14 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
 			if cfg.Identity.Onboarding != nil {
 				if err := compatibility.EnableOnboarding(*cfg.Identity.Onboarding, region); err != nil {
-					_ = region.client.Close()
+					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
 				}
 			}
 			if cfg.Identity.Cloud != nil {
 				compatibility.EnableSubscriptionGrants(region.hasSubscriptionGrant)
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name, StorageSuffix: cfg.Identity.Cloud.StorageEndpoint,
-					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Inventory: region, Networks: region, Deployments: region,
+					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Monitor: region, Inventory: region, Networks: region, Deployments: region,
 					GatewayDeployments: region, SiteConnections: region, FunctionPlans: cfg.Region.FunctionPlans, PrincipalExists: compatibility.RolePrincipalExists}
 				if region.workloads != nil {
 					resources.Containers = region
@@ -154,6 +163,7 @@ type Region struct {
 	wireGuard      *wireGuardConfig
 	workloads      *workloadControl
 	storage        *storageControl
+	telemetry      *telemetryControl
 	cell           string
 }
 
@@ -191,7 +201,12 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
-	return &Region{client: client, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
+	telemetry, err := openTelemetry(cfg.Telemetry)
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("open telemetry backend: %w", err)
+	}
+	return &Region{client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell}, nil
 }
 

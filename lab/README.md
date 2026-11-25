@@ -469,3 +469,64 @@ Run `python3 lab/verify_function_fixtures.py --output FILE` for a local Podman c
 both Java revisions and the Node.js, .NET and Go fixtures. This check verifies
 each native trigger and the valid, missing and invalid key paths. The regional
 acceptance run uses the Java fixture for gateway, network and lifecycle checks.
+
+### Regional observability
+
+Use the regional lab with installed compute agents, replicated storage, and the
+private, public, and HTTPS workload paths. Prepare the telemetry cluster and
+then run the observation probes locally with the pinned Azure CLI on the
+operator guest.
+
+```sh
+make deb-agent
+python3 lab/prepare_telemetry.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev11_amd64.deb --buffer-bytes 4096
+python3 lab/verify_monitor_controlplane.py --state "$LAB_STATE"
+python3 lab/prepare_functions.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev11_amd64.deb
+python3 lab/verify_insights.py --state "$LAB_STATE"
+python3 lab/verify_telemetry_outage.py --state "$LAB_STATE"
+```
+
+The telemetry etcd cluster has three members with its own mTLS credentials,
+peer ports, data directory, lease retention and disk budget. The lab retains
+measurements for about an hour. The regional store continues to own placement,
+quota reservations, audit events, observed health and fencing. Workers measure
+real rootless container cgroups and write an atomic bounded queue before
+sending observations with their enrolled host certificate. After the byte
+budget is reached, the oldest observations are evicted and the gap includes
+their count and time range per workload. The agent exposes a separate
+local counter if the gap metadata itself exhausts its share of the budget.
+
+A Function can export OTLP/HTTP JSON traces to
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. Each relay listens on its assigned
+Function's loopback interface. It exports only
+HTTP status, elapsed time, a bounded route template, a dependency hostname and
+exception type. Request URLs, headers, payloads and exception messages are
+discarded. The sampled Functions fixture instruments successful and failing
+requests, a deliberate exception and a real HTTP request to its blob service.
+
+Container usage supports `CpuUsage` in millicores and `MemoryUsage` in bytes.
+Use resource IDs with `az monitor metrics list`. The supported series intervals
+are PT1M, PT5M, PT15M, PT30M and PT1H, with Average, Minimum and Maximum.
+Unobserved buckets have timestamps and missing values. ACI regional usage
+reads committed reservations and the configured tenant ceiling.
+[ARM contract matrix](../tests/e2e/testdata/arm-contract.tsv)
+
+Use `az rest` with the ARM audience against `POST /v1/{resource-id}/query`
+for the resource-scoped log queries. The contract covers the tested
+`AppRequests` projections and summary, `AppDependencies`, `AppExceptions`
+and `OceanTelemetryGaps_CL`. Queries take at most a one-hour window and 8,192 observations. The request summary uses nearest-rank
+latency percentiles. Both APIs apply the resource group grant within the
+subscription and return a service error while telemetry quorum is unavailable.
+[Insights CLI fixture](../tests/e2e/insights_cli.py)
+
+The local probes write `evidence/monitor-controlplane.json`,
+`evidence/application-insights.json` and `evidence/telemetry-outage.json`.
+Run the Insights and fencing probes sequentially so each can use the lab's
+public address pool. The outage probe stops all three telemetry members,
+provisions a private canary and verifies out-of-band writer fencing and
+replacement before restarting the telemetry cluster. It checks a 4 KiB
+worker buffer across a process restart and then compares reported gaps with
+worker loss and resumed usage series. The acceptance evidence records the
+measured delays and the profile's numeric limits.
