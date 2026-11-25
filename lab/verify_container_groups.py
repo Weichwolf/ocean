@@ -66,7 +66,7 @@ def exercise_limits(state, host, name):
     worker_command(state, f"rc=0; pod exec {name} {cpu_probe} >/dev/null 2>&1 || rc=$?; test \"$rc\" -eq 143 || test \"$rc\" -eq 124", host)
     require(counter("cpu.stat", "nr_throttled") > throttled, "the CPU limit did not throttle a saturated workload")
     killed = counter("memory.events", "oom_kill")
-    memory_probe = shlex.join(["timeout", "15", "awk", 'BEGIN { for (i=0; i<400000; i++) a[i]=sprintf("%01024d",i); print length(a[0]); }'])
+    memory_probe = shlex.join(["timeout", "30", "awk", 'BEGIN { data = "x"; while (length(data) < 96*1024*1024) data = data data; print length(data) }'])
     worker_command(state, f"rc=0; pod exec {name} {memory_probe} >/dev/null 2>&1 || rc=$?; test \"$rc\" -ne 0", host)
     require(counter("memory.events", "oom_kill") > killed, "the memory limit did not stop an oversized allocation")
     return {"cpuThrottlingObserved": True, "oversizedAllocationOOMKilled": True}
