@@ -36,6 +36,12 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	} else if _, err := exec.LookPath("podman"); err != nil {
 		runtime.BlockedReason = "Install rootless Podman for the directory runtime probe."
 	}
+	recovery := harness.Step{Name: "directory-backup-recovery", Cases: []string{"WORKPLACE-07"}, Timeout: 4 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--restore"},
+		BlockedReason: runtime.BlockedReason}
+	if _, err := exec.LookPath("openssl"); err != nil && recovery.BlockedReason == "" {
+		recovery.BlockedReason = "Install OpenSSL for the encrypted backup recovery probe."
+	}
 	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
 		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
 			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
@@ -48,5 +54,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
 		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
 	}
-	return append(steps, runtime, cli, fencing)
+	return append(steps, runtime, cli, fencing, recovery)
 }

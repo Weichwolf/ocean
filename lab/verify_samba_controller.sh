@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -ne 1 || ! $1 =~ ^sha256:[a-f0-9]{64}$ ]]; then
-    printf 'Usage: %s sha256:<local-controller-image-id>\n' "$0" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || (${2:-} != "" && ${2:-} != --restore) ]]; then
+    printf 'Usage: %s sha256:<local-controller-image-id> [--restore]\n' "$0" >&2
     exit 2
 fi
 image=$1
@@ -17,21 +17,21 @@ replica="$name-replica"
 replica_addr=10.254.247.12
 empty_primary="$name-empty"
 replacement="$name-replacement"
+recovered="$name-recovered"
 expected_sid=""
 tenant=$(cat /proc/sys/kernel/random/uuid)
 p() { nice -n 10 podman "$@"; }
 cleanup() {
     local storage
-    p rm --force --ignore "$name" "$replica" "$empty_primary" "$replacement" >/dev/null
-    for storage in "$volume" "$replica" "$empty_primary" "$replacement"; do
+    p rm --force --ignore "$name" "$replica" "$empty_primary" "$replacement" "$recovered" >/dev/null
+    for storage in "$volume" "$replica" "$empty_primary" "$replacement" "$recovered"; do
         if p volume exists "$storage"; then
             p volume rm "$storage" >/dev/null || true
         fi
     done
     p network rm "$net" >/dev/null || true
     p secret rm "$secret" >/dev/null || true
-    rm -f "$probe/employee.secret" "$probe/administrator.secret"
-    rmdir "$probe"
+    rm -rf -- "$probe"
 }
 trap cleanup EXIT
 p network create --internal --disable-dns --subnet 10.254.247.0/24 "$net" >/dev/null
@@ -42,7 +42,7 @@ printf 'Tst9-%s\n' "$(openssl rand -hex 20)" >"$probe/employee.secret"
 start() {
     local container=$1 address=$2 controller=$3 id=$4
     shift 4
-    p run --detach --name "$container" --network "$net" --ip "$address" --hostname "dc0$controller" \
+    p run --detach --name "$container" --network "$net" --ip "$address" --hostname "${controller_host:-dc0$controller}" \
        --memory 768m --pids-limit 128 --security-opt=no-new-privileges \
        --cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID --cap-add=SETGID --cap-add=NET_BIND_SERVICE \
        --uidmap 0:0:1 --uidmap 1:1:60000 --uidmap 3000000:60001:5535 \
@@ -57,9 +57,11 @@ start() {
 }
 wait_dns() {
     local container=$1 address=$2 controller=$3 i offer sid challenge
+    local host=${4:-dc0$controller}
     for i in $(seq 1 60); do
         if ! p inspect -f '{{.State.Running}}' "$container" | grep -Fxq true; then
             p logs "$container" 2>&1 | tail -12 >&2
+            p cp "$container:/var/log/samba/log.winbindd" - 2>/dev/null | tar -xO 2>/dev/null | tail -12 >&2 || true
             exit 1
         fi
         if offer=$(p exec "$container" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py startup-identity 2>/dev/null); then
@@ -71,7 +73,7 @@ wait_dns() {
             [[ "$expected_sid" == "$sid" ]]
             if p run --rm --network "$net" --entrypoint /usr/bin/dig "$image" \
                 +time=1 +tries=1 +short "@$address" SRV _ldap._tcp.dc._msdcs.ad.runtime.test |
-                grep -qF "389 dc0$controller.ad.runtime.test."; then
+                grep -qF "389 $host.ad.runtime.test."; then
                 printf 'The controller exposed DNS before startup authorization.\n' >&2
                 return 1
             fi
@@ -80,7 +82,7 @@ wait_dns() {
         fi
         if p run --rm --network "$net" --entrypoint /usr/bin/dig "$image" \
             +time=1 +tries=1 +short "@$address" SRV _ldap._tcp.dc._msdcs.ad.runtime.test |
-            grep -F "389 dc0$controller.ad.runtime.test."; then
+            grep -F "389 $host.ad.runtime.test."; then
             return
         fi
         sleep 0.25
@@ -105,7 +107,7 @@ proof() {
     p run --rm -i --network "$net" --entrypoint /bin/sh "$image" -c '
         set -eu
         address=$1
-        host="dc0$2.ad.runtime.test"
+        host="${4:-dc0$2}.ad.runtime.test"
         cache=$(mktemp -d)
         printf "%s\n" "[libdefaults]" "default_realm = AD.RUNTIME.TEST" "rdns = false" \
             "dns_lookup_kdc = true" "udp_preference_limit = 1" >"$cache/krb5.conf"
@@ -132,7 +134,7 @@ proof() {
                 exit 1
             fi
             grep -F NT_STATUS_ACCESS_DENIED "$cache/guard"
-            if [ "$2" = 1 ]; then
+            if [ "$2" = 1 ] && [ -z "${4:-}" ]; then
                 if smbclient "//$host/ocean-policy$" --use-kerberos=required --client-protection=encrypt \
                     --use-krb5-ccache="$KRB5CCNAME" -c "get sysvol.tar.gz $cache/export" >"$cache/exported" 2>&1; then
                     printf "Unprivileged employee could read the replication archive\n" >&2
@@ -144,11 +146,12 @@ proof() {
     ' -- "$@" <"$probe/employee.secret"
 }
 administrator_policy() {
+    local host=${4:-dc0$2}
     p run --rm -i --network "$net" --entrypoint /bin/sh "$image" -c '
         set -eu
         umask 077
         address=$1
-        host="dc0$2.ad.runtime.test"
+        host="$2.ad.runtime.test"
         action=$3
         employee_sid=$4
         cache=$(mktemp -d)
@@ -179,7 +182,7 @@ administrator_policy() {
             smbcacls "$smb" "$guarded" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
                 --query-security-info=7 --numeric --sddl
         fi
-    ' -- "$@" "$employee_sid" <"$probe/administrator.secret"
+    ' -- "$1" "$host" "$3" "$employee_sid" <"$probe/administrator.secret"
 }
 gpo_version() {
     p exec -i "$1" /usr/bin/python3 - "${2:-}" <<'PY'
@@ -234,6 +237,100 @@ same_policy() {
     local hash
     hash=$(grep -Ex '[a-f0-9]{64}' <<<"$1")
     test "$hash" = "$(grep -Ex '[a-f0-9]{64}' <<<"$2")"
+}
+machine_trust() {
+    p run --rm -i --network "$net" --hostname oceanmember \
+        --mount "type=bind,source=$probe/member,target=/member" \
+        --entrypoint /bin/sh "$image" -c '
+        set -eu
+        umask 077
+        addr=$1 host=$2 action=$3
+        printf "nameserver %s\noptions timeout:1 attempts:2\n" "$addr" >/etc/resolv.conf
+        mkdir -p /member/private /member/state /member/cache
+        printf "%s\n" "[global]" "security = ADS" "workgroup = OCEANRUN" "realm = AD.RUNTIME.TEST" \
+            "netbios name = OCEANMEMBER" "private dir = /member/private" "state directory = /member/state" \
+            "cache directory = /member/cache" >/member/smb.conf
+        if [ "$action" = join ]; then
+            ticket=$(mktemp -d)
+            export KRB5_CONFIG="$ticket/krb5.conf" KRB5CCNAME="FILE:$ticket/cache"
+            printf "%s\n" "[libdefaults]" "default_realm = AD.RUNTIME.TEST" "rdns = false" \
+                "[realms]" "AD.RUNTIME.TEST = {" "kdc = $addr" "}" >"$KRB5_CONFIG"
+            timeout 10 kinit Administrator@AD.RUNTIME.TEST
+            timeout 20 net ads join -s /member/smb.conf -S "$host" --no-dns-updates \
+                --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME"
+        else
+            timeout 15 net ads testjoin -s /member/smb.conf -S "$host"
+        fi
+    ' -- "$@" <"$probe/administrator.secret"
+}
+verify_independent_restore() {
+    local start_time=$SECONDS checksum restored machine
+    local recovery_name=dc-recovery
+    local path=/usr/local/lib/ocean-directory/controller.py
+    mkdir "$probe/member"
+    machine_trust "$addr" dc01.ad.runtime.test join
+    machine_trust "$addr" dc01.ad.runtime.test test
+    machine=$(directory_tool "$name" computer show OCEANMEMBER | grep '^objectGUID:')
+    openssl req -x509 -newkey rsa:2048 -noenc -days 1 -subj '/CN=Ocean disposable backup probe' \
+        -keyout "$probe/backup.key" -out "$probe/backup.crt" 2>"$probe/key.log"
+    if ! p exec -i "$name" /usr/bin/python3 "$path" backup-domain \
+            <"$probe/administrator.secret" >"$probe/backup.tar" 2>"$probe/backup.log"; then
+        tail -25 "$probe/backup.log" >&2
+        return 1
+    fi
+    checksum=$(sha256sum "$probe/backup.tar" | cut -d' ' -f1)
+    openssl cms -encrypt -aes-256-gcm -binary -in "$probe/backup.tar" -outform DER \
+        -out "$probe/backup.cms" "$probe/backup.crt"
+    rm -- "$probe/backup.tar"
+    printf 'Captured and encrypted the AD database and verified SYSVOL ACL backup in %d seconds.\n' \
+        "$(( SECONDS - start_time ))"
+
+    p rm --force "$name" "$replica" >/dev/null
+    p volume rm "$volume" "$replica" >/dev/null
+    printf 'Removed both original controller containers and their private state volumes.\n'
+    p volume create "$recovered" >/dev/null
+    local restore=(
+        run --rm -i --network none --hostname "$recovery_name" --memory 768m --pids-limit 128
+        --security-opt=no-new-privileges --cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID --cap-add=SETGID
+        --uidmap 0:0:1 --uidmap 1:1:60000 --uidmap 3000000:60001:5535
+        --gidmap 0:0:1 --gidmap 1:1:60000 --gidmap 3000000:60001:5535
+        --mount "type=volume,source=$recovered,target=/var/lib/ocean-ad"
+        --env OCEAN_AD_DNS_NAME=ad.runtime.test --env OCEAN_AD_NETBIOS_NAME=OCEANRUN
+        --env "OCEAN_AD_DIRECTORY_ID=$tenant" --env "OCEAN_AD_EXPECTED_SID=$domain_sid"
+        --env "OCEAN_AD_ADDRESS=$addr" --env "OCEAN_AD_RECOVERY_NAME=$recovery_name" "$image" restore-domain
+    )
+    openssl cms -decrypt -binary -inform DER -recip "$probe/backup.crt" -inkey "$probe/backup.key" \
+        -in "$probe/backup.cms" -out "$probe/backup.tar"
+    if printf 'corrupt' | p "${restore[@]}" "$checksum" >"$probe/invalid-restore.log" 2>&1; then
+        printf 'The restore accepted a corrupt archive.\n' >&2
+        return 1
+    fi
+    start_time=$SECONDS
+    if ! p "${restore[@]}" "$checksum" <"$probe/backup.tar" >"$probe/restore.log" 2>&1; then
+        tail -35 "$probe/restore.log" >&2
+        return 1
+    fi
+    rm -- "$probe/backup.tar"
+    controller_host=$recovery_name start "$recovered" "$addr" 1 "$tenant" \
+        --env "OCEAN_AD_RECOVERY_NAME=$recovery_name" --env OCEAN_AD_REQUIRE_AUTHORIZATION=0
+    test "$(p wait "$recovered")" -ne 0
+    p logs "$recovered" 2>&1 | grep -F 'Directory controller failed (DirectoryIdentityError).'
+    p rm "$recovered" >/dev/null
+    controller_host=$recovery_name start "$recovered" "$addr" 1 "$tenant" \
+        --env "OCEAN_AD_RECOVERY_NAME=$recovery_name" --env OCEAN_AD_REPLICA=
+    wait_dns "$recovered" "$addr" 1 "$recovery_name"
+    wait_health "$recovered" "$domain_sid"
+    test "$original" = "$(account "$recovered")"
+    test "$machine" = "$(directory_tool "$recovered" computer show OCEANMEMBER | grep '^objectGUID:')"
+    machine_trust "$addr" "$recovery_name.ad.runtime.test" test
+    wait_membership "$recovered" LabPrimaryGroup employee "$SECONDS"
+    wait_membership "$recovered" LabReplicaGroup employee "$SECONDS"
+    test "$(gpo_version "$recovered")" = 1
+    restored=$(proof "$addr" 1 guarded "$recovery_name")
+    same_policy "$changed" "$restored"
+    test "$expected_acl" = "$(administrator_policy "$addr" 1 read "$recovery_name")"
+    printf 'Recovered the original SID, employee and machine GUIDs, machine trust, memberships, GPO version, contents and ACL in %d seconds.\n' \
+        "$(( SECONDS - start_time ))"
 }
 start "$name" "$addr" 1 "$tenant"
 for i in $(seq 1 40); do
@@ -304,6 +401,10 @@ if (( SECONDS - policy_started >= 65 )); then
     exit 1
 fi
 printf 'Updated GPO bytes and custom ACL replicated in %d seconds.\n' "$(( SECONDS - policy_started ))"
+if [[ ${2:-} == --restore ]]; then
+    verify_independent_restore
+    exit
+fi
 p stop --time 15 "$name" >/dev/null
 p volume create "$empty_primary" >/dev/null
 start "$empty_primary" "$addr" 1 "$tenant" --secret "$secret,target=ocean-directory-bootstrap,mode=0400"

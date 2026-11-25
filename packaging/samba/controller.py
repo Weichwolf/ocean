@@ -19,6 +19,7 @@ import tempfile
 import time
 from pathlib import Path, PurePosixPath
 
+import domain_backup
 import sysvol as policy
 
 STATE = Path("/var/lib/ocean-ad")
@@ -56,7 +57,16 @@ def directory_settings():
         settings.update(controller=2, primary=str(primary))
     elif index != "1":
         raise ValueError("invalid controller index")
+    recovery_name = os.environ.get("OCEAN_AD_RECOVERY_NAME")
+    if recovery_name:
+        if index != "1" or len(recovery_name) > 15 or recovery_name in ("dc01", "dc02") or not DNS_LABEL.fullmatch(recovery_name):
+            raise ValueError("invalid standalone recovery controller name")
+        settings["recoveryName"] = recovery_name
     return settings
+
+
+def controller_name(settings):
+    return settings.get("recoveryName", f"dc0{settings.get('controller', 1)}")
 
 
 def bootstrap_password():
@@ -78,6 +88,7 @@ def configure(root, settings):
     sysvol = root / "state/sysvol"
     sysvol.rename(root / "sysvol")
     config_text = config_text.replace(str(sysvol), str(root / "sysvol"))
+    config_text = re.sub(r"(?mi)^[ \t]*(?:bind interfaces only|interfaces|pid directory)[ \t]*=.*\n", "", config_text)
     header = re.search(r"(?mi)^\[globals?\]$", config_text)
     if not header:
         raise RuntimeError("Samba did not generate its global configuration")
@@ -329,7 +340,7 @@ def initialize(settings, expected_sid):
     if checkpoint.exists():
         return read_checkpoint(checkpoint, settings) / "etc/smb.conf"
     replica = settings.get("controller") == 2
-    if expected_sid and not replica:
+    if settings.get("recoveryName") or (expected_sid and not replica):
         raise DirectoryIdentityError("the established primary requires its existing directory volume")
     joined = STATE / "replica-joined.json"
     if joined.exists():
@@ -376,6 +387,101 @@ def local_domain_sid(config):
     if not DOMAIN_SID.fullmatch(sid):
         raise DirectoryIdentityError("the local directory has an invalid SID")
     return sid
+
+
+def backup_identity(settings, sid):
+    return {key: settings[key] for key in ("directoryId", "domain", "netbios")} | {"domainSid": sid}
+
+
+def backup_domain(settings):
+    os.umask(0o077)
+    if settings.get("controller") == 2:
+        raise DirectoryIdentityError("back up the designated SYSVOL writer")
+    config = read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf"
+    sid = local_domain_sid(config)
+    realm = settings["domain"].upper()
+    with tempfile.TemporaryDirectory() as private:
+        directory = Path(private)
+        cache = target_kerberos(directory, settings, settings["address"])
+        subprocess.run(["/usr/bin/kinit", "Administrator@" + realm], stdout=sys.stderr, check=True, timeout=15)
+        snapshot = directory / domain_backup.SYSVOL
+        with snapshot.open("xb") as output:
+            policy.capture(config, output, verify_directory=True)
+        subprocess.run(["/usr/bin/samba-tool", "domain", "backup", "online",
+                        "--server=" + controller_name(settings) + "." + settings["domain"], "--targetdir=" + private,
+                        "--use-kerberos=required", "--use-krb5-ccache=" + cache, "-s", str(config)],
+                       stdin=subprocess.DEVNULL, stdout=sys.stderr, check=True, timeout=120)
+        archives = list(directory.glob("samba-backup-*.tar.bz2"))
+        if len(archives) != 1:
+            raise RuntimeError("Samba did not produce one domain backup")
+        after = directory / "sysvol-after.tar.gz"
+        with after.open("xb") as output:
+            policy.capture(config, output, verify_directory=True)
+        if domain_backup.digest(snapshot) != domain_backup.digest(after):
+            raise RuntimeError("SYSVOL and its permissions changed during the database backup")
+        domain_backup.write_bundle(sys.stdout.buffer, backup_identity(settings, sid), archives[0], snapshot)
+
+
+def restore_domain(settings, checksum):
+    from contextlib import redirect_stdout
+    from samba.netcmd.domain import backup as native
+    from samba.netcmd.main import samba_tool
+    from samba.param import LoadParm
+
+    os.umask(0o077)
+    expected_sid = os.environ.get("OCEAN_AD_EXPECTED_SID", "")
+    if (not settings.get("recoveryName") or not DOMAIN_SID.fullmatch(expected_sid)
+            or not re.fullmatch(r"[a-f0-9]{64}", checksum) or not STATE.is_mount()):
+        raise DirectoryIdentityError("recovery requires a fresh volume, backup checksum, SID and distinct controller name")
+    if any(name != "lo" for _, name in socket.if_nameindex()):
+        raise DirectoryIdentityError("restore the controller without any network attachment")
+    with (STATE / "owner.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if any(path.name != "owner.lock" for path in STATE.iterdir()):
+            raise DirectoryIdentityError("the recovery volume is not empty")
+        with tempfile.TemporaryDirectory() as private:
+            directory = Path(private)
+            domain_backup.read_bundle(sys.stdin.buffer, directory, checksum, backup_identity(settings, expected_sid))
+            STATE.chmod(0o711)
+            root = STATE / ("controller-" + secrets.token_hex(8))
+            root.mkdir(mode=0o700)
+
+            def restore_policy(_native_archive, _native_path, _database, _config):
+                config = configure(root, settings)
+                if local_domain_sid(config) != expected_sid:
+                    raise DirectoryIdentityError("restored Samba database has an unexpected SID")
+                text = re.sub(r"(?mi)^[ \t]*(?:vfs objects|xattr_tdb:file)[ \t]*=.*\n", "", config.read_text())
+                header = re.search(r"(?mi)^\[globals?\]$", text)
+                settings_vfs = "\n\tvfs objects = dfs_samba4 acl_xattr xattr_tdb\n\txattr_tdb:file = " + str(root / "private/sysvol-xattrs.tdb")
+                policy.replace_config(config, text[:header.end()] + settings_vfs + text[header.end():])
+                restore_sysvol(config, root / "sysvol", directory / domain_backup.SYSVOL)
+
+            # Keep Samba's database recovery and fresh controller identity.
+            # Its SYSVOL helper requires host-root VFS privileges. In this
+            # one-shot process use the controller's rootless ACL restore.
+            original = native.backup_restore
+            native.backup_restore = restore_policy
+            try:
+                with redirect_stdout(sys.stderr):
+                    code = samba_tool("domain", "backup", "restore", "--backup-file=" + str(directory / domain_backup.DATABASE),
+                                      "--targetdir=" + str(root), "--newservername=" + controller_name(settings),
+                                      "--host-ip=" + settings["address"])
+                if code:
+                    raise RuntimeError("Samba could not restore the domain backup")
+                config = root / "etc/smb.conf"
+                lp = LoadParm()
+                lp.load(str(config))
+                if (lp.get("realm").lower() != settings["domain"] or lp.get("workgroup") != settings["netbios"]
+                        or lp.get("netbios name").lower() != controller_name(settings) or local_domain_sid(config) != expected_sid):
+                    raise DirectoryIdentityError("restored configuration does not match the managed directory")
+                subprocess.run(["/usr/bin/sync", "-f", str(root)], check=True, timeout=30)
+                write_checkpoint(STATE / "controller.json", root, settings)
+            finally:
+                native.backup_restore = original
+                if not (STATE / "controller.json").exists():
+                    if (root / "sysvol").is_dir():
+                        clear_staged_sysvol(root / "sysvol")
+                    shutil.rmtree(root)
 
 
 def retire_replica(settings, generation):
@@ -463,7 +569,7 @@ def health(settings):
     root = read_checkpoint(STATE / "controller.json", settings)
     address = settings["address"]
     domain = settings["domain"]
-    hostname = f"dc0{settings.get('controller', 1)}.{domain}"
+    hostname = f"{controller_name(settings)}.{domain}"
     query = ["/usr/bin/dig", "+time=1", "+tries=1", "+short", "@" + address]
     addresses = subprocess.check_output([*query, hostname, "A"], text=True, timeout=2).split()
     service = subprocess.check_output([*query, "_ldap._tcp.dc._msdcs." + domain, "SRV"],
@@ -513,12 +619,15 @@ def serve(settings):
         expected_sid = os.environ.get("OCEAN_AD_EXPECTED_SID", "")
         if expected_sid and not DOMAIN_SID.fullmatch(expected_sid):
             raise DirectoryIdentityError("invalid expected directory SID")
+        require_authorization = os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1"
+        if settings.get("recoveryName") and (not expected_sid or not require_authorization):
+            raise DirectoryIdentityError("the recovered controller requires SID authorization")
         config = initialize(settings, expected_sid)
-        if expected_sid or os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1":
+        if expected_sid or require_authorization:
             sid = local_domain_sid(config)
             if expected_sid and sid != expected_sid:
                 raise DirectoryIdentityError("the local directory SID differs from the established SID")
-            if os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1":
+            if require_authorization:
                 wait_for_startup_authorization(sid)
         maintain_policy = True
         if settings.get("controller") == 2:
@@ -612,13 +721,17 @@ if __name__ == "__main__":
             authorize_startup(sys.argv[2], sys.argv[3])
         elif len(sys.argv) == 3 and sys.argv[1] == "retire-replica":
             retire_replica(settings, sys.argv[2])
+        elif len(sys.argv) == 2 and sys.argv[1] == "backup-domain":
+            backup_domain(settings)
+        elif len(sys.argv) == 3 and sys.argv[1] == "restore-domain":
+            restore_domain(settings, sys.argv[2])
         elif len(sys.argv) == 1:
             signal.signal(signal.SIGTERM, stop_before_service)
             signal.signal(signal.SIGINT, stop_before_service)
             sys.exit(serve(settings))
         else:
             raise ValueError("unsupported directory command")
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, KeyError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, KeyError) as error:
         # Provisioning diagnostics remain in the private volume.
         print(f"Directory controller failed ({type(error).__name__}).", file=sys.stderr)
         sys.exit(1)

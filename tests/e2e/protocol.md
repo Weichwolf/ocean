@@ -54,6 +54,11 @@ cleanup acknowledgement and replacement scheduling. This case uses signed
 fixture power evidence. The physical-host run observes the actual power
 state through the site fencing authority.
 
+Select `WORKPLACE-07` explicitly with `OCEAN_E2E_SAMBA_IMAGE` set to
+exercise encrypted backup recovery. The isolated probe deletes both original
+controller volumes, brings up a fresh controller, verifies the original domain
+and policy, and checks an existing Samba member's machine credentials.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

@@ -367,8 +367,64 @@ Add `WORKPLACE-06` to `OCEAN_E2E_CASES` and set
 `OCEAN_E2E_DIRECTORY_ETCD` to an isolated etcd endpoint to exercise regional
 fencing and placement with simulated host identities and power evidence.
 The replica workflow requires a valid directory join credential. The
-physical-host fencing run, primary replacement, independent backup
-recovery, and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+physical-host fencing run, primary replacement, and Windows and Debian
+client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+
+### Standalone domain recovery
+
+On the designated SYSVOL writer, run `backup-domain` with a current domain
+Administrator password on standard input. Capture standard output as a
+private file. Keep the command status and diagnostics separate from the
+archive. The archive contains the native Samba database backup and the
+verified policy files and ACLs. The command rejects a policy change observed
+while the native backup runs.
+
+```sh
+umask 077
+nice -n 10 podman exec -i "$CONTROLLER" /usr/bin/python3 \
+  /usr/local/lib/ocean-directory/controller.py backup-domain \
+  <"$ADMINISTRATOR_PASSWORD_FILE" >"$BACKUP_STAGING/directory.tar"
+sha256sum "$BACKUP_STAGING/directory.tar"
+openssl cms -encrypt -aes-256-gcm -binary -in "$BACKUP_STAGING/directory.tar" \
+  -outform DER -out "$BACKUP_STAGING/directory.cms" "$BACKUP_RECIPIENT_CERT"
+```
+
+Store the encrypted archive outside both controller hosts. Keep the
+decryption key separately and record an authenticated copy of the archive
+SHA-256, directory ID, DNS name, NetBIOS domain name and SID. Remove plaintext
+staging after encryption. The archive contains password hashes and machine
+credentials. Restrict access to the backup and its decryption key.
+
+For a full-domain disaster, permanently isolate all former **controller**
+instances and their volumes from the tenant network before making a recovery
+controller reachable. Decrypt the archive into private staging. With a
+compatible controller image, use a dedicated, empty volume at
+`/var/lib/ocean-ad`, start the one-shot container with `--network none`, and
+run `restore-domain <recorded-sha256>` with the decrypted archive on standard
+input. Set the original `OCEAN_AD_DIRECTORY_ID`, `OCEAN_AD_DNS_NAME`,
+`OCEAN_AD_NETBIOS_NAME`, and `OCEAN_AD_EXPECTED_SID`. Set the recovery
+controller's private IP in `OCEAN_AD_ADDRESS` and a distinct NetBIOS-safe
+hostname in `OCEAN_AD_RECOVERY_NAME`. Use the same UID/GID mappings as the
+controller runtime. Recovery removes the old controller accounts and rotates
+the Kerberos ticket-granting keys. Clients need fresh tickets.
+
+After the isolated restore succeeds, start the recovery controller using the
+same volume and settings, with `OCEAN_AD_REQUIRE_AUTHORIZATION=1`. Confirm the
+recorded SID before responding to the startup challenge. Check DNS, fresh
+Kerberos authentication, the existing member's secure channel, group
+membership and SYSVOL access before restoring client routing. This
+operator procedure restores a standalone controller. Regional orchestration
+and rebuilding a managed controller pair are separate recovery gates.
+
+Run the local probe using the built controller image. The probe encrypts a
+backup, deletes both original controller volumes, rejects a corrupted archive
+and checks continued Samba member trust from its original client state.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-07 \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
 
 ## Tenant directory users
 

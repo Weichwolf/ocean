@@ -113,7 +113,7 @@ def archive_directory(archive, root, path, acls, session, versions):
             archive_metadata(archive, share_name + ".NTACL", acl)
 
 
-def publish(config):
+def capture(config, output, *, verify_directory=False):
     from samba.auth import system_session
     from samba.auth_util import system_session_unix
     from samba.dcerpc.security import dom_sid
@@ -121,27 +121,32 @@ def publish(config):
     from samba.param import LoadParm
     from samba.samdb import SamDB
 
-    root = config.parent.parent
     lp = LoadParm()
     lp.load(str(config))
     db = SamDB(lp=lp, session_info=system_session())
     sid = dom_sid(db.get_domain_sid())
     helper = NtaclsHelper("sysvol", str(config), sid)
     session = system_session_unix()
-    folder = root / "policy-export"
     source = Path(lp.get("path", "sysvol"))
+    versions = {}
+    with gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w|") as archive:
+            archive_metadata(archive, DOMAIN_METADATA, str(sid))
+            archive_directory(archive, source, source, helper, session, versions)
+    for path, (version, acl) in versions.items():
+        if (metadata_version(path.stat(follow_symlinks=False)) != version
+                or helper.getntacl(str(path), session, as_sddl=True) != acl):
+            raise RuntimeError("SYSVOL changed while capturing the snapshot")
+    if verify_directory:
+        verify_gpo_versions(source, lp.get("realm").lower(), db)
+
+
+def publish(config):
+    folder = config.parent.parent / "policy-export"
     with tempfile.NamedTemporaryFile(dir=folder, delete=False) as output:
         pending = Path(output.name)
-        versions = {}
         try:
-            with gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=0) as compressed:
-                with tarfile.open(fileobj=compressed, mode="w|") as archive:
-                    archive_metadata(archive, DOMAIN_METADATA, str(sid))
-                    archive_directory(archive, source, source, helper, session, versions)
-            for path, (version, acl) in versions.items():
-                if (metadata_version(path.stat(follow_symlinks=False)) != version
-                        or helper.getntacl(str(path), session, as_sddl=True) != acl):
-                    raise RuntimeError("SYSVOL changed while capturing the snapshot")
+            capture(config, output)
             output.flush()
             os.fsync(output.fileno())
             pending.chmod(0o444)
