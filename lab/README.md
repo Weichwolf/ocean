@@ -226,13 +226,556 @@ The `identity.onboarding` configuration contains the operator tenant and client 
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE"` after the identity deployment and CLI installation. The test discards a successful response body, retries through `az rest`, creates a second tenant, and verifies independent administrator sign-ins and cross-tenant denials. It records the resulting IDs and assertions in `evidence/tenant-onboarding.json` under the disposable lab state.
 
+### Managed directory request
+
+The development profile exposes directory requests when `region.managedDirectories`
+sets `cpuMillis` and `memoryMiB` per controller. Enable tenant onboarding and
+workload placement in the region. Sign in as the initial tenant administrator.
+Submit `dnsName`, `netbiosName`, and `subnetId` in a JSON file. Use a private
+subnet in the tenant subscription. DNS names use ASCII labels, and NetBIOS
+names use up to 15 ASCII characters.
+
+```sh
+directory_url="https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID/directory?api-version=2026-11-01"
+az rest --method put --url "$directory_url" --body @directory-request.json
+az rest --method get --url "$directory_url"
+```
+
+HTTP 202 means the region saved the request. The response contains an opaque
+`directoryId`, a polling URL in the `Location` header, and the current
+provisioning state. Identical requests return the same ID, including after an
+interrupted response. A different configuration for the same tenant returns
+HTTP 409. Ocean holds the target subnet while the
+directory exists. It reserves CPU, memory, and private IPv4 addresses for
+both controllers in one transaction, using distinct live compute hosts in
+permitted pools. A directory-capable host advertises its locally installed
+controller image, private network reconciler, and sufficient rootless UID
+and GID mappings. An incomplete
+placement stays in `Creating` for a later attempt.
+
+Poll with `az rest --method get`. The response lists allocated controllers
+with their tenant-private IPv4 addresses, DNS names, and readiness. The
+directory reports `Creating` and `Pending` until both assigned controllers
+verify their DNS and Kerberos-authenticated LDAP service and present the same
+domain SID. Ocean records the completed provisioning and established domain
+SID in regional etcd. Later outages change `availability` to `Degraded` or
+`Unavailable` while `provisioningState` stays `Succeeded`. Recovery of both
+controllers in the same domain restores `Available`.
+
+Each node agent reports on its current placement over host mTLS. Revocation
+or reassignment invalidates its observation. Reports expire after 15
+seconds without a fresh observation. This status reflects the checks from
+inside the controller and the regional assignment. Client reachability has
+its own network and domain sign-in probes.
+
+Build the controller image and install the same image on the selected hosts.
+Set `enrollment.directoryImage` in each node agent config to its local
+`sha256:<image-id>`. Each assigned host can retrieve its controller's
+initial bootstrap credential over host mTLS. The region seals that credential
+in etcd with the workload key. The agent passes it to Podman through stdin and
+mounts it read-only with mode 0400. Each controller uses its own
+generation-specific persistent volume on restart.
+
+Before opening its AD listeners, a controller stages its local domain SID.
+The node agent confirms it against the controller's current assignment over
+host mTLS. The first primary commits the SID in regional etcd. Each startup
+must match that SID. A restarted primary receives its expected SID and uses
+its existing volume without the bootstrap password. An empty primary volume
+can only provision during initial domain creation.
+
+The primary provisions the domain. The replica uses the bootstrap credential
+to join over Kerberos, then seeds SYSVOL with its machine account. It checks
+the seeded policy ACLs before listening. A persistent join checkpoint lets the
+replica retry the seed if the primary goes away during the initial copy.
+The replica uses the writer's private AD DNS during bootstrap. Once
+initialized, both controllers use their own resolver. Kerberos calls that
+target a specific controller use its assigned address directly.
+Each initialization checkpoint flushes the staged database and key files to
+the controller volume. The first health check also flushes the TLS material
+created by the Samba daemon during startup. The node agent can recreate an
+uninspectable stopped container from its volume after an unclean shutdown.
+Samba DRS replicates directory records in both directions. Both controllers
+retain native change notifications and poll their peers every 15 seconds to
+catch up after a late join or a disconnection.
+
+The primary is the write endpoint for Group Policy and NETLOGON files. Every
+ten seconds it captures SYSVOL with its security descriptors and exposes the
+finished snapshot through an encrypted SMB share. The source permits the
+replica's machine account from its assigned private address. The replica
+uses its own Kerberos credential and verifies the domain SID and ACLs in a
+staged copy. It waits for the corresponding Group Policy directory objects
+and versions to arrive through DRS before atomically switching the local
+SYSVOL directory. The replica serves SYSVOL and NETLOGON read-only and
+continues serving its last verified policy snapshot during a source outage.
+
+```sh
+nice -n 10 podman build -t localhost/ocean-directory:lab packaging/samba
+image_id=$(podman image inspect --format '{{.Id}}' localhost/ocean-directory:lab)
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The probe runs both controllers on one isolated rootless Podman network. It
+checks that DNS stays closed until the staged SID is authorized. It verifies
+that a fresh primary volume refuses to provision after the SID is established.
+It compares employee identity and SYSVOL bytes, checks that the employee cannot
+write the policy, and tests each controller with its peer stopped. The client
+uses AD DNS for Kerberos and SMB discovery. The probe reopens both volumes
+without bootstrap credentials and requires new group memberships to converge
+in either direction within 45 seconds. It revokes a membership while the
+primary is stopped and requires the restarted primary to observe the change
+within 45 seconds. It also updates an existing Group Policy version through
+SMB and the directory, checks the new bytes and a customized per-file deny
+ACE on the replica within 65 seconds, and repeats the checks after the
+primary stops and the replica restarts. The harness stores the Markdown
+report, TSV, and client logs under `artifacts/e2e`.
+
+The fixture also permanently removes its stopped replica container, cleans
+up its directory and DNS metadata through the surviving controller, and
+joins a replacement replica on an empty volume. It checks a fresh controller
+account GUID and the original domain and employee identities, membership,
+policy version, and ACL. The replacement then serves clients with the primary
+stopped. This recovery run uses controlled Podman stops on one host.
+
+To enable fenced controller replacement, configure
+`region.directoryFencePublicKeyFile` with the out-of-band fencing authority's
+Ed25519 public key in PEM format. Configure the same key on every regional
+API replica. The authority signs an attestation after observing the exact
+failed host is powered off and preventing it from restarting outside Ocean.
+The JSON attestation includes `action: ReplaceDirectoryReplica`,
+`tenantId`, `subscriptionId`, `directoryId`, `hostId`, `placementId`,
+`generation`, `observation: PoweredOff`, and an RFC 3339 `observedAt`.
+Encode the original signed bytes and signature as base64 in the envelope
+fields `attestation` and `signature`.
+
+```sh
+replace_url="https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID/directory/replaceReplica?api-version=2026-11-01"
+az rest --method post --url "$replace_url" --body @signed-directory-fence.json -o none
+az rest --method get --url "$directory_url"
+```
+
+The initial request requires a matching fence no more than two minutes
+old and an expired or removed host availability record. HTTP 202 means
+Ocean recorded the signed evidence and revoked the failed host's identity.
+The primary removes the retired replica's AD and DNS metadata. Its node
+agent acknowledges cleanup through the current host assignment. The
+regional reconciler then assigns another eligible host, preserving the
+replica's private IP and transferring the capacity reservation. The
+replacement rejoins the existing domain with its established SID and
+the sealed directory join credential. It publishes readiness after the
+data-plane probes pass. Replaying an accepted envelope preserves the
+original replacement.
+
+To replace the current writer, sign an attestation with
+`action: ReplaceDirectoryPrimary` and submit it to the writer replacement
+endpoint. The attestation identifies the writer's current host, placement and
+generation. The survivor needs a recent health report for the established SID.
+
+```sh
+replace_url="$directory_url_base/replacePrimary?api-version=2026-11-01"
+az rest --method post --url "$replace_url" --body @signed-primary-fence.json -o none
+az rest --method get --url "$directory_url"
+```
+
+Ocean revokes the fenced writer and suspends delegated join and Graph tasks
+while the survivor takes over. The survivor verifies its local SYSVOL against
+the replicated policy versions, takes ownership of all seven FSMO roles, and
+removes the failed controller's AD and DNS records before serving writable
+SYSVOL. Its mTLS acknowledgement and fresh health report permit writer tasks
+and placement of a new replica. DNS names and IP addresses remain tied to
+the controller slots. The replacement uses the old writer's slot, a new
+generation, and a separate host and volume. Directory status identifies the
+controller designated for Ocean-managed writes once it has acknowledged
+promotion.
+
+AD replication is asynchronous. A valid fence establishes that the old
+writer is off. The surviving domain reflects the changes that reached it.
+If the local GPO data and version disagree, Ocean withholds writer promotion.
+When the replica is still serving, it remains available with read-only
+SYSVOL while the inconsistency is investigated.
+Measure the replication gap and recovery time under the intended load before
+assigning a service guarantee.
+
+The same profile runs the `az rest` request and status commands with Azure
+CLI 2.93.0 against a loopback HTTPS contract fixture and a signed fixture
+token. The runtime and CLI probes are independently selectable with
+`OCEAN_E2E_CASES=WORKPLACE-04` or `OCEAN_E2E_CASES=WORKPLACE-05`.
+Add `WORKPLACE-06` to `OCEAN_E2E_CASES` and set
+`OCEAN_E2E_DIRECTORY_ETCD` to an isolated etcd endpoint to exercise regional
+fencing, promotion admission and placement with simulated host identities and
+power evidence. Select `WORKPLACE-12` to exercise actual Samba and SYSVOL writer
+promotion and replacement with controlled Podman stops on one host. A
+replacement replica needs a valid directory join credential. The physical
+fencing and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+
+### Regional delegated machine joins
+
+The tenant administrator can issue a join authorization with the stock Azure
+CLI. Use a new lowercase UUID for the authorization and a private JSON file
+with `machineName`, `expiresAt`, and `password`. Use an uppercase NetBIOS
+computer name, a Unix timestamp 15 seconds to 10 minutes in the future, and a
+random password of 32 to 128 printable ASCII characters.
+
+```sh
+join_url="$directory_url_base/joinAuthorizations/$AUTHORIZATION_ID"
+az rest --method put --url "$join_url?api-version=2026-11-01" \
+  --body @"$PRIVATE_STAGE_REQUEST" -o json
+az rest --method get --url "$join_url?api-version=2026-11-01" -o json
+az rest --method post --url "$join_url/close?api-version=2026-11-01" -o json
+```
+
+Set `directory_url_base` to the managed directory URL before its query string.
+Wait for `Ready`, then use its `userPrincipalName` and the submitted password
+to join the named computer. After the guest verifies its secure channel,
+submit the close request and read the status until it is `Closed`. A
+premature close returns to `Ready` once the writer rejects the operation.
+Other outcomes are `Rejected` for a rejected stage and `Expired` at the
+authorization deadline. Replay the same UUID, name, and deadline to read the
+original authorization. The first accepted password applies for its lifetime.
+
+The region serializes join actions per directory. The password is sealed
+while the request waits on a short-lived etcd key. Only the certified writer
+and its current assignment generation can read the job. The agent passes the
+request to Samba on standard input. The result and audit records contain
+authorization metadata. Protect the local request file and avoid debug
+logging when transmitting its body.
+
+Run `WORKPLACE-09` with the same images as `WORKPLACE-08`, plus
+`OCEAN_E2E_DIRECTORY_ETCD` pointing to a disposable etcd endpoint and pinned
+Azure CLI 2.93.0. The case uses a loopback TLS issuer and regional API, a real
+mTLS worker, a single local Samba writer, and the Debian client fixture.
+
+### Delegated join on the directory writer
+
+The controller can prestage a computer and issue permissions to a temporary AD
+principal for that computer. On the first successful staging operation, Ocean
+sets the domain's default workstation quota to zero so a regular principal
+cannot provision a different machine through the default quota. The temporary
+principal receives only the object-level rights needed for the intended join.
+
+Send `stage-join` a private JSON request on standard input. Include
+`requestId` as a lowercase UUID, `machineName` as an uppercase NetBIOS
+computer name, `expiresAt` as a Unix timestamp up to ten minutes in the
+future, and `password` as a generated random password of 32 through 128
+printable ASCII characters. Repeat an in-flight request with the same fields.
+The controller prints the UPN and authorization metadata without the password.
+Deliver the join password through a private channel.
+
+```sh
+nice -n 10 podman exec -i "$CONTROLLER" /usr/bin/python3 \
+  /usr/local/lib/ocean-directory/controller.py stage-join <"$PRIVATE_STAGE_REQUEST"
+adcli join --domain "$DOMAIN" --domain-controller "$CONTROLLER_DNS" \
+  --computer-name "$MACHINE" --host-fqdn "$MACHINE_FQDN" --login-user "$JOIN_USER" \
+  --stdin-password <"$PRIVATE_JOIN_PASSWORD"
+adcli testjoin --domain "$DOMAIN" --domain-controller "$CONTROLLER_DNS"
+nice -n 10 podman exec -i "$CONTROLLER" /usr/bin/python3 \
+  /usr/local/lib/ocean-directory/controller.py close-join <"$PRIVATE_CLOSE_REQUEST"
+```
+
+Use the UPN's account name as `JOIN_USER`. Keep the temporary files
+operator-only and remove them after the procedure. The close request contains
+the original request ID, machine name, and expiry. Close after the client
+verifies its machine credential. Closing disables the principal and removes
+its ACLs. If unused, the authorization expires in AD and the writer removes
+its ACLs. The credential is active until close or expiry. This procedure runs
+locally on the designated writer. Validation from Windows guests is tracked
+in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+
+Run `WORKPLACE-08` with the controller image and the isolated Debian client
+fixture built from `tests/e2e/testdata/workloads/domain-join-client`. Supply both
+local image IDs, including their `sha256:` prefix.
+
+```sh
+client_id=$(nice -n 10 podman build --quiet \
+  tests/e2e/testdata/workloads/domain-join-client)
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-08 \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  OCEAN_E2E_ADCLI_IMAGE="sha256:${client_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+### Standalone domain recovery
+
+On the designated SYSVOL writer, run `backup-domain` with a current domain
+Administrator password on standard input. Capture standard output as a
+private file. Keep the command status and diagnostics separate from the
+archive. The archive contains the native Samba database backup and the
+verified policy files and ACLs. The command rejects a policy change observed
+while the native backup runs.
+
+```sh
+umask 077
+nice -n 10 podman exec -i "$CONTROLLER" /usr/bin/python3 \
+  /usr/local/lib/ocean-directory/controller.py backup-domain \
+  <"$ADMINISTRATOR_PASSWORD_FILE" >"$BACKUP_STAGING/directory.tar"
+sha256sum "$BACKUP_STAGING/directory.tar"
+openssl cms -encrypt -aes-256-gcm -binary -in "$BACKUP_STAGING/directory.tar" \
+  -outform DER -out "$BACKUP_STAGING/directory.cms" "$BACKUP_RECIPIENT_CERT"
+```
+
+Store the encrypted archive outside both controller hosts. Keep the
+decryption key separately and record an authenticated copy of the archive
+SHA-256, directory ID, DNS name, NetBIOS domain name and SID. Remove plaintext
+staging after encryption. The archive contains password hashes and machine
+credentials. Restrict access to the backup and its decryption key.
+
+For a full-domain disaster, permanently isolate all former **controller**
+instances and their volumes from the tenant network before making a recovery
+controller reachable. Decrypt the archive into private staging. With a
+compatible controller image, use a dedicated, empty volume at
+`/var/lib/ocean-ad`, start the one-shot container with `--network none`, and
+run `restore-domain <recorded-sha256>` with the decrypted archive on standard
+input. Set the original `OCEAN_AD_DIRECTORY_ID`, `OCEAN_AD_DNS_NAME`,
+`OCEAN_AD_NETBIOS_NAME`, and `OCEAN_AD_EXPECTED_SID`. Set the recovery
+controller's private IP in `OCEAN_AD_ADDRESS` and a distinct NetBIOS-safe
+hostname in `OCEAN_AD_RECOVERY_NAME`. Use the same UID/GID mappings as the
+controller runtime. Recovery removes the old controller accounts and rotates
+the Kerberos ticket-granting keys. It also revokes outstanding delegated join
+accounts and removes their ACLs. Clients need fresh tickets.
+
+After the isolated restore succeeds, start the recovery controller using the
+same volume and settings, with `OCEAN_AD_REQUIRE_AUTHORIZATION=1`. Confirm the
+recorded SID before responding to the startup challenge. Check DNS, fresh
+Kerberos authentication, the existing member's secure channel, group
+membership and SYSVOL access before restoring client routing. This
+operator procedure restores a standalone controller. Regional orchestration
+can rebuild the pair using the same backup format.
+
+Run the local probe using the built controller image. The probe encrypts a
+backup, deletes both original controller volumes, rejects a corrupted archive
+and checks continued Samba member trust from its original client state.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-07 \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+### Coordinated directory recovery
+
+The site fencing authority must verify that both assigned controller hosts
+are powered off and keep their old volumes isolated. Sign one attestation
+with `action: RecoverDirectory`, the tenant, subscription and directory IDs,
+a new lowercase UUID in `recoveryId`, the plaintext backup digest in
+`backupSha256`, and `observation: PoweredOff` with an RFC 3339 `observedAt`.
+Put both current assignments in `controllers` in slot order with their
+`hostId`, `placementId` and `generation`. Encode the signed bytes and
+Ed25519 signature in the same base64 envelope as controller replacement.
+
+```sh
+recovery_url="https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID/directory/recoveries/$RECOVERY_ID?api-version=2026-11-01"
+az rest --method put --url "$recovery_url" --body @signed-directory-recovery.json
+az rest --method get --url "$recovery_url"
+```
+
+`Fenced` means both old host identities were revoked and their active
+delegated authorizations were invalidated. The regional reconciler reserves
+two distinct eligible hosts and keeps the tenant's IP and quota reservations.
+When the operation shows `AwaitingRestore`, deliver the decrypted archive to
+its `writerHostId` through the site's private operator channel. On that host,
+stage the archive as a regular file owned by the agent with mode 0600 at
+`<enrollment.stateDirectory>/directory-recovery/<recoveryId>.tar`. Publish it
+with an atomic rename once the copy and checksum verification have completed.
+Keep the encrypted original and decryption key independently available.
+
+The agent restores into its new private volume in an offline container.
+It checks the signed digest, the component digests and
+the directory SID. The restore resets the built-in administrator credential
+to a fresh value sealed by the region and removes old delegated grants. The
+new writer requests regional startup authorization before listening.
+The standby joins the restored domain once the writer reports healthy.
+Both controllers get new names and generations. Clients keep their existing
+DNS addresses and rediscover the new names through AD DNS.
+
+Ocean resumes Graph and new join authorization work after both controllers
+report the original SID. The status becomes `Succeeded` and the operation
+can be replayed with the same signed envelope. Remove the site-staged
+plaintext after successful recovery. Issue fresh join IDs for machines that
+still need to join. Clients and credentials created after the backup can
+require reconciliation because the restore returns the directory to the
+captured state.
+
+Use `WORKPLACE-13` to recover a new pair from encrypted media and measure
+recovery on one lab host. `WORKPLACE-05` exercises the CLI contract and
+`WORKPLACE-06` exercises the regional transaction with signed fixture
+evidence and disposable etcd. The Windows and independent-host recovery
+gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+
+### Fresh directory with packaged agents
+
+`WORKPLACE-16` provisions a new Samba AD domain through the regional ARM
+API. It uses a disposable Debian KVM lab with two controller hosts and a
+separate Debian client. Start only the three guests in farm 1. Build the
+agent package and export the pinned local Samba image as an OCI archive.
+
+```sh
+make deb-agent
+bin/ocean-lab up -state "$OCEAN_DIRECTORY_LAB" -profile lab/profiles/domain-join.yaml \
+  -image "$DEBIAN_QCOW2" -only farm-1-node-01 -only farm-1-node-02 -only farm-1-node-03
+python3 -B lab/prepare_managed_directory.py --state "$OCEAN_DIRECTORY_LAB" \
+  --package "$AGENT_DEB" --samba-archive "$SAMBA_OCI_ARCHIVE"
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-16 \
+  OCEAN_E2E_PACKAGED_DIRECTORY_STATE="$OCEAN_DIRECTORY_LAB" \
+  OCEAN_E2E_PACKAGE="$AGENT_DEB" OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_URL" \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+The probe supplies a disposable HTTPS enrollment endpoint and test OAuth
+issuer. It starts the installed rootless node agent and system network
+service on both hosts. The stock CLI submits and replays the request and
+checks the scope of access. The Debian client uses the assigned private
+addresses to verify AD discovery, acquire a fresh Kerberos ticket from
+each controller, and read the original SYSVOL file through SMB. The probe
+powers off and restarts each controller separately. The report records the
+API degradation interval and confirms the surviving data path and the
+original placement on return. All three guests run on one KVM host.
+
+### Regional recovery with existing Windows members
+
+`WORKPLACE-14` combines the regional ARM and enrollment handlers, etcd, two
+real Debian node agents, and the existing Windows Server Core and Windows 11
+members. Use a disposable `domain-join` lab with only
+`farm-1-node-01` and `farm-1-node-02` selected and running. Keep both original
+member disks and the independent backup in private storage. Use writable
+overlays and the original firmware and TPM state when reusing the members.
+Their original `10.232.1.20` and `10.232.1.21` addresses must reach the lab's
+isolated workload network.
+
+Install Podman and its rootless UID mapping tools on the Debian fixtures,
+load the same pinned Samba image under the `ocean` account on each, and run
+`make build` locally. Before the Windows guests boot, attach
+`lab/verify_windows_directory_recovery.ps1` on their `OCEAN_PROBE` media.
+For resumed overlays, build the probe ISO while the guests are off.
+
+Decrypt the backup into a private file. Put `metadata.json` beside it with
+the original `identity` object from the bundle manifest, the plaintext
+`archiveSha256`, and `policySha256` for
+`ad.ocean.test/Policies/{31B2F340-016D-11D2-945F-00C04FB984F9}/GPT.INI`
+from the archived SYSVOL. The test submits a signed fixture fence for the
+archived source slots and uses the guest workload NICs for the two restored
+controller addresses. The node agents enroll over the lab-only QEMU host
+gateway and use their certificates for assignments and startup authorization.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-14 \
+  OCEAN_E2E_WINDOWS_RECOVERY_STATE="$OCEAN_RECOVERY_LAB" \
+  OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE="$PRIVATE_BACKUP_TAR" \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_URL" \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+During the run, read `recovery-phase.json` from the lab state. Sign into
+both existing members as the restored fixture administrator and run the
+probe in an elevated Windows PowerShell session. The fixture writes its
+temporary administrator password to the private
+`recovery-fixture-admin.secret` in the lab state. Pass the recovery ID,
+stage, controller, and address from the phase file. Run `-Action Machine`
+in both stages. After the survivor stage's machine check, sign out and sign
+in as the original fixture employee and run `-Action Employee` on both
+guests. The test changes the phase after it observes both initial machine
+records, powers off the recovered writer VM, and sees `Degraded` through
+the regional API. Its runner collects only the records for that recovery
+ID and saves the report in the acceptance evidence.
+
+This lab exercises the Windows data path and real regional recovery on
+one KVM host. Production fencing and independent physical failure domains
+have separate acceptance gates.
+
+### Regional Graph changes on Windows
+
+`WORKPLACE-15` uses the same disposable recovery lab and independent archive.
+Start the two Debian nodes and the existing Server Core member. Attach
+`lab/verify_windows_directory_graph.ps1` to the member's `OCEAN_PROBE` media
+before boot. Run the command above with `OCEAN_E2E_CASES=WORKPLACE-15`.
+
+After recovery, the test signs in with the stock Azure CLI to the isolated
+fixture OAuth issuer. It creates a user and security group through the regional
+Graph API and checks their GUIDs and SIDs directly on the writer. The group's
+test share contains a per-run value. The certified node agent applies the
+directory changes.
+
+Sign into the existing Server Core member as the temporary recovery
+administrator and open elevated Windows PowerShell. Get its private password
+from `recovery-fixture-admin.secret`. When `graph-phase.json` appears, invoke
+the probe once for each new stage:
+
+```powershell
+$media = Get-Volume -FileSystemLabel OCEAN_PROBE
+& ($media.DriveLetter + ':\verify_windows_directory_graph.ps1') `
+  -RunId $runId -Stage $stage -Controller $controller -Address $address -GroupSid $groupSid
+```
+
+Use the fields from the phase file. Enter the password from
+`graph-fixture-initial.secret` or `graph-fixture-rotated.secret` as indicated by
+the phase's `credential` field. The probe starts a new Windows logon session,
+verifies the actual group SID and requests a fresh CIFS ticket. It checks the
+SMB result before membership, with membership, and after revocation. It also
+checks sign-in after the CLI rotates the password and disables the user.
+The acceptance case verifies the original account's disabled flag directly
+in Samba and records the Windows logon error code.
+Store the secret files in the private lab directory and keep them out of
+test artifacts. The serial records and acceptance evidence contain only the
+test identities and results.
+
 ## Tenant directory users
 
-The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph access token. The CLI workflow uses `az ad user create`, `list`, `show`, `update`, and `delete`. Lists support an exact UPN or a display-name prefix, with server paging. Object lookup accepts a UUID or a UPN. The administrator can change a user's display name, mail alias, login status, and password. The original administrator can update their profile and password and must remain enabled.
+The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph
+access token. Lists support an exact UPN or a display-name prefix, with server
+paging. Object lookup accepts a UUID or a UPN. The administrator can change a
+user's display name, mail alias, login status, and password.
 
-Keycloak stores the directory account and password and enforces login. Ocean declares the Graph display name and alias as managed Keycloak attributes writable by the admin API. Realm-scoped device login uses the bounded offline session policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
+For a tenant with a managed domain, `az ad user create`, `list`, `show` and
+`update` operate on Samba accounts in `OU=Ocean Workforce Users`. Use the
+domain's DNS suffix in the UPN. The account name starts with an ASCII letter
+and can contain up to 20 letters, digits, dots, underscores, or hyphens.
+Graph uses the AD object GUID as the ID and derives `mailNickname` from the
+configured mail alias at the AD domain. Built-in accounts, privileged
+system accounts, and delegated join principals are outside the workforce
+scope. Disable a managed account with `az ad user update --account-enabled
+false`. The managed user profile rejects permanent user deletion.
+
+The certified writer receives a sealed, short-lived operation through
+the host's mTLS connection. A successful response requires the native
+directory result. Requests wait for that result and return an error if
+the writer is unavailable. A concurrent request for the same directory can
+receive HTTP 429 and `Retry-After`. The writer's audit records contain
+operation metadata. Existing Keycloak users require a separate migration.
+Run `WORKPLACE-10` with the prerequisites for `WORKPLACE-09` to check the
+managed profile with Azure CLI and fresh Debian Kerberos requests.
+
+For tenants without a managed domain, Keycloak continues to store the
+directory user and enforce sign-in. The `az ad user delete` command is
+available in that profile. The original tenant administrator can update
+their Keycloak profile and password and must remain enabled. Ocean declares
+the Graph display name and alias as managed Keycloak attributes writable by
+its admin API. Realm-scoped device login uses the bounded offline session
+policy configured at registration. [Keycloak user profiles](https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile)
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users` to exercise the user lifecycle with two freshly onboarded tenants. The check verifies that updates preserve the mail alias, regular users are denied directory administration, and deleted users cannot start a new login. Evidence is written to `evidence/graph-users.json`.
+
+## Managed security groups
+
+`az ad group create`, `list`, and `show` manage global security groups in
+`OU=Ocean Workforce Groups`. Graph uses the native AD object GUID as the ID
+and the AD account name as the mail nickname. The corresponding AD group
+SID can be used in ACLs. Managed groups contain direct workforce users from
+the same domain.
+
+| CLI operation | Graph v1.0 requests |
+| --- | --- |
+| `az ad group create` | `GET /groups` with a display-name and mail-nickname equality filter, then `POST /groups` on a miss |
+| `az ad group list` | `GET /groups` with optional display-name prefix and pagination |
+| `az ad group show --group <id>` | `GET /groups/<id>` |
+| `az ad group member add` | `POST /groups/<id>/members/$ref` with a member object reference under the configured Graph origin |
+| `az ad group member list` | `GET /groups/<id>/members` with pagination |
+| `az ad group member remove` | `DELETE /groups/<id>/members/<member-id>/$ref` |
+
+Repeated membership adds and removals preserve the same AD membership.
+Use a fresh authentication session to observe new group permissions. Run
+`WORKPLACE-11` to exercise the stock CLI workflow and a real Kerberos SMB
+access check against a share restricted to the native group.
 
 ## Tenant applications and service principals
 

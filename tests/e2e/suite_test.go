@@ -25,6 +25,8 @@ type labOptions struct {
 	scale       string
 	domain      string
 	domainImage string
+	sambaImage  string
+	adcliImage  string
 	packageDeb  string
 	backup      string
 	phaseOne    bool
@@ -95,6 +97,12 @@ func TestAcceptance(t *testing.T) {
 	}
 	if file := options.packageDeb; file != "" {
 		meta.Inputs["Agent package SHA-256"] = digest(file)
+	}
+	if image := options.sambaImage; image != "" {
+		meta.Inputs["Samba controller image"] = image
+	}
+	if image := options.adcliImage; image != "" {
+		meta.Inputs["Debian directory client image"] = image
 	}
 	for _, file := range []string{filepath.Join(root, "acceptance.tsv"), contractFile,
 		filepath.Join(root, "tests", "e2e", "testdata", "images.lock.yaml")} {
@@ -197,7 +205,9 @@ func configureLab(root, profile string) labOptions {
 		small:    localPath(root, os.Getenv("OCEAN_E2E_SMALL_STATE")), scale: localPath(root, os.Getenv("OCEAN_E2E_SCALE_STATE")),
 		packageDeb: localPath(root, os.Getenv("OCEAN_E2E_PACKAGE")), backup: localPath(root, os.Getenv("OCEAN_E2E_ETCD_ARCHIVE")),
 		domain: localPath(root, os.Getenv("OCEAN_E2E_DOMAIN_STATE")), domainImage: localPath(root, os.Getenv("OCEAN_E2E_DEBIAN_IMAGE")),
-		phaseOne: profile == "phase-one",
+		sambaImage: os.Getenv("OCEAN_E2E_SAMBA_IMAGE"),
+		adcliImage: os.Getenv("OCEAN_E2E_ADCLI_IMAGE"),
+		phaseOne:   profile == "phase-one",
 	}
 	switch profile {
 	case "single-farm-3":
@@ -233,6 +243,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool {
 			return slices.Contains([]string{"WORKPLACE-01", "WORKPLACE-02", "WORKPLACE-03"}, c.ID)
 		}
+	case "managed-directory":
+		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-04" || c.ID == "WORKPLACE-05" }
 	default:
 		t.Fatalf("unknown acceptance profile %q", profile)
 	}

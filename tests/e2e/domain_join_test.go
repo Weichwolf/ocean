@@ -3,7 +3,10 @@
 package e2e
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/Weichwolf/ocean/tests/e2e/internal/harness"
 )
@@ -26,5 +29,112 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		}
 		steps = append(steps, step)
 	}
-	return steps
+	runtime := harness.Step{Name: "samba-controller-pair", Cases: []string{"WORKPLACE-04"}, Timeout: 4 * time.Minute,
+		Command: []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage}}
+	if options.sambaImage == "" {
+		runtime.BlockedReason = "Provide OCEAN_E2E_SAMBA_IMAGE with the locally built controller image ID."
+	} else if _, err := exec.LookPath("podman"); err != nil {
+		runtime.BlockedReason = "Install rootless Podman for the directory runtime probe."
+	}
+	recovery := harness.Step{Name: "directory-backup-recovery", Cases: []string{"WORKPLACE-07"}, Timeout: 4 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--restore"},
+		BlockedReason: runtime.BlockedReason}
+	if _, err := exec.LookPath("openssl"); err != nil && recovery.BlockedReason == "" {
+		recovery.BlockedReason = "Install OpenSSL for the encrypted backup recovery probe."
+	}
+	pairRecovery := harness.Step{Name: "directory-pair-recovery", Cases: []string{"WORKPLACE-13"}, Timeout: 4 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--restore-pair"},
+		BlockedReason: recovery.BlockedReason}
+	delegation := harness.Step{Name: "directory-machine-authorization", Cases: []string{"WORKPLACE-08"}, Timeout: 2 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--delegated-join"},
+		BlockedReason: recovery.BlockedReason}
+	if options.adcliImage == "" && delegation.BlockedReason == "" {
+		delegation.BlockedReason = "Provide OCEAN_E2E_ADCLI_IMAGE with the locally built Debian directory client image ID."
+	}
+	regionalJoin := harness.Step{Name: "regional-directory-join", Cases: []string{"WORKPLACE-09"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDirectoryJoin$", "./internal/controlplane"},
+		BlockedReason: delegation.BlockedReason}
+	if regionalJoin.BlockedReason == "" {
+		switch {
+		case os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "":
+			regionalJoin.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
+		default:
+			if _, err := exec.LookPath("az"); err != nil {
+				regionalJoin.BlockedReason = "Install the pinned Azure CLI 2.93.0 for the regional join probe."
+			}
+		}
+	}
+	regionalUsers := harness.Step{Name: "regional-directory-users", Cases: []string{"WORKPLACE-10"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDirectoryUsers$", "./internal/controlplane"},
+		BlockedReason: regionalJoin.BlockedReason}
+	regionalGroups := harness.Step{Name: "regional-directory-groups", Cases: []string{"WORKPLACE-11"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDirectoryGroups$", "./internal/controlplane"},
+		BlockedReason: regionalJoin.BlockedReason}
+	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
+		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
+			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
+	if _, err := exec.LookPath("az"); err != nil {
+		cli.BlockedReason = "Install the pinned Azure CLI 2.93.0 for the managed directory contract probe."
+	}
+	fencing := harness.Step{Name: "managed-directory-fencing", Cases: []string{"WORKPLACE-06"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestManagedDirectoryReservation$", "./internal/controlplane"}}
+	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
+		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
+	}
+	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
+		BlockedReason: recovery.BlockedReason}
+	windowsState := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_STATE")
+	windowsArchive := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE")
+	windowsRecovery := harness.Step{Name: "regional-windows-directory-recovery", Cases: []string{"WORKPLACE-14"}, Timeout: 13 * time.Minute,
+		Command:       []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-count=1", "-v", "-run", "^TestRegionalWindowsDirectoryRecovery$", "./internal/controlplane"},
+		BlockedReason: fencing.BlockedReason,
+		Evidence: []harness.EvidenceSource{{Name: "regional-windows-recovery.json",
+			Path: filepath.Join(windowsState, "evidence", "regional-windows-recovery.json")}}}
+	if windowsRecovery.BlockedReason == "" {
+		switch {
+		case options.sambaImage == "":
+			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_SAMBA_IMAGE with a controller image ID loaded on both guests."
+		case windowsState == "":
+			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_WINDOWS_RECOVERY_STATE with the prepared isolated KVM topology."
+		case windowsArchive == "":
+			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE with the private independent backup."
+		default:
+			windowsRecovery.BlockedReason = cli.BlockedReason
+		}
+	}
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join(windowsState, "state.json"), "the isolated recovery lab state")
+	windowsRecovery = requireFile(windowsRecovery, windowsArchive, "the independent backup")
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join(filepath.Dir(windowsArchive), "metadata.json"), "the independent backup manifest")
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join("..", "..", "bin", "ocean-agent"), "the locally built Ocean node agent")
+	windowsGraph := harness.Step{Name: "regional-windows-directory-graph", Cases: []string{"WORKPLACE-15"}, Timeout: 13 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-count=1", "-v", "-run",
+			"^TestRegionalWindowsDirectoryGraph$", "./internal/controlplane"},
+		BlockedReason: windowsRecovery.BlockedReason,
+		Evidence: []harness.EvidenceSource{{Name: "regional-windows-graph.json",
+			Path: filepath.Join(windowsState, "evidence", "regional-windows-graph.json")}}}
+	packagedState := os.Getenv("OCEAN_E2E_PACKAGED_DIRECTORY_STATE")
+	packaged := harness.Step{Name: "packaged-directory-provisioning", Cases: []string{"WORKPLACE-16"}, Timeout: 7 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=7m", "-count=1", "-v", "-run",
+			"^TestPackagedDirectoryProvisioning$", "./internal/controlplane"},
+		BlockedReason: fencing.BlockedReason,
+		Evidence: []harness.EvidenceSource{{Name: "packaged-directory.json",
+			Path: filepath.Join(packagedState, "evidence", "packaged-directory.json")}}}
+	if packaged.BlockedReason == "" {
+		switch {
+		case options.sambaImage == "":
+			packaged.BlockedReason = "Provide OCEAN_E2E_SAMBA_IMAGE with a controller image ID loaded on both packaged hosts."
+		case packagedState == "":
+			packaged.BlockedReason = "Provide OCEAN_E2E_PACKAGED_DIRECTORY_STATE with the prepared three-guest directory lab."
+		default:
+			packaged.BlockedReason = cli.BlockedReason
+		}
+	}
+	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
+	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery, windowsGraph, packaged)
 }

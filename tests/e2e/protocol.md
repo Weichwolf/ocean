@@ -46,6 +46,83 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `geo-4x3` | Four independent logical farms and initial WireGuard mesh and federation setup |
 | `geo-4x4` | Enroll one additional node per farm, then exercise node, tunnel, and whole-farm loss |
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
+| `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
+
+Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
+disposable endpoint to verify regional replica and writer fencing,
+acknowledgement, and replacement scheduling. This case uses signed fixture
+power evidence. The physical-host run observes the actual power state
+through the site fencing authority.
+
+Select `WORKPLACE-07` explicitly with `OCEAN_E2E_SAMBA_IMAGE` set to
+exercise encrypted backup recovery. The isolated probe deletes both original
+controller volumes, brings up a fresh controller, verifies the original domain
+and policy, and checks an existing Samba member's machine credentials.
+
+Select `WORKPLACE-08` explicitly with `OCEAN_E2E_SAMBA_IMAGE` and
+`OCEAN_E2E_ADCLI_IMAGE` set to exercise a scoped Debian join. The isolated
+client verifies access to the named computer, denied joins for other
+computers, a fresh machine keytab, and authorization closure and expiry.
+
+Select `WORKPLACE-09` explicitly with the same images, stock Azure CLI
+2.93.0, and an isolated `OCEAN_E2E_DIRECTORY_ETCD` endpoint. The test wires
+the regional ARM and enrollment handlers to a real etcd store. The certified
+node agent runs the staged job on a single Samba lab controller and Debian
+compares the actual join result with the CLI's authorization states.
+
+Select `WORKPLACE-10` with the same prerequisites to test the managed Graph
+user profile. Azure CLI authenticates against the isolated OAuth issuer and
+uses the Graph endpoint. The mTLS worker applies user operations to the Samba
+workforce OU. The Debian fixture requests a fresh Kerberos ticket before and
+after the user is disabled.
+
+Select `WORKPLACE-11` with the same prerequisites to exercise managed
+security groups. The pinned CLI creates and finds the native group, adds and
+removes a workforce user, and verifies the actual membership. A Debian SMB
+client opens a fresh Kerberos session at each step and checks its access
+to a share restricted to the AD group.
+
+Select `WORKPLACE-12` with `OCEAN_E2E_SAMBA_IMAGE` set to verify actual
+Samba writer promotion on one host. The probe stops the first controller,
+promotes the second, tests Kerberos, existing member trust and writable
+policy, then joins a fresh read-only replica in the retired slot and verifies
+the updated policy and ACL.
+
+Select `WORKPLACE-13` with the same controller image and OpenSSL to reconstruct
+a pair from its independently encrypted backup in rootless Podman. The
+writer is restored on a new volume with a rotated bootstrap credential.
+The standby rejoins, serves the original member alone, and supplies the
+original policy and ACL. `WORKPLACE-05` covers the stock CLI recovery calls
+and `WORKPLACE-06` verifies regional two-host placement, fencing and recovery
+state against disposable etcd with signed fixture evidence.
+
+Select `WORKPLACE-14` for the regional Windows recovery test. Azure CLI
+submits a signed fixture fence to the real ARM handler. Two Debian KVM guests
+enroll with the regional authority and their regular node agents complete the
+restore from the independent archive over their authenticated assignments.
+The probe powers off the recovered writer after both existing Windows guests
+report machine trust and policy access. It requires fresh client records
+from the surviving controller before recording success. The preparation and
+interactive Windows steps are in the [lab guide](../../lab/README.md).
+
+Select `WORKPLACE-15` with the same recovery inputs and the Server Core
+member. Stock Azure CLI drives user and group changes through the regional
+Graph endpoint using the `WORKPLACE-10` and `WORKPLACE-11` command profiles.
+This case also creates a group without a description. Fresh Windows logon
+sessions verify the native account and group SIDs, a CIFS ticket and the
+contents of a group-restricted file.
+Membership revocation denies the file, rotation rejects the old password,
+and account disable prevents a new logon. The [Windows Graph lab
+guide](../../lab/README.md#regional-graph-changes-on-windows) describes the
+guest probe and evidence.
+
+Select `WORKPLACE-16` to provision a fresh domain using the regional ARM
+and enrollment handlers. Two Debian KVM hosts start the installed agents,
+and the packaged network service attaches the private addresses and
+enforces the subnet policy. The pinned CLI checks admission, replay and
+availability. A third guest verifies real DNS, Kerberos and SMB service
+with either virtual host stopped. The [lab guide](../../lab/README.md#fresh-directory-with-packaged-agents)
+describes the package and image inputs.
 
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 

@@ -79,6 +79,7 @@ type Availability struct {
 	Roles            []string `json:"roles"`
 	Capacity         Capacity `json:"capacity"`
 	ContainerNetwork bool     `json:"containerNetwork,omitempty"`
+	DirectoryRuntime bool     `json:"directoryRuntime,omitempty"`
 }
 
 type Assignment struct {
@@ -93,6 +94,26 @@ type Assignment struct {
 	PrivateIPv4        netip.Addr            `json:"privateIPv4,omitzero"`
 	Network            *network.SubnetPolicy `json:"network,omitempty"`
 	NetworkUnavailable bool                  `json:"networkUnavailable,omitempty"`
+	Directory          *DirectoryAssignment  `json:"directory,omitempty"`
+}
+
+// DirectoryAssignment identifies one controller and its peers in a private AD domain.
+type DirectoryAssignment struct {
+	DirectoryID     string        `json:"directoryId"`
+	DNSName         string        `json:"dnsName"`
+	NetBIOSName     string        `json:"netbiosName"`
+	ControllerIndex int           `json:"controllerIndex"`
+	ControllerIPv4  [2]netip.Addr `json:"controllerIPv4"`
+	WriterIndex     int           `json:"writerIndex,omitempty"`
+	RetireReplica   string        `json:"retireReplicaGeneration,omitempty"`
+	PromoteFrom     string        `json:"promoteFromGeneration,omitempty"`
+	ControllerNames [2]string     `json:"controllerNames,omitzero"`
+	RecoveryID      string        `json:"recoveryId,omitempty"`
+	RecoverySHA256  string        `json:"recoverySha256,omitempty"`
+}
+
+func (a DirectoryAssignment) IsWriter() bool {
+	return a.ControllerIndex == max(a.WriterIndex, 1)
 }
 
 type AssignmentPage struct {
@@ -110,6 +131,7 @@ type Report struct {
 	RootlessPodman   bool   `json:"rootlessPodman"`
 	KVM              bool   `json:"kvm"`
 	ContainerNetwork bool   `json:"containerNetwork,omitempty"`
+	DirectoryRuntime bool   `json:"directoryRuntime,omitempty"`
 }
 
 func (a Approval) Qualifies(r Report) bool {

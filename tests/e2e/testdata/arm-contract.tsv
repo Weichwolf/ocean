@@ -11,6 +11,28 @@ CONTRACT-02	inventory-show	2.93.0	none	provider	resource show --ids {id} --api-v
 IDENTITY-04	role-create	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment create --scope {scope} --role Reader --name {name} --assignee-object-id {principal} --assignee-principal-type {kind} -o json
 IDENTITY-04	role-list	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment list --scope {scope} --fill-principal-name false -o json
 IDENTITY-04	role-delete	2.93.0	none	2022-04-01	role assignment delete --ids {id} -o none
+WORKPLACE-05	managed-directory-request	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 --body @{directory_request_json} -o json
+WORKPLACE-05	managed-directory-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 -o json
+WORKPLACE-05	managed-directory-replace-replica	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/replaceReplica?api-version=2026-11-01 --body @{signed_directory_fence_json} -o none
+WORKPLACE-05	managed-directory-replace-primary	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/replacePrimary?api-version=2026-11-01 --body @{signed_primary_fence_json} -o none
+WORKPLACE-05	managed-directory-recover	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/recoveries/{recovery_id}?api-version=2026-11-01 --body @{signed_directory_recovery_json} -o json
+WORKPLACE-05	managed-directory-recovery-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/recoveries/{recovery_id}?api-version=2026-11-01 -o json
+WORKPLACE-09	directory-join-request	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}?api-version=2026-11-01 --body @{join_authorization_json} -o json
+WORKPLACE-09	directory-join-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}?api-version=2026-11-01 -o json
+WORKPLACE-09	directory-join-close	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}/close?api-version=2026-11-01 -o json
+WORKPLACE-10	workforce-user-create	2.93.0	none	v1.0	ad user create --user-principal-name {workforce_upn} --display-name {display_name} --mail-nickname {alias} --password {password} -o json
+WORKPLACE-10	workforce-user-filter-upn	2.93.0	none	v1.0	ad user list --upn {workforce_upn} -o json
+WORKPLACE-10	workforce-user-filter-name	2.93.0	none	v1.0	ad user list --display-name {display_prefix} -o json
+WORKPLACE-10	workforce-user-show	2.93.0	none	v1.0	ad user show --id {upn_or_object_id} -o json
+WORKPLACE-10	workforce-user-update	2.93.0	none	v1.0	ad user update --id {object_id} --display-name {display_name} --account-enabled false -o none
+WORKPLACE-10	workforce-user-reset-password	2.93.0	none	v1.0	ad user update --id {object_id} --password {password} -o none
+WORKPLACE-11	workforce-group-create	2.93.0	none	v1.0	ad group create --display-name {display_name} --mail-nickname {alias} --description {description} -o json
+WORKPLACE-11	workforce-group-list	2.93.0	none	v1.0	ad group list --display-name {display_prefix} -o json
+WORKPLACE-11	workforce-group-show	2.93.0	none	v1.0	ad group show --group {group_id} -o json
+WORKPLACE-11	workforce-group-member-add	2.93.0	none	v1.0	ad group member add --group {group_id} --member-id {user_id} -o none
+WORKPLACE-11	workforce-group-member-list	2.93.0	none	v1.0	ad group member list --group {group_id} -o json
+WORKPLACE-11	workforce-group-member-remove	2.93.0	none	v1.0	ad group member remove --group {group_id} --member-id {user_id} -o none
+WORKPLACE-15	workforce-group-create-without-description	2.93.0	none	v1.0	ad group create --display-name {display_name} --mail-nickname {alias} -o json
 NETWORK-01	vnet-create	2.93.0	none	2025-07-01	network vnet create --resource-group {group} --name {vnet} --location {location} --address-prefixes {vnet_prefix} --subnet-name {subnet} --subnet-prefixes {subnet_prefix} -o json
 NETWORK-01	vnet-show	2.93.0	none	2025-07-01	network vnet show --resource-group {group} --name {vnet} -o json
 NETWORK-01	vnet-list	2.93.0	none	2025-07-01	network vnet list --resource-group {group} -o json

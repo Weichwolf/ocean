@@ -31,6 +31,7 @@ func (j *joinClient) heartbeat(ctx context.Context) error {
 	if status, err := os.Stat(filepath.Join(workloadRuntimeDirectory, ".available")); err == nil {
 		report.ContainerNetwork = time.Since(status.ModTime()) < policyLease
 	}
+	report.DirectoryRuntime = report.ContainerNetwork && j.directoryRuntimeAvailable(ctx)
 	body, _ := json.Marshal(report)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, j.url()+"/heartbeat", bytes.NewReader(body))
 	if err != nil {

@@ -36,6 +36,7 @@ type Compatibility struct {
 	signingKeys    sync.Map
 	subscriptions  *subscriptionReader
 	onboarding     *onboarding
+	directories    ManagedDirectoryStore
 }
 
 // verifyAccessToken checks tokens against the known tenant issuer and its
@@ -107,6 +108,12 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /v1.0/users/{user}", c.graphUser)
 		mux.HandleFunc("PATCH /v1.0/users/{user}", c.graphUser)
 		mux.HandleFunc("DELETE /v1.0/users/{user}", c.graphUser)
+		mux.HandleFunc("GET /v1.0/groups", c.graphGroup)
+		mux.HandleFunc("POST /v1.0/groups", c.graphGroup)
+		mux.HandleFunc("GET /v1.0/groups/{group}", c.graphGroup)
+		mux.HandleFunc("GET /v1.0/groups/{group}/members", c.graphGroup)
+		mux.HandleFunc("POST /v1.0/groups/{group}/members/$ref", c.graphGroup)
+		mux.HandleFunc("DELETE /v1.0/groups/{group}/members/{member}/$ref", c.graphGroup)
 		mux.HandleFunc("GET /v1.0/applications", c.graphApplication)
 		mux.HandleFunc("POST /v1.0/applications", c.graphApplication)
 		mux.HandleFunc("GET /v1.0/applications/{application}", c.graphApplication)
@@ -116,6 +123,17 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /v1.0/servicePrincipals", c.graphPrincipal)
 		mux.HandleFunc("POST /v1.0/servicePrincipals", c.graphPrincipal)
 		mux.HandleFunc("GET /v1.0/servicePrincipals/{principal}", c.graphPrincipal)
+	}
+	if c.directories != nil {
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory", c.managedDirectory)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory", c.managedDirectory)
+		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/replaceReplica", c.managedDirectory)
+		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/replacePrimary", c.managedDirectory)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory/recoveries/{recovery}", c.managedDirectory)
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory/recoveries/{recovery}", c.managedDirectory)
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}", c.managedDirectory)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}", c.managedDirectory)
+		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}/close", c.managedDirectory)
 	}
 	return mux
 }

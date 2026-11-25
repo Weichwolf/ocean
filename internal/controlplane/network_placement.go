@@ -41,9 +41,17 @@ type subnetAllocation struct {
 }
 
 func (r *Region) allocateSubnet(ctx context.Context, scope arm.SubscriptionScope, id string) (subnetAllocation, error) {
+	selected, err := r.allocateSubnetAddresses(ctx, scope, id, 1)
+	if err != nil {
+		return subnetAllocation{}, err
+	}
+	return selected[0], nil
+}
+
+func (r *Region) allocateSubnetAddresses(ctx context.Context, scope arm.SubscriptionScope, id string, count int) ([]subnetAllocation, error) {
 	parent, name, ok := arm.SubnetParent(scope, id)
 	if !ok {
-		return subnetAllocation{}, ErrPlacementSubnetUnavailable
+		return nil, ErrPlacementSubnetUnavailable
 	}
 	groupKey := r.groupPrefix(scope) + strings.ToLower(parent.Group)
 	vnetKey := r.inventoryPrefix(scope) + parent.Key()
@@ -51,45 +59,50 @@ func (r *Region) allocateSubnet(ctx context.Context, scope arm.SubscriptionScope
 	read, err := r.client.Txn(ctx).Then(clientv3.OpGet(groupKey), clientv3.OpGet(vnetKey),
 		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithKeysOnly())).Commit()
 	if err != nil {
-		return subnetAllocation{}, err
+		return nil, err
 	}
 	groups, networks := read.Responses[0].GetResponseRange().Kvs, read.Responses[1].GetResponseRange().Kvs
 	if len(groups) != 1 || len(networks) != 1 {
-		return subnetAllocation{}, ErrPlacementSubnetUnavailable
+		return nil, ErrPlacementSubnetUnavailable
 	}
 	group, err := decodeGroup(groups[0].Value, strings.ToLower(parent.Group))
 	if err != nil {
-		return subnetAllocation{}, err
+		return nil, err
 	}
 	if group.DeleteOperation != "" {
-		return subnetAllocation{}, ErrPlacementSubnetUnavailable
+		return nil, ErrPlacementSubnetUnavailable
 	}
 	_, subnet, err := decodeSubnet(networks[0].Value, parent.Key(), name)
 	if err != nil {
-		return subnetAllocation{}, err
+		return nil, err
 	}
 	ranges, err := subnet.Properties.Prefixes()
 	if err != nil {
-		return subnetAllocation{}, err
+		return nil, err
 	}
 	used := make(map[string]bool)
 	for _, item := range read.Responses[2].GetResponseRange().Kvs {
 		used[string(item.Key)] = true
 	}
+	selected := make([]subnetAllocation, 0, count)
 	for _, cidr := range ranges {
 		for address := network.FirstUsableSubnetAddress(cidr); network.IsUsableSubnetAddress(cidr, address); address = address.Next() {
 			key := prefix + address.String()
 			if used[key] {
 				continue
 			}
-			return subnetAllocation{address: address, key: key, groupGeneration: groups[0].CreateRevision, guards: []clientv3.Cmp{
+			selected = append(selected, subnetAllocation{address: address, key: key, groupGeneration: groups[0].CreateRevision, guards: []clientv3.Cmp{
 				clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups[0].ModRevision),
 				clientv3.Compare(clientv3.ModRevision(vnetKey), "=", networks[0].ModRevision),
 				clientv3.Compare(clientv3.Version(key), "=", 0),
-			}}, nil
+			}})
+			if len(selected) == count {
+				return selected, nil
+			}
+			used[key] = true
 		}
 	}
-	return subnetAllocation{}, ErrSubnetAddressExhausted
+	return nil, ErrSubnetAddressExhausted
 }
 
 func decodeSubnet(data []byte, key, name string) (network.VNetProperties, network.Subnet, error) {
