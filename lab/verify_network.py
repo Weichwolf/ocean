@@ -48,7 +48,7 @@ def main():
     state = args.state.resolve()
     prepare_operator_client(state, ("arm_cli.py", "arm_rbac_cli.py", "network_cli.py", "testdata/arm-contract.tsv"))
     evidence = json.loads(ssh(state, OPERATOR, f"python3 {CLIENT}/network_cli.py --settings {CLIENT}/operator.secret "
-                                               f"--matrix {CLIENT}/arm-contract.tsv"))
+                                               f"--matrix {CLIENT}/arm-contract.tsv", timeout=600))
     output = state / "evidence"
     output.mkdir(mode=0o700, exist_ok=True)
     (output / "virtual-network-arm.json").write_text(json.dumps(evidence, indent=2) + "\n")
