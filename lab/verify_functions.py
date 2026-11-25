@@ -45,6 +45,8 @@ def configure_egress(state, node, index, ip):
         files[name] = (files[name].decode()
                        .replace("/opt/ocean-egress-ha", EGRESS_FILES)
                        .replace("ocean-egress", EGRESS_NS)
+                       .replace("work0", "fxin0")
+                       .replace("external0", "fxout0")
                        .replace("10.84.1.2", "10.89.1.6")
                        .replace("10.84.1.3", "10.89.1.7")
                        .replace("10.84.1.0/24", NETWORK)
@@ -57,8 +59,8 @@ def configure_egress(state, node, index, ip):
     ssh(state, node, f"""set -eu
 sudo ip netns add {EGRESS_NS}
 sudo ip -n {EGRESS_NS} link set lo up
-{macvlan(EGRESS_NS, "work0", "work0", f"10.89.1.{6 + index}/24", f"02:fe:89:20:01:0{index + 6}")}
-{macvlan(EGRESS_NS, "customer0", "external0", f"198.51.100.{12 + index}/24", f"02:fe:89:20:02:{index + 12:02x}")}
+{macvlan(EGRESS_NS, "work0", "fxin0", f"10.89.1.{6 + index}/24", f"02:fe:89:20:01:0{index + 6}")}
+{macvlan(EGRESS_NS, "customer0", "fxout0", f"198.51.100.{12 + index}/24", f"02:fe:89:20:02:{index + 12:02x}")}
 sudo ip netns exec {EGRESS_NS} sysctl -q -w net.ipv4.ip_forward=1
 sudo {EGRESS_FILES}/bin/ocean-gateway -config {EGRESS_FILES}/gateway.json
 sudo install -m 0644 {EGRESS_FILES}/{EGRESS_UNIT} /run/systemd/system/{EGRESS_UNIT}
@@ -68,7 +70,7 @@ sudo systemctl start {EGRESS_UNIT}
 
 
 def egress_owns(state, node, ip):
-    rows = json.loads(ssh(state, node, f"sudo ip -n {EGRESS_NS} -4 -j address show dev external0"))
+    rows = json.loads(ssh(state, node, f"sudo ip -n {EGRESS_NS} -4 -j address show dev fxout0"))
     return any(address["local"] == ip for link in rows for address in link["addr_info"])
 
 
@@ -134,13 +136,19 @@ def verify(state):
 
         eventually(resolve, 12)
 
-        def request(key=True, suffix=""):
+        def request(key=True, suffix="", allow_withdrawal=False):
             auth = ["--config", f"{HTTPS_FILES}/{key_file}"] if key is True else []
             if key is False:
                 auth = ["--header", "x-functions-key: " + secrets.token_urlsafe(32)]
-            result = ssh(state, CUSTOMER, shlex.join(["sudo", "ip", "netns", "exec", PROBE, "curl", "--noproxy", "*",
-                "--silent", "--show-error", "--max-time", "5", "--cacert", f"{HTTPS_FILES}/ca.pem",
-                "--resolve", f"{host}:443:{address}", *auth, "-w", "\n%{http_code}", f"https://{host}/api/hello{suffix}"]))
+            timeout = "2" if allow_withdrawal else "5"
+            try:
+                result = ssh(state, CUSTOMER, shlex.join(["sudo", "ip", "netns", "exec", PROBE, "curl", "--noproxy", "*",
+                    "--silent", "--show-error", "--max-time", timeout, "--cacert", f"{HTTPS_FILES}/ca.pem",
+                    "--resolve", f"{host}:443:{address}", *auth, "-w", "\n%{http_code}", f"https://{host}/api/hello{suffix}"]))
+            except RuntimeError as error:
+                if allow_withdrawal and ("curl: (7)" in str(error) or "curl: (28)" in str(error)):
+                    return 0, ""
+                raise
             body, status = result.decode().rsplit("\n", 1)
             return int(status), body
 
@@ -155,7 +163,13 @@ def verify(state):
         updates = invoke("update")
         eventually(lambda: expect("java:v2:configured"), 15)
         invoke("stop")
-        eventually(lambda: expect(None, status=503), 12)
+
+        def stopped():
+            status, _ = request(allow_withdrawal=True)
+            require(status in (0, 503), "the stopped Function remained reachable through the gateway")
+            return "Withdrawn" if status == 0 else "ServiceUnavailable"
+
+        stop_endpoint_state = eventually(stopped, 12)
         invoke("start")
         eventually(lambda: expect("java:v2:configured"), 12)
         invoke("restart")
@@ -187,7 +201,7 @@ def verify(state):
         restored = True
         return {**setup, **authorization, **integration, **updates, **nat, **cleanup, "fixtureImages": images,
                 "httpsIPv4": address, "gatewayDNSVerified": True, "trustedHTTPS": True, "missingKeyDenied": True, "invalidKeyDenied": True,
-                "lifecycleVerified": True, "persistentKeyAfterRestart": True, "observedIPv4Before": fixed,
+                "lifecycleVerified": True, "stoppedEndpointState": stop_endpoint_state, "persistentKeyAfterRestart": True, "observedIPv4Before": fixed,
                 "observedIPv4After": fixed, "recoveryMs": elapsed, "deadlineMs": DEADLINE_SECONDS * 1000}
     finally:
         if probe:
