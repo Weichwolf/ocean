@@ -38,6 +38,7 @@ type Member struct {
 	Shares           []Share    `json:"shares"`
 	StateVolumeID    string     `json:"stateVolumeId,omitempty"`
 	ServiceInterface string     `json:"serviceInterface,omitempty"`
+	access           map[string]shareAccess
 }
 
 // Share grants admission and write access to native AD security group SIDs.
@@ -164,6 +165,16 @@ func configuration(m Member) []byte {
 		m.stateDirectory(), m.stateDirectory(), m.NetBIOSDomain, m.NetBIOSDomain, domainBase, domainEnd)
 
 	for _, share := range m.Shares {
+		readers, writers := share.ReaderSIDs, share.WriterSIDs
+		if m.access != nil {
+			effective := m.access[share.Name]
+			readers, writers = effective.readers, effective.writers
+		}
+		admitted := slices.Concat(readers, writers)
+		if len(admitted) == 0 {
+			// An empty valid users list permits every authenticated user.
+			admitted = []string{m.DomainSID + "-4294967295"}
+		}
 		fmt.Fprintf(&output, `
 [%s]
     path = %s
@@ -181,9 +192,9 @@ func configuration(m Member) []byte {
     full_audit:failure = connect create_file pwrite pwrite_recv
     full_audit:facility = LOCAL5
     full_audit:priority = NOTICE
-`, share.Name, filepath.Join(MountRoot, share.VolumeID, "data"), strings.Join(slices.Concat(share.ReaderSIDs, share.WriterSIDs), " "))
-		if len(share.WriterSIDs) != 0 {
-			fmt.Fprintf(&output, "    write list = %s\n", strings.Join(share.WriterSIDs, " "))
+`, share.Name, filepath.Join(MountRoot, share.VolumeID, "data"), strings.Join(admitted, " "))
+		if len(writers) != 0 {
+			fmt.Fprintf(&output, "    write list = %s\n", strings.Join(writers, " "))
 		}
 	}
 	return output.Bytes()

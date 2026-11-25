@@ -2,11 +2,13 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/smb"
 	"github.com/Weichwolf/ocean/internal/storage"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -17,6 +19,8 @@ type smbWorkerState struct {
 	owner         smbOwner
 	ownerRevision int64
 	read          *clientv3.TxnResponse
+	directory     smb.DirectoryWriter
+	placementRev  int64
 }
 
 func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate []byte) (smbWorkerState, error) {
@@ -29,7 +33,7 @@ func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate
 	}
 	read, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.hostKey("registered", host)), clientv3.OpGet(r.hostKey("live", host)),
 		clientv3.OpGet(r.smbMemberKey(binding)), clientv3.OpGet(r.managedDirectoryKey(binding.TenantID)),
-		clientv3.OpGet(r.smbOwnerKey(binding))).Commit()
+		clientv3.OpGet(r.smbOwnerKey(binding)), clientv3.OpGet(r.managedDirectoryPlacementKey(binding.TenantID))).Commit()
 	if err != nil {
 		return smbWorkerState{}, err
 	}
@@ -43,7 +47,24 @@ func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate
 	if owner.HostID != host || !smbDirectoryMatches(binding, read.Responses[3].GetResponseRange().Kvs) {
 		return smbWorkerState{}, enrollment.ErrHostDenied
 	}
-	return smbWorkerState{binding: binding, owner: owner, ownerRevision: revision, read: read}, nil
+	worker := smbWorkerState{binding: binding, owner: owner, ownerRevision: revision, read: read}
+	record := read.Responses[3].GetResponseRange().Kvs[0]
+	placements := read.Responses[5].GetResponseRange().Kvs
+	var native identity.ManagedDirectory
+	var placement directoryPlacement
+	if len(placements) == 1 {
+		worker.placementRev = placements[0].ModRevision
+		if json.Unmarshal(record.Value, &native) == nil && json.Unmarshal(placements[0].Value, &placement) == nil &&
+			native.ID == placement.DirectoryID && !placement.Promoting && placement.Recovery == "" {
+			index := placement.writerSlot()
+			writer := smb.DirectoryWriter{Name: placement.controllerName(index) + "." + native.Spec.DNSName,
+				Address: placement.Controllers[index].PrivateIPv4}
+			if writer.ValidFor(binding.Member) {
+				worker.directory = writer
+			}
+		}
+	}
+	return worker, nil
 }
 
 func (r *Region) HostSMBPlan(ctx context.Context, host string, certificate []byte) (smb.Plan, error) {
@@ -56,7 +77,7 @@ func (r *Region) HostSMBPlan(ctx context.Context, host string, certificate []byt
 	if err != nil {
 		return smb.Plan{}, err
 	}
-	plan := smb.Plan{Revision: revision, Generation: worker.owner.Generation, Member: binding.Member}
+	plan := smb.Plan{Revision: revision, Generation: worker.owner.Generation, Member: binding.Member, Directory: worker.directory}
 	if binding.Member.StateVolumeID != "" {
 		plan.StateKey, err = r.storage.sealer.Open(nil, nil, r.smb.states[binding.scope()], smbStateLabel(binding))
 		if err != nil || len(plan.StateKey) != storage.KeySize {
@@ -99,7 +120,7 @@ func (r *Region) CompleteSMBPlan(ctx context.Context, host string, certificate [
 	if err != nil {
 		return err
 	}
-	if receipt.Revision != current || receipt.Generation != worker.owner.Generation {
+	if receipt.Revision != current || receipt.Generation != worker.owner.Generation || receipt.Directory != worker.directory {
 		return enrollment.ErrSMBPlanChanged
 	}
 	memberKey := r.smbMemberKey(binding)
@@ -109,12 +130,16 @@ func (r *Region) CompleteSMBPlan(ctx context.Context, host string, certificate [
 		clientv3.Compare(clientv3.ModRevision(r.hostKey("registered", host)), "=", read.Responses[0].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.hostKey("live", host)), "=", read.Responses[1].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.managedDirectoryKey(binding.TenantID)), "=", read.Responses[3].GetResponseRange().Kvs[0].ModRevision),
+		clientv3.Compare(clientv3.ModRevision(r.managedDirectoryPlacementKey(binding.TenantID)), "=", worker.placementRev),
 	}
 	now := time.Now().UTC()
 	scope := binding.scope()
 	remaining := make([]smbShareRecord, 0, len(records))
 	var mutations []clientv3.Op
 	for _, record := range records {
+		if !record.Deleting && worker.directory == (smb.DirectoryWriter{}) {
+			return enrollment.ErrSMBPlanChanged
+		}
 		if record.Ready {
 			remaining = append(remaining, record)
 			continue

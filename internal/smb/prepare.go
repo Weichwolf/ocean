@@ -17,10 +17,6 @@ import (
 // encrypted filesystems and local POSIX grants for every published share.
 // With no shares it prepares the private member configuration for enrollment.
 func Prepare(ctx context.Context, member Member, destination string) error {
-	return prepare(ctx, member, destination, nil)
-}
-
-func prepare(ctx context.Context, member Member, destination string, beforeApply func() error) error {
 	if err := member.Validate(); err != nil {
 		return err
 	}
@@ -40,22 +36,15 @@ func prepare(ctx context.Context, member Member, destination string, beforeApply
 			return err
 		}
 	}
-	file, err := os.CreateTemp(filepath.Dir(destination), ".ocean-smb-*.conf")
+	staged, err := stageConfiguration(ctx, member, destination)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(file.Name()) }()
-	_, err = file.Write(configuration(member))
-	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
-		return err
-	}
-	if _, err := run(ctx, "/usr/bin/testparm", "-s", file.Name()); err != nil {
-		return fmt.Errorf("validate the generated Samba configuration: %w", err)
-	}
+	defer func() { _ = os.Remove(staged) }()
 	var root *os.Root
 	acls := make([][]string, len(member.Shares))
 	if len(member.Shares) != 0 {
-		if err := verifyDomain(ctx, member, file.Name()); err != nil {
+		if err := verifyDomain(ctx, member, staged); err != nil {
 			return err
 		}
 		root, err = os.OpenRoot(MountRoot)
@@ -71,17 +60,32 @@ func prepare(ctx context.Context, member Member, destination string, beforeApply
 			acls[i] = acl
 		}
 	}
-	if beforeApply != nil {
-		if err := beforeApply(); err != nil {
-			return err
-		}
-	}
 	for i, share := range member.Shares {
 		if err := applySharePolicy(ctx, root, share, acls[i]); err != nil {
 			return fmt.Errorf("apply policy on share %s: %w", share.Name, err)
 		}
 	}
-	return os.Rename(file.Name(), destination)
+	return os.Rename(staged, destination)
+}
+
+func stageConfiguration(ctx context.Context, member Member, destination string) (_ string, err error) {
+	file, err := os.CreateTemp(filepath.Dir(destination), ".ocean-smb-*.conf")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(file.Name())
+		}
+	}()
+	_, err = file.Write(configuration(member))
+	if err := errors.Join(err, file.Sync(), file.Close()); err != nil {
+		return "", err
+	}
+	if _, err := run(ctx, "/usr/bin/testparm", "-s", file.Name()); err != nil {
+		return "", fmt.Errorf("validate the generated Samba configuration: %w", err)
+	}
+	return file.Name(), nil
 }
 
 func verifyDomain(ctx context.Context, member Member, config string) error {

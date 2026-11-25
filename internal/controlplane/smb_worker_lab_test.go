@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,15 @@ import (
 const smbLabHost = "farm-1-node-04"
 
 func TestPackagedSMBWorker(t *testing.T) {
+	testPackagedSMBWorker(t, false)
+}
+
+func TestPackagedSMBLiveRevocation(t *testing.T) {
+	testPackagedSMBWorker(t, true)
+}
+
+func testPackagedSMBWorker(t *testing.T, liveRevocation bool) {
+	t.Helper()
 	state, fixture, endpoint, az := os.Getenv("OCEAN_E2E_DOMAIN_STATE"), os.Getenv("OCEAN_E2E_SMB_MEMBER_FIXTURE"),
 		os.Getenv("OCEAN_E2E_SMB_ETCD"), os.Getenv("OCEAN_E2E_SMB_AZ")
 	if state == "" || fixture == "" || endpoint == "" || az == "" {
@@ -144,6 +154,9 @@ func TestPackagedSMBWorker(t *testing.T) {
 		}
 	}
 	verify()
+	if liveRevocation {
+		verifySMBLiveRevocation(t, ctx, worker, fixture, api.URL, r, shareName)
+	}
 	verify("--checkpoint", "write")
 	image := "ocean/" + initial.Volume.ID
 	worker.run(ctx, smbLabHost, `test "$(sudo systemctl show -P Nice ocean-smb-agent.service)" = 10 && sudo findmnt --mountpoint `+smb.MountRoot+"/"+initial.Volume.ID, nil)
@@ -317,6 +330,8 @@ func seedSMBLabDirectory(t *testing.T, r *Region, binding smbBinding) {
 		ID: operationID(), RequestedAt: time.Now().UTC(), ProvisionedAt: time.Now().UTC(), DomainSID: binding.Member.DomainSID,
 		Spec: identity.DirectorySpec{DNSName: binding.Member.DNSDomain, NetBIOSName: binding.Member.NetBIOSDomain}}
 	if _, err := r.client.Txn(t.Context()).Then(putJSON(r.managedDirectoryKey(binding.TenantID), directory),
+		putJSON(r.managedDirectoryPlacementKey(binding.TenantID), directoryPlacement{DirectoryID: directory.ID,
+			Controllers: [directoryControllerCount]Reservation{{PrivateIPv4: netip.MustParseAddr("10.232.1.11")}}}),
 		clientv3.OpPut(r.root+"/cells/"+r.cell+"/metadata", "{}")).Commit(); err != nil {
 		t.Fatal(err)
 	}

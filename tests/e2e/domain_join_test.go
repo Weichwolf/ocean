@@ -241,6 +241,15 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		smbManaged.BlockedReason = "Provide the prepared SMB member lab, a disposable etcd endpoint and the pinned Azure CLI."
 	}
 	smbManaged = requireFile(smbManaged, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB member identity and native group grants")
+	smbRevocation := smbManaged
+	smbRevocation.Name, smbRevocation.Cases = "kerberos-smb-live-revocation", []string{"WORKPLACE-31"}
+	smbRevocation.Command = []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v", "-run",
+		"^TestPackagedSMBLiveRevocation$", "./internal/controlplane"}
+	smbRevocation.Evidence = []harness.EvidenceSource{{Name: "kerberos-smb-revocation.json",
+		Path: filepath.Join(options.domain, "evidence", "kerberos-smb-revocation.json")}}
+	for _, user := range []string{"smbwriter", "smbreader", "smbdenied"} {
+		smbRevocation = requireFile(smbRevocation, filepath.Join(smbFixture, user), "the disposable credential for "+user)
+	}
 	smbWindowsRun := os.Getenv("OCEAN_E2E_SMB_WINDOWS_RUN_ID")
 	smbWindows := probe("kerberos-smb-windows", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-28"},
 		[]string{"kerberos-smb-windows.json"}, "--fixture", smbFixture, "--windows-run-id", smbWindowsRun)
@@ -276,5 +285,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows Kerberos serial capture")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation)
 }

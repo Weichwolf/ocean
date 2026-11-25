@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"time"
 
@@ -15,12 +16,28 @@ import (
 
 const sambaConfig = "/etc/samba/smb.conf"
 
+type Authorization struct {
+	member     Member
+	writer     DirectoryWriter
+	generation string
+	checked    time.Time
+}
+
 // ApplyPlan reconciles the dedicated member and reports after Samba has
 // published the requested configuration and retired all withdrawn mounts.
-func ApplyPlan(ctx context.Context, backend storage.Backend, plan Plan) error {
+func (a *Authorization) ApplyPlan(ctx context.Context, backend storage.Backend, plan Plan) error {
 	if !plan.Valid() {
 		return ErrInvalidPlan
 	}
+	if a.generation == plan.Generation && a.writer == plan.Directory && reflect.DeepEqual(a.member, plan.Member) {
+		return a.Refresh(ctx)
+	}
+	// Withdraw the previous configuration before applying a new policy or
+	// waiting for a storage operation. No old handles survive this change.
+	if err := Stop(ctx); err != nil {
+		return err
+	}
+	*a = Authorization{}
 	if plan.Member.StateVolumeID != "" {
 		if err := preparePlacement(ctx, backend, plan); err != nil {
 			return err
@@ -40,13 +57,16 @@ func ApplyPlan(ctx context.Context, backend storage.Backend, plan Plan) error {
 	if err := ensureWinbind(ctx, plan.Member, previous); err != nil {
 		return err
 	}
-	// Existing smbd processes can retain their authorized session token. Drop
-	// those processes before changing the configuration or releasing storage.
-	var stop func() error
-	if !bytes.Equal(previous, configuration(plan.Member)) || len(plan.Member.Shares) == 0 {
-		stop = func() error { return Stop(ctx) }
+	member := plan.Member
+	if len(member.Shares) != 0 {
+		policy, cancel := context.WithTimeout(ctx, 4*time.Second)
+		member.access, err = readDirectoryAccess(policy, member, plan.Directory)
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
-	if err := prepare(ctx, plan.Member, sambaConfig, stop); err != nil {
+	if err := Prepare(ctx, member, sambaConfig); err != nil {
 		return err
 	}
 	for _, grant := range plan.Volumes {
@@ -74,7 +94,48 @@ func ApplyPlan(ctx context.Context, backend storage.Backend, plan Plan) error {
 			return err
 		}
 	}
-	return EnsureActive(ctx, plan.Member)
+	a.member, a.writer, a.generation, a.checked = plan.Member, plan.Directory, plan.Generation, time.Now()
+	return EnsureActive(ctx, member)
+}
+
+// Refresh reevaluates membership with the directory writer even if the
+// regional API is unreachable. The Samba configuration names the currently
+// authorized users so that reconnecting with an old PAC cannot re-grant access.
+func (a *Authorization) Refresh(ctx context.Context) error {
+	if len(a.member.Shares) == 0 {
+		return nil
+	}
+	if time.Since(a.checked) < 3*time.Second {
+		return EnsureActive(ctx, a.member)
+	}
+	member := a.member
+	policy, cancel := context.WithTimeout(ctx, 4*time.Second)
+	access, err := readDirectoryAccess(policy, member, a.writer)
+	cancel()
+	if err != nil {
+		a.checked = time.Time{}
+		stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		defer cancel()
+		return errors.Join(err, Stop(stop))
+	}
+	member.access = access
+	existing, err := os.ReadFile(sambaConfig)
+	if err != nil || !bytes.Equal(existing, configuration(member)) {
+		a.checked = time.Time{}
+		if err := Stop(ctx); err != nil {
+			return err
+		}
+		staged, err := stageConfiguration(ctx, member, sambaConfig)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.Remove(staged) }()
+		if err := os.Rename(staged, sambaConfig); err != nil {
+			return err
+		}
+	}
+	a.checked = time.Now()
+	return EnsureActive(ctx, member)
 }
 
 func ensureWinbind(ctx context.Context, member Member, previous []byte) error {

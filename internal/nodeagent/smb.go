@@ -47,12 +47,17 @@ func RunSMB(ctx context.Context, storagePath, agentPath string, logger *slog.Log
 		}
 	}()
 	var applied, reported smb.Receipt
+	var authorization smb.Authorization
 	interval := time.NewTicker(time.Second)
 	defer interval.Stop()
 	for ctx.Err() == nil {
-		err := client.syncSMB(ctx, backend, &applied, &reported)
+		probe, cancel := context.WithTimeout(ctx, 12*time.Second)
+		err := authorization.Refresh(probe)
+		cancel()
+		err = errors.Join(err, client.syncSMB(ctx, backend, &authorization, &applied, &reported))
 		if errors.Is(err, errSMBRevoked) {
 			applied, reported = smb.Receipt{}, smb.Receipt{}
+			authorization = smb.Authorization{}
 			stop, cancel := context.WithTimeout(ctx, 12*time.Second)
 			err = smb.Withdraw(stop, backend)
 			cancel()
@@ -68,29 +73,21 @@ func RunSMB(ctx context.Context, storagePath, agentPath string, logger *slog.Log
 	return nil
 }
 
-func (j *joinClient) syncSMB(ctx context.Context, backend storage.Backend, applied, reported *smb.Receipt) error {
+func (j *joinClient) syncSMB(ctx context.Context, backend storage.Backend, authorization *smb.Authorization, applied, reported *smb.Receipt) error {
 	plan, err := j.smbPlan(ctx)
 	if err != nil {
 		return err
 	}
 	defer plan.ClearKeys()
-	receipt := smb.Receipt{Revision: plan.Revision, Generation: plan.Generation}
+	receipt := smb.Receipt{Revision: plan.Revision, Generation: plan.Generation, Directory: plan.Directory}
 	if *applied != receipt {
 		apply, cancel := context.WithTimeout(ctx, 90*time.Second)
-		err := smb.ApplyPlan(apply, backend, plan)
+		err := authorization.ApplyPlan(apply, backend, plan)
 		cancel()
 		if err != nil {
 			return err
 		}
 		*applied = receipt
-	} else {
-		probe, cancel := context.WithTimeout(ctx, 8*time.Second)
-		err := smb.EnsureActive(probe, plan.Member)
-		cancel()
-		if err != nil {
-			*applied = smb.Receipt{}
-			return err
-		}
 	}
 	if receipt.Valid() && *reported != receipt {
 		if err := j.reportSMBPlan(ctx, receipt); err != nil {

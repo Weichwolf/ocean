@@ -2,6 +2,7 @@ package smb
 
 import (
 	"errors"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -43,11 +44,22 @@ type VolumeGrant struct {
 
 // Plan is the complete desired state of one certified Samba member.
 type Plan struct {
-	Revision   int64         `json:"revision"`
-	Generation string        `json:"generation"`
-	Member     Member        `json:"member"`
-	Volumes    []VolumeGrant `json:"volumes"`
-	StateKey   []byte        `json:"stateKey,omitempty"`
+	Revision   int64           `json:"revision"`
+	Generation string          `json:"generation"`
+	Member     Member          `json:"member"`
+	Volumes    []VolumeGrant   `json:"volumes"`
+	StateKey   []byte          `json:"stateKey,omitempty"`
+	Directory  DirectoryWriter `json:"directoryWriter,omitzero"`
+}
+
+// DirectoryWriter identifies the region's current directory write authority.
+type DirectoryWriter struct {
+	Name    string     `json:"name"`
+	Address netip.Addr `json:"address"`
+}
+
+func (w DirectoryWriter) ValidFor(member Member) bool {
+	return member.validAuthority(w.Name) && w.Address.Is4() && w.Address.IsPrivate()
 }
 
 func (p Plan) Valid() bool {
@@ -56,6 +68,9 @@ func (p Plan) Valid() bool {
 		return false
 	}
 	if p.Member.StateVolumeID == "" && len(p.StateKey) != 0 || p.Member.StateVolumeID != "" && len(p.StateKey) != storage.KeySize {
+		return false
+	}
+	if p.Directory != (DirectoryWriter{}) && !p.Directory.ValidFor(p.Member) {
 		return false
 	}
 	shares := make(map[string]Share, len(p.Member.Shares))
@@ -97,8 +112,9 @@ func (p Plan) ClearKeys() {
 }
 
 type Receipt struct {
-	Revision   int64  `json:"revision"`
-	Generation string `json:"generation"`
+	Revision   int64           `json:"revision"`
+	Generation string          `json:"generation"`
+	Directory  DirectoryWriter `json:"directoryWriter,omitzero"`
 }
 
 func (r Receipt) Valid() bool { return r.Revision > 0 && storage.ValidID(r.Generation) }

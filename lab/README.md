@@ -287,6 +287,18 @@ closes its storage mapping, and removes the live RBD image. A group
 containing a managed share must release the share before group deletion.
 [ARM asynchronous operation contract](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations)
 
+The managed member refreshes share authorization using sealed Kerberos
+LDAP against the region's current directory writer. It resolves each
+role to enabled tenant user SIDs, including membership through nested
+security groups and primary groups. If effective grants change, the
+member closes Samba sessions and publishes the current admission and write
+lists. Reconnecting with an older service ticket still uses those lists.
+The member continues to refresh during a management API partition when
+it can reach the directory writer. It withdraws the listener when a
+directory refresh fails. Directory promotion selects the new authority
+through regional placement state. Samba enforces individual file ACLs
+using its authenticated filesystem security context.
+
 Select `WORKPLACE-27` against the prepared SMB and RBD lab. Install a
 current `ocean-agent` package in the member guest before starting the
 case. Put its verified member JSON with native reader and writer SIDs
@@ -303,6 +315,17 @@ The harness uses an isolated regional etcd prefix with fixture ARM
 principals. The Debian node goes through real mTLS enrollment and applies
 the actual RBD and Samba operations. The joined client checks Kerberos data
 access and reads an acknowledged file after the ACL update.
+
+Select `WORKPLACE-31` with the same command to verify live share-grant
+revocation. This case also needs the second directory controller at
+`10.232.1.13`, `cifs-utils` and `keyutils` on the Debian client, and
+`nftables` on the member. The probe caches a Kerberos service ticket
+from the second controller and keeps an open CIFS descriptor. It removes
+the writer's share grant on the directory writer while the member
+has lost its management path. The case allows 20 seconds from that
+mutation for the old handle and a new connection using only the cached
+ticket to lose access. An unaffected reader must still read the
+checkpoint and receive a denial on writes.
 
 ### Windows and Debian SMB access
 
