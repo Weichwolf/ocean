@@ -82,23 +82,27 @@ func (k keycloakAdmin) ensureDirectoryFederation(ctx context.Context, tenant Ten
 		return federation, err
 	}
 	groupName := "ocean-samba-" + directory.ID
-	if err := k.ensureDirectoryGroupRoot(ctx, tenant.TenantID, groupName); err != nil {
+	if _, err := k.ensureDirectoryGroupRoot(ctx, tenant.TenantID, groupName); err != nil {
 		return federation, err
 	}
 	groupMapper := keycloakComponent{ID: directoryMapperID(directory.ID, "groups"), Name: "Ocean workforce security groups",
 		ParentID: provider.ID, ProviderType: keycloakLDAPMapperType, ProviderID: "group-ldap-mapper",
-		Config: componentConfig(map[string]string{
-			"groups.dn": "OU=Ocean Workforce Groups," + baseDN, "groups.path": "/" + groupName,
-			"group.name.ldap.attribute": "cn", "group.object.classes": "group",
-			"groups.ldap.filter":        "(&(!(isCriticalSystemObject=TRUE))(!(adminCount=1))(groupType=-2147483646))",
-			"membership.ldap.attribute": "member", "membership.attribute.type": "DN", "mode": "LDAP_ONLY",
-			"user.roles.retrieve.strategy": "LOAD_GROUPS_BY_MEMBER_ATTRIBUTE", "preserve.group.inheritance": "false",
-			"ignore.missing.groups": "false", "mapped.group.attributes": "objectGUID", "decode.group.uuid.attribute": "true",
-		})}
+		Config: directoryGroupMapperConfig(baseDN, groupName, "")}
 	if err := k.ensureDirectoryComponent(ctx, tenant.TenantID, groupMapper); err != nil {
 		return federation, err
 	}
 	return keycloakDirectoryFederation{ProviderID: provider.ID, GroupMapper: groupMapper.ID, GroupPath: "/" + groupName}, nil
+}
+
+func directoryGroupMapperConfig(baseDN, groupName, additionalFilter string) map[string][]string {
+	return componentConfig(map[string]string{
+		"groups.dn": "OU=Ocean Workforce Groups," + baseDN, "groups.path": "/" + groupName,
+		"group.name.ldap.attribute": "cn", "group.object.classes": "group",
+		"groups.ldap.filter":        "(&(!(isCriticalSystemObject=TRUE))(!(adminCount=1))(groupType=-2147483646)" + additionalFilter + ")",
+		"membership.ldap.attribute": "member", "membership.attribute.type": "DN", "mode": "LDAP_ONLY",
+		"user.roles.retrieve.strategy": "LOAD_GROUPS_BY_MEMBER_ATTRIBUTE", "preserve.group.inheritance": "false",
+		"ignore.missing.groups": "false", "mapped.group.attributes": "objectGUID", "decode.group.uuid.attribute": "true",
+	})
 }
 
 func validLDAPSConnector(raw string) bool {
@@ -201,7 +205,7 @@ func (k keycloakAdmin) checkDirectoryAccountMapper(ctx context.Context, tenant, 
 	return nil
 }
 
-func (k keycloakAdmin) ensureDirectoryGroupRoot(ctx context.Context, tenant, name string) error {
+func (k keycloakAdmin) ensureDirectoryGroupRoot(ctx context.Context, tenant, name string) (string, error) {
 	var group struct {
 		ID         string              `json:"id"`
 		Path       string              `json:"path"`
@@ -217,7 +221,7 @@ func (k keycloakAdmin) ensureDirectoryGroupRoot(ctx context.Context, tenant, nam
 	}
 	if err != nil || status != http.StatusOK || !tenantID.MatchString(group.ID) || group.Path != "/"+name ||
 		!slices.Equal(group.Attributes["oceanLDAPBinding"], []string{name}) {
-		return errors.New("unable to confirm the managed Keycloak group root")
+		return "", errors.New("unable to confirm the managed Keycloak group root")
 	}
-	return nil
+	return group.ID, nil
 }

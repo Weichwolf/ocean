@@ -107,6 +107,12 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		directoryFederation.BlockedReason = "Provide OCEAN_E2E_SAMBA_FEDERATION_STATE with the isolated Samba controller pair configured for LDAPS."
 	}
 	directoryFederation = requireFile(directoryFederation, filepath.Join(federationState, "directory-id"), "the Samba federation fixture state")
+	webAdmission := harness.Step{Name: "managed-web-application-admission", Cases: []string{"WORKPLACE-20"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWebAdmissionLab$", "./internal/identity"}, BlockedReason: directoryFederation.BlockedReason}
+	if webAdmission.BlockedReason == "" {
+		webAdmission.BlockedReason = cli.BlockedReason
+	}
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
@@ -159,5 +165,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
-		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation)
+		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission)
 }

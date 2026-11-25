@@ -33,6 +33,10 @@ const keycloakWebClientProfile = "ocean-web-v1"
 // It leaves the client disabled until its directory admission policy is ready.
 // The caller supplies the ID of the tenant's dedicated browser flow.
 func (k keycloakAdmin) prepareWebClient(ctx context.Context, app Application, browserFlowID string) (string, error) {
+	return k.reconcileWebClient(ctx, app, browserFlowID, keycloakWebScope{})
+}
+
+func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, browserFlowID string, scope keycloakWebScope) (string, error) {
 	if !app.Valid(app.TenantID) || len(app.WebRedirectURIs) == 0 || app.PrincipalID != "" ||
 		len(app.Credentials) != 0 || !tenantID.MatchString(browserFlowID) {
 		return "", errors.New("a dedicated web application and browser flow are required")
@@ -88,18 +92,57 @@ func (k keycloakAdmin) prepareWebClient(ctx context.Context, app Application, br
 			return "", fmt.Errorf("unable to create the web application client, Keycloak status %d", status)
 		}
 	}
-	if len(clients) != 1 || !clients[0].matchesPrepared(wanted) {
+	if len(clients) != 1 {
 		return "", errors.New("unable to confirm the prepared web application client")
 	}
-	return clients[0].ID, nil
+	client := clients[0]
+	if scope.Name == "" {
+		if !client.matchesWebClient(wanted) {
+			return "", errors.New("unable to confirm the prepared web application client")
+		}
+		return client.ID, nil
+	}
+	if !tenantID.MatchString(scope.ID) || scope.Name != "ocean-web-policy-"+app.ID {
+		return "", errors.New("invalid web application policy scope")
+	}
+	wanted.ID = client.ID
+	withScope := wanted
+	withScope.DefaultClientScopes = []string{"basic", scope.Name}
+	active := withScope
+	active.Enabled = true
+	if client.matchesWebClient(active) {
+		return client.ID, nil
+	}
+	path := "/clients/" + client.ID
+	if client.matchesWebClient(wanted) {
+		_, _ = k.directoryRequest(ctx, app.TenantID, http.MethodPut, path+"/default-client-scopes/"+scope.ID, nil, nil)
+		clients, err = lookup()
+		if err != nil || len(clients) != 1 {
+			return "", errors.New("unable to confirm the web application policy scope binding")
+		}
+		client = clients[0]
+	}
+	if client.matchesWebClient(active) {
+		return client.ID, nil
+	}
+	if !client.matchesWebClient(withScope) {
+		return "", errors.New("unable to confirm the disabled web application with its policy scope")
+	}
+	_, _ = k.directoryRequest(ctx, app.TenantID, http.MethodPut, path, active, nil)
+	clients, err = lookup()
+	if err != nil || len(clients) != 1 || !clients[0].matchesWebClient(active) {
+		return "", errors.New("unable to confirm the enabled web application with its policy scope")
+	}
+	return client.ID, nil
 }
 
-func (client keycloakWebClient) matchesPrepared(wanted keycloakWebClient) bool {
+func (client keycloakWebClient) matchesWebClient(wanted keycloakWebClient) bool {
 	if !tenantID.MatchString(client.ID) || client.ClientID != wanted.ClientID || client.Protocol != wanted.Protocol ||
-		client.Enabled || !client.Public || !client.StandardFlow || client.ImplicitFlow || client.DirectGrants ||
+		(wanted.ID != "" && client.ID != wanted.ID) || client.Enabled != wanted.Enabled ||
+		!client.Public || !client.StandardFlow || client.ImplicitFlow || client.DirectGrants ||
 		client.FullScope || client.Service || len(client.WebOrigins) != 0 || !slices.Equal(client.RedirectURIs, wanted.RedirectURIs) ||
 		len(client.BrowserBindings) != 1 || client.BrowserBindings["browser"] != wanted.BrowserBindings["browser"] ||
-		!slices.Equal(client.DefaultClientScopes, wanted.DefaultClientScopes) || len(client.OptionalClientScopes) != 0 ||
+		!slices.Equal(slices.Sorted(slices.Values(client.DefaultClientScopes)), wanted.DefaultClientScopes) || len(client.OptionalClientScopes) != 0 ||
 		len(client.Mappers) != len(wanted.Mappers) {
 		return false
 	}

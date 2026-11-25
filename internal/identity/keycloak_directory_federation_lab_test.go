@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
@@ -36,7 +37,20 @@ type ldapFixtureGroup struct {
 	Attributes map[string][]string `json:"attributes"`
 }
 
-func TestKeycloakDirectoryFederationLab(t *testing.T) {
+type sambaDirectoryLab struct {
+	ctx        context.Context
+	admin      keycloakAdmin
+	tenant     TenantReservation
+	directory  ManagedDirectory
+	primary    string
+	connectors [2]string
+	cloud      CloudEndpoints
+	firstAdmin onboardingRequest
+	value      func(string) string
+}
+
+func keycloakSambaLab(t *testing.T, cloud CloudEndpoints) sambaDirectoryLab {
+	t.Helper()
 	state := os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE")
 	if state == "" {
 		t.Skip("set OCEAN_E2E_SAMBA_FEDERATION_STATE for the disposable Samba replica pair")
@@ -53,11 +67,17 @@ func TestKeycloakDirectoryFederationLab(t *testing.T) {
 	if !strings.HasPrefix(primary, "ocean-web-ad-") {
 		t.Fatal("use a disposable Samba federation fixture")
 	}
-	ctx, admin, tenant, _ := keycloakTenantLab(t)
+	ctx, admin, tenant, cloud, firstAdmin := keycloakTenantLab(t, cloud)
 	directory := ManagedDirectory{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID, ID: value("directory-id"),
 		Spec:        DirectorySpec{DNSName: federationLabDomain, NetBIOSName: "OCEANWEB", SubnetID: "/fixture/subnet"},
 		RequestedAt: time.Now().Add(-time.Minute), ProvisionedAt: time.Now(), DomainSID: value("sid")}
 	connectors := [2]string{"ldaps://127.0.0.1:" + value("port1"), "ldaps://127.0.0.1:" + value("port2")}
+	return sambaDirectoryLab{ctx, admin, tenant, directory, primary, connectors, cloud, firstAdmin, value}
+}
+
+func TestKeycloakDirectoryFederationLab(t *testing.T) {
+	lab := keycloakSambaLab(t, CloudEndpoints{})
+	ctx, admin, tenant, directory, connectors, primary, value := lab.ctx, lab.admin, lab.tenant, lab.directory, lab.connectors, lab.primary, lab.value
 	bind := value("reader")
 	if _, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, "Invalid-"+newUUID()); err == nil {
 		t.Fatal("prepared LDAP federation with an invalid reader credential")
@@ -271,23 +291,32 @@ func sambaFederationPodman(ctx context.Context, args ...string) ([]byte, error) 
 }
 
 func sambaFederationGraph(ctx context.Context, controller, operation string, fields map[string]any, selector, member string) error {
+	reply, err := runSambaFederationGraph(ctx, controller, operation, fields, selector, member)
+	if err != nil {
+		return err
+	}
+	if reply.Status != http.StatusNoContent {
+		return fmt.Errorf("Samba federation fixture operation %s returned status %d", operation, reply.Status)
+	}
+	return nil
+}
+
+func runSambaFederationGraph(ctx context.Context, controller, operation string, fields map[string]any, selector, member string) (enrollment.DirectoryGraphResult, error) {
+	var reply enrollment.DirectoryGraphResult
 	payload, err := json.Marshal(map[string]any{"id": newUUID(), "expiresAt": time.Now().Add(time.Minute).Unix(),
 		"operation": operation, "fields": fields, "selector": selector, "member": member})
 	if err != nil {
-		return err
+		return reply, err
 	}
 	command := exec.CommandContext(ctx, "nice", "-n", "10", "podman", "exec", "-i", controller, "/usr/bin/python3",
 		"/usr/local/lib/ocean-directory/controller.py", "graph")
 	command.Stdin = bytes.NewReader(payload)
 	result, err := command.Output()
 	if err != nil {
-		return fmt.Errorf("Samba federation fixture operation %s: %w", operation, err)
+		return reply, fmt.Errorf("Samba federation fixture operation %s: %w", operation, err)
 	}
-	var reply struct {
-		Status int `json:"status"`
+	if err := json.Unmarshal(result, &reply); err != nil {
+		return reply, fmt.Errorf("decode Samba federation fixture result: %w", err)
 	}
-	if err := json.Unmarshal(result, &reply); err != nil || reply.Status != http.StatusNoContent {
-		return fmt.Errorf("Samba federation fixture operation %s returned status %d", operation, reply.Status)
-	}
-	return nil
+	return reply, nil
 }

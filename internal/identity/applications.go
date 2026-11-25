@@ -15,13 +15,14 @@ import (
 
 // Application is the durable directory record for a tenant-owned application.
 type Application struct {
-	TenantID        string             `json:"tenantId"`
-	ID              string             `json:"id"`
-	ClientID        string             `json:"appId"`
-	DisplayName     string             `json:"displayName"`
-	PrincipalID     string             `json:"principalId,omitempty"`
-	Credentials     []ClientCredential `json:"credentials,omitempty"`
-	WebRedirectURIs []string           `json:"webRedirectUris,omitempty"`
+	TenantID        string                `json:"tenantId"`
+	ID              string                `json:"id"`
+	ClientID        string                `json:"appId"`
+	DisplayName     string                `json:"displayName"`
+	PrincipalID     string                `json:"principalId,omitempty"`
+	Credentials     []ClientCredential    `json:"credentials,omitempty"`
+	WebRedirectURIs []string              `json:"webRedirectUris,omitempty"`
+	WebPolicy       *webApplicationPolicy `json:"webPolicy,omitempty"`
 }
 
 // ClientCredential stores metadata and a keyed verifier rather than the secret.
@@ -43,7 +44,8 @@ type ApplicationStore interface {
 func (a Application) Valid(tenant string) bool {
 	return a.TenantID == tenant && tenantID.MatchString(a.TenantID) && tenantID.MatchString(a.ID) &&
 		tenantID.MatchString(a.ClientID) && (a.PrincipalID == "" || tenantID.MatchString(a.PrincipalID)) && a.DisplayName != "" &&
-		validWebRedirectURIs(a.WebRedirectURIs)
+		validWebRedirectURIs(a.WebRedirectURIs) && (a.WebPolicy == nil || len(a.WebRedirectURIs) != 0 &&
+		a.PrincipalID == "" && len(a.Credentials) == 0 && a.WebPolicy.valid())
 }
 
 func validWebRedirectURIs(uris []string) bool {

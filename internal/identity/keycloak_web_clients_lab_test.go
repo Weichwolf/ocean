@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func keycloakTenantLab(t *testing.T) (context.Context, keycloakAdmin, TenantReservation, CloudEndpoints) {
+func keycloakTenantLab(t *testing.T, cloud CloudEndpoints) (context.Context, keycloakAdmin, TenantReservation, CloudEndpoints, onboardingRequest) {
 	t.Helper()
 	origin := os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN")
 	if origin == "" {
@@ -36,7 +36,12 @@ func keycloakTenantLab(t *testing.T) (context.Context, keycloakAdmin, TenantRese
 	registration := TenantReservation{TenantID: tenant, Administrator: newUUID(), SubscriptionID: newUUID(), Fingerprint: newUUID()}
 	input := onboardingRequest{DisplayName: "Ocean browser fixture", AdministratorUPN: "fixture-admin@ocean.test",
 		AdministratorPassword: strings.Repeat("Oc9-"+newUUID(), 2)}
-	cloud := CloudEndpoints{ResourceManager: "https://arm.ocean.test", MicrosoftGraph: "https://graph.ocean.test"}
+	if cloud.ResourceManager == "" {
+		cloud.ResourceManager = "https://arm.ocean.test"
+	}
+	if cloud.MicrosoftGraph == "" {
+		cloud.MicrosoftGraph = "https://graph.ocean.test"
+	}
 	fixture := tenantRealm(registration, input, cloud, newUUID())
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 8*time.Second)
@@ -59,32 +64,27 @@ func keycloakTenantLab(t *testing.T) (context.Context, keycloakAdmin, TenantRese
 	if err := admin.ensureRealm(ctx, registration, fixture); err != nil {
 		t.Fatal(err)
 	}
-	return ctx, admin, registration, cloud
+	return ctx, admin, registration, cloud, input
 }
 
 func TestKeycloakWebClientsLab(t *testing.T) {
-	ctx, admin, registration, cloud := keycloakTenantLab(t)
+	ctx, admin, registration, cloud, _ := keycloakTenantLab(t, CloudEndpoints{})
 	tenant, origin := registration.TenantID, admin.endpoints[0]
-	const alias = "Ocean web client fixture"
-	status, err := admin.directoryRequest(ctx, tenant, http.MethodPost, "/authentication/flows/browser/copy",
-		map[string]string{"newName": alias}, nil)
-	if err != nil || status != http.StatusCreated {
-		t.Fatalf("copy fixture browser flow: status %d, %v", status, err)
+	profile, err := admin.ensureWebBrowserProfile(ctx, registration)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var flows []struct {
-		ID    string `json:"id"`
-		Alias string `json:"alias"`
+	if replay, err := admin.ensureWebBrowserProfile(ctx, registration); err != nil || replay != profile {
+		t.Fatalf("replay the dedicated browser profile: %v", err)
 	}
-	status, err = admin.directoryRequest(ctx, tenant, http.MethodGet, "/authentication/flows", nil, &flows)
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("list browser flows: status %d, %v", status, err)
+	var realm struct {
+		BrowserFlow string `json:"browserFlow"`
 	}
-	var flowID string
-	for _, flow := range flows {
-		if flow.Alias == "Ocean web client fixture" {
-			flowID = flow.ID
-		}
+	if status, err := admin.directoryRequest(ctx, tenant, http.MethodGet, "", nil, &realm); err != nil ||
+		status != http.StatusOK || realm.BrowserFlow != "browser" {
+		t.Fatalf("the default realm browser binding changed: status %d, %v", status, err)
 	}
+	flowID := profile.BrowserID
 	first := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Web fixture A",
 		WebRedirectURIs: []string{"https://first.apps.ocean.test/oidc/callback"}}
 	second := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Web fixture B",

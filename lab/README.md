@@ -1015,8 +1015,9 @@ origin, `OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT` to an admin service account client
 with the `kc-admin-api` scope, and `OCEAN_E2E_KEYCLOAK_ADMIN_SECRET` to its
 private secret file. The Go client must trust the instance's TLS certificate.
 The test creates and removes an isolated tenant realm. It confirms that two
-web registrations preserve their callback and browser-flow bindings, and
-that the prepared clients reject authorization before a policy is published.
+web registrations preserve their callbacks and share a dedicated browser
+flow with no change to the tenant realm's default flow. The prepared clients
+reject authorization before a policy is published.
 
 `WORKPLACE-19` uses the same Keycloak admin access with an isolated pair of
 Samba controllers on the test machine. The Keycloak truststore must contain
@@ -1041,6 +1042,49 @@ SID authorization. It then checks group removal and disabled credentials
 with a test-only Keycloak password client. Samba rejects membership changes
 attempted via the LDAP reader. The browser and application access tests have
 their own acceptance criteria.
+
+### Publish a managed web application
+
+Configure `identity.onboarding.webDirectories` on each regional API replica.
+Each key is a tenant ID. Its entry identifies the managed `directoryId` and
+`domainSid`, two ordered private `ldaps://host:port` `connectors`, and a
+`readerSecretFile` readable by the API process with owner-only permissions.
+The connectors must reach the same Samba domain from every Keycloak replica.
+Install the issuers of both endpoint certificates in the Keycloak truststore
+and provision `ocean-sso-reader` as an ordinary account outside the workforce
+OU. The API checks both reader binds before first enabling LDAP federation.
+
+Register a web application with `az ad app create` and save its application
+object ID. Sign in as the tenant administrator to publish a list of up to
+32 managed AD security group GUIDs that can access it.
+
+```sh
+policy_url="$OCEAN_ARM/ocean/tenants/$TENANT_ID/directory/webApplications/$APPLICATION_OBJECT_ID?api-version=2026-11-01"
+az rest --method put --url "$policy_url" --body @web-policy.json -o json
+az rest --method get --url "$policy_url" -o json
+```
+
+`web-policy.json` contains `{"groupIds":["<managed-ad-group-object-guid>"]}`.
+Replaying the same group set preserves the client. A different set returns
+`WebApplicationPolicyConflict`. Update native AD membership to grant or
+revoke a user's access. If publication reports a temporary provider failure,
+replay the original request. A GET reports `Pending` for a reserved policy
+until the native client is enabled and confirmed.
+
+Use the returned `issuer`, the Graph `appId`, the exact registered callback,
+and OIDC authorization code with S256 PKCE. The browser client requires the
+`ocean-web` assurance claim, issues no refresh tokens, and uses a 120-second
+access-token lifetime. Validate the issuer, client audience, nonce and
+expiry when consuming tokens. The LDAP group filter uses native object
+GUIDs, so a recreated group with the same name requires its own policy grant.
+
+`WORKPLACE-20` uses the WORKPLACE-19 fixtures and stock Azure CLI 2.93.0. It
+publishes two policies through `az rest` with a signed Keycloak ARM credential,
+then drives the browser password and OTP path through LDAP with two distinct
+groups. It checks shared SSO, invalid redirect and PKCE rejection, selective
+group revocation and group-name reuse. The case uses loopback ingress and a
+disposable application store. Native Windows and Debian Kerberos acceptance
+uses a separate domain-client fixture.
 
 ## ARM resource groups
 
