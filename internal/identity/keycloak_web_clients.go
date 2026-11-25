@@ -29,13 +29,6 @@ type keycloakWebClient struct {
 
 const keycloakWebClientProfile = "ocean-web-v1"
 
-// prepareWebClient binds a Graph registration to a dedicated OIDC client.
-// It leaves the client disabled until its directory admission policy is ready.
-// The caller supplies the ID of the tenant's dedicated browser flow.
-func (k keycloakAdmin) prepareWebClient(ctx context.Context, app Application, browserFlowID string) (string, error) {
-	return k.reconcileWebClient(ctx, app, browserFlowID, keycloakWebScope{})
-}
-
 func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, browserFlowID string, scope keycloakWebScope) (string, error) {
 	if !app.Valid(app.TenantID) || len(app.WebRedirectURIs) == 0 || app.PrincipalID != "" ||
 		len(app.Credentials) != 0 || !tenantID.MatchString(browserFlowID) {

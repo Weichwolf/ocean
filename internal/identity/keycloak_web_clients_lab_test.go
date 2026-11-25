@@ -105,37 +105,39 @@ func TestKeycloakWebClientsLab(t *testing.T) {
 		status != http.StatusOK || realm.BrowserFlow != "browser" {
 		t.Fatalf("the default realm browser binding changed: status %d, %v", status, err)
 	}
-	flowID := profile.BrowserID
+	prepare := func(app Application) (string, error) {
+		return admin.reconcileWebClient(ctx, app, profile.BrowserID, keycloakWebScope{})
+	}
 	first := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Web fixture A",
 		WebRedirectURIs: []string{"https://first.apps.ocean.test/oidc/callback"}}
 	second := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Web fixture B",
 		WebRedirectURIs: []string{"https://second.apps.ocean.test/oidc/callback"}}
-	firstID, err := admin.prepareWebClient(ctx, first, flowID)
+	firstID, err := prepare(first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondID, err := admin.prepareWebClient(ctx, second, flowID)
+	secondID, err := prepare(second)
 	if err != nil || secondID == firstID {
 		t.Fatalf("prepare a separate client: got %q, %v", secondID, err)
 	}
-	if replay, err := admin.prepareWebClient(ctx, first, flowID); err != nil || replay != firstID {
+	if replay, err := prepare(first); err != nil || replay != firstID {
 		t.Fatalf("prepare the same client again: got %q, %v", replay, err)
 	}
 
 	changed := first
 	changed.WebRedirectURIs = second.WebRedirectURIs
-	if _, err := admin.prepareWebClient(ctx, changed, flowID); err == nil {
+	if _, err := prepare(changed); err == nil {
 		t.Fatal("preparation accepted a change to the exact callback")
 	}
 	changed = first
 	changed.ID = newUUID()
-	if _, err := admin.prepareWebClient(ctx, changed, flowID); err == nil {
+	if _, err := prepare(changed); err == nil {
 		t.Fatal("preparation adopted a different Graph object")
 	}
 	if _, err := admin.ensureServicePrincipal(ctx, first, CloudEndpoints{}, "unused"); err == nil {
 		t.Fatal("a web client was adopted as a service principal")
 	}
-	if replay, err := admin.prepareWebClient(ctx, first, flowID); err != nil || replay != firstID {
+	if replay, err := prepare(first); err != nil || replay != firstID {
 		t.Fatalf("a rejected request changed the prepared client: got %q, %v", replay, err)
 	}
 	automation := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Automation fixture"}
@@ -146,7 +148,7 @@ func TestKeycloakWebClientsLab(t *testing.T) {
 	}
 	changed = automation
 	changed.WebRedirectURIs = first.WebRedirectURIs
-	if _, err := admin.prepareWebClient(ctx, changed, flowID); err == nil {
+	if _, err := prepare(changed); err == nil {
 		t.Fatal("preparation adopted an existing service principal client")
 	}
 	if replay, err := admin.ensureServicePrincipal(ctx, automation, cloud, secret); err != nil || replay != subject {
