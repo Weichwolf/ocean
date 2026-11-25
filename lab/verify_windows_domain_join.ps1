@@ -48,7 +48,7 @@ switch ($Profile) {
 }
 
 $records = Resolve-DnsName "_ldap._tcp.dc._msdcs.$domain" -Type SRV -DnsOnly
-if (-not ($records | Where-Object { $_.NameTarget.TrimEnd('.') -ieq $controller -and $_.Port -eq 389 })) {
+if (-not ($records | Where-Object { ([string]$_.NameTarget).TrimEnd('.') -ieq $controller -and $_.Port -eq 389 })) {
     throw 'The domain DNS service record did not identify the test controller'
 }
 
