@@ -64,6 +64,12 @@ Select `WORKPLACE-08` explicitly with `OCEAN_E2E_SAMBA_IMAGE` and
 client verifies access to the named computer, denied joins for other
 computers, a fresh machine keytab, and authorization closure and expiry.
 
+Select `WORKPLACE-09` explicitly with the same images, stock Azure CLI
+2.93.0, and an isolated `OCEAN_E2E_DIRECTORY_ETCD` endpoint. The test wires
+the regional ARM and enrollment handlers to a real etcd store. The certified
+node agent runs the staged job on a single Samba lab controller and Debian
+compares the actual join result with the CLI's authorization states.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

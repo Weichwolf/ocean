@@ -28,6 +28,10 @@ VALIDATED_DNS_HOST = "72e39547-7b18-11d1-adef-00c04fd8d5cd"
 VALIDATED_SPN = "f3a64788-5306-11d1-a9c5-0000f80367c1"
 
 
+class JoinConflict(ValueError):
+    pass
+
+
 def open_directory(config):
     lp = LoadParm()
     lp.load(str(config))
@@ -158,7 +162,7 @@ def managed_join(database, request, stage):
         now = int(time.time())
         if user is None:
             if not stage or now >= expires or computer is not None:
-                raise ValueError("join request is expired or the computer name is already in use")
+                raise JoinConflict("join request is expired or the computer name is already in use")
             restrict_machine_creation(database)
             database.newcomputer(machine)
             computer = principal(database, machine + "$", *COMPUTER_ATTRS)
@@ -171,17 +175,17 @@ def managed_join(database, request, stage):
             SDUtils(database).dacl_add_ace(computer.dn, join_rights(database, sid))
             return name
         if computer is None or b"computer" not in computer["objectClass"]:
-            raise ValueError("join authorization lost its target computer")
+            raise JoinConflict("join authorization lost its target computer")
         marker = f"Ocean join {request_id} {object_guid(database, computer)}".encode()
         if user.get("description", [b""])[0] != marker or int(user["accountExpires"][0]) != expected_expiry:
-            raise ValueError("join authorization does not match its target and expiration")
+            raise JoinConflict("join authorization does not match its target and expiration")
         flags = user_flags(user)
         if stage:
             if flags & dsdb.UF_ACCOUNTDISABLE or now >= expires or computer_has_password(computer):
-                raise ValueError("join authorization was consumed or expired")
+                raise JoinConflict("join authorization was consumed or expired")
             return name
         if not flags & dsdb.UF_ACCOUNTDISABLE:
             if now < expires and not computer_has_password(computer):
-                raise ValueError("the client has not joined and the authorization is still active")
+                raise JoinConflict("the client has not joined and the authorization is still active")
             revoke(database, user, computer)
         return name

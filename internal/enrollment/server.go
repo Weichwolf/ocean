@@ -91,6 +91,8 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/identity", a.directoryIdentity)
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/replica-retired", a.directoryReplicaRetired)
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/health", a.directoryHealth)
+	mux.HandleFunc("GET /ocean/hosts/{host}/directories/{tenant}/{generation}/join-task", a.directoryJoinTask)
+	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/join-task", a.directoryJoinTask)
 	mux.HandleFunc("GET /ocean/hosts/{host}/share-jobs", a.storageJobs)
 	mux.HandleFunc("GET /ocean/hosts/{host}/volume-mounts", a.volumeMounts)
 	mux.HandleFunc("POST /ocean/hosts/{host}/volume-unmounts", a.volumeUnmount)

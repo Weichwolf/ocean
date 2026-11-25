@@ -370,6 +370,43 @@ The replica workflow requires a valid directory join credential. The
 physical-host fencing run, primary replacement, and Windows and Debian
 client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
+### Regional delegated machine joins
+
+The tenant administrator can issue a join authorization with the stock Azure
+CLI. Use a new lowercase UUID for the authorization and a private JSON file
+with `machineName`, `expiresAt`, and `password`. Use an uppercase NetBIOS
+computer name, a Unix timestamp 15 seconds to 10 minutes in the future, and a
+random password of 32 to 128 printable ASCII characters.
+
+```sh
+join_url="$directory_url_base/joinAuthorizations/$AUTHORIZATION_ID"
+az rest --method put --url "$join_url?api-version=2026-11-01" \
+  --body @"$PRIVATE_STAGE_REQUEST" -o json
+az rest --method get --url "$join_url?api-version=2026-11-01" -o json
+az rest --method post --url "$join_url/close?api-version=2026-11-01" -o json
+```
+
+Set `directory_url_base` to the managed directory URL before its query string.
+Wait for `Ready`, then use its `userPrincipalName` and the submitted password
+to join the named computer. After the guest verifies its secure channel,
+submit the close request and read the status until it is `Closed`. A
+premature close returns to `Ready` once the writer rejects the operation.
+Other outcomes are `Rejected` for a rejected stage and `Expired` at the
+authorization deadline. Replay the same UUID, name, and deadline to read the
+original authorization. The first accepted password applies for its lifetime.
+
+The region serializes join actions per directory. The password is sealed
+while the request waits on a short-lived etcd key. Only the certified writer
+and its current assignment generation can read the job. The agent passes the
+request to Samba on standard input. The result and audit records contain
+authorization metadata. Protect the local request file and avoid debug
+logging when transmitting its body.
+
+Run `WORKPLACE-09` with the same images as `WORKPLACE-08`, plus
+`OCEAN_E2E_DIRECTORY_ETCD` pointing to a disposable etcd endpoint and pinned
+Azure CLI 2.93.0. The case uses a loopback TLS issuer and regional API, a real
+mTLS worker, a single local Samba writer, and the Debian client fixture.
+
 ### Delegated join on the directory writer
 
 The controller can prestage a computer and issue permissions to a temporary AD
@@ -403,8 +440,8 @@ the original request ID, machine name, and expiry. Close after the client
 verifies its machine credential. Closing disables the principal and removes
 its ACLs. If unused, the authorization expires in AD and the writer removes
 its ACLs. The credential is active until close or expiry. This procedure runs
-locally on the designated writer. Regional `az rest` issuance and validation
-from Windows guests remain separate delivery gates.
+locally on the designated writer. Validation from Windows guests is tracked
+in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 Run `WORKPLACE-08` with the controller image and the isolated Debian client
 fixture built from `tests/e2e/testdata/workloads/domain-join-client`. Supply both

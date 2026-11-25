@@ -48,6 +48,20 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if options.adcliImage == "" && delegation.BlockedReason == "" {
 		delegation.BlockedReason = "Provide OCEAN_E2E_ADCLI_IMAGE with the locally built Debian directory client image ID."
 	}
+	regionalJoin := harness.Step{Name: "regional-directory-join", Cases: []string{"WORKPLACE-09"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDirectoryJoin$", "./internal/controlplane"},
+		BlockedReason: delegation.BlockedReason}
+	if regionalJoin.BlockedReason == "" {
+		switch {
+		case os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "":
+			regionalJoin.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
+		default:
+			if _, err := exec.LookPath("az"); err != nil {
+				regionalJoin.BlockedReason = "Install the pinned Azure CLI 2.93.0 for the regional join probe."
+			}
+		}
+	}
 	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
 		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
 			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
@@ -60,5 +74,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
 		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
 	}
-	return append(steps, runtime, cli, fencing, recovery, delegation)
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin)
 }

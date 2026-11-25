@@ -765,6 +765,9 @@ if __name__ == "__main__":
             sys.exit(serve(settings))
         else:
             raise ValueError("unsupported directory command")
+    except domain_join.JoinConflict:
+        print("Directory join authorization was rejected.", file=sys.stderr)
+        sys.exit(3)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, KeyError) as error:
         # Provisioning diagnostics remain in the private volume.
         print(f"Directory controller failed ({type(error).__name__}).", file=sys.stderr)

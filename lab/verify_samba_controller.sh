@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--delegated-join)?$ ]]; then
-    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--delegated-join]\n' "$0" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--delegated-join|--hold-controller)?$ ]]; then
+    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--delegated-join|--hold-controller]\n' "$0" >&2
     exit 2
 fi
 image=$1
 if [[ ${2:-} == --delegated-join && ! ${OCEAN_E2E_ADCLI_IMAGE:-} =~ ^sha256:[a-f0-9]{64}$ ]]; then
     printf 'Set OCEAN_E2E_ADCLI_IMAGE to the local Debian join client image ID.\n' >&2
+    exit 2
+fi
+if [[ ${2:-} == --hold-controller && ${OCEAN_E2E_DIRECTORY_HANDOFF:-} != /* ]]; then
+    printf 'Set OCEAN_E2E_DIRECTORY_HANDOFF to a file in the private fixture directory.\n' >&2
     exit 2
 fi
 umask 077
@@ -243,25 +247,7 @@ same_policy() {
     test "$hash" = "$(grep -Ex '[a-f0-9]{64}' <<<"$2")"
 }
 debian_join() {
-    local machine=$1 user=$2
-    p run --rm -i --network "$net" --entrypoint /bin/bash "$OCEAN_E2E_ADCLI_IMAGE" -c '
-        set -euo pipefail
-        umask 077
-        printf "nameserver %s\noptions timeout:1 attempts:2\n" "$1" >/etc/resolv.conf
-        private=$(mktemp -d)
-        export KRB5_CONFIG="$private/krb5.conf" KRB5CCNAME="FILE:$private/ticket"
-        printf "%s\n" "[libdefaults]" "default_realm = AD.RUNTIME.TEST" "rdns = false" \
-            "[realms]" "AD.RUNTIME.TEST = {" "kdc = $1" "}" >"$KRB5_CONFIG"
-        if [[ "$2" == authenticate ]]; then
-            timeout 10 kinit "$3@AD.RUNTIME.TEST"
-            exit
-        fi
-        timeout 20 adcli join --domain ad.runtime.test --domain-controller dc01.ad.runtime.test \
-            --computer-name "$2" --host-fqdn "${2,,}.ad.runtime.test" --login-user "$3" \
-            --stdin-password --host-keytab "$private/host.keytab"
-        timeout 10 adcli testjoin --domain ad.runtime.test --domain-controller dc01.ad.runtime.test \
-            --host-keytab "$private/host.keytab"
-    ' -- "$addr" "$machine" "$user"
+    bash "$(dirname -- "$0")/run_adcli_probe.sh" "$OCEAN_E2E_ADCLI_IMAGE" "$net" "$addr" "$1" "$2"
 }
 
 join_request() {
@@ -482,6 +468,12 @@ printf '%s\n' "$original"
 employee_sid=$(awk '$1 == "objectSid:" { print $2 }' <<<"$original")
 domain_sid=${employee_sid%-*}
 wait_health "$name" "$domain_sid"
+if [[ ${2:-} == --hold-controller ]]; then
+    printf '%s %s %s %s\n' "$name" "$net" "$addr" "$domain_sid" >"$OCEAN_E2E_DIRECTORY_HANDOFF.pending"
+    mv -- "$OCEAN_E2E_DIRECTORY_HANDOFF.pending" "$OCEAN_E2E_DIRECTORY_HANDOFF"
+    read -r _ || true
+    exit
+fi
 if [[ ${2:-} == --delegated-join ]]; then
     verify_delegated_join
     exit

@@ -254,7 +254,11 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 				}
 			}
 		}
-		failures = append(failures, j.reportDirectoryHealth(ctx, task, health))
+		reportErr := j.reportDirectoryHealth(ctx, task, health)
+		failures = append(failures, reportErr)
+		if reportErr == nil && health.Ready && task.Directory.ControllerIndex == 1 {
+			failures = append(failures, j.runDirectoryJoinTask(ctx, name, task))
+		}
 		if health.Ready && task.Directory.RetireReplica != "" {
 			failures = append(failures, j.retireDirectoryReplica(ctx, name, task))
 		}
