@@ -188,3 +188,14 @@ WORKPLACE-29	smb-share-after-fence	2.93.0	none	2026-11-01	rest --method get --ur
 WORKPLACE-30	smb-restored-share-get	2.93.0	none	2026-11-01	rest --method get --url {arm}{shareId}?api-version=2026-11-01 -o json
 WORKPLACE-31	smb-revocation-share-put	2.93.0	none	2026-11-01	rest --method put --url {arm}{shareId}?api-version=2026-11-01 --body {sharePolicyJson} -o json
 WORKPLACE-31	smb-revocation-share-delete	2.93.0	none	2026-11-01	rest --method delete --url {arm}{shareId}?api-version=2026-11-01 -o json
+WORKPLACE-33	desktop-provider	2.93.0	none	2024-11-01	rest --method get --url {arm}/subscriptions/{subscription}/providers/Ocean.Desktop?api-version=2024-11-01 -o json
+WORKPLACE-33	desktop-user-create	2.93.0	none	v1.0	ad user create --user-principal-name {upn} --display-name {displayName} --mail-nickname {alias} --password {password} -o json
+WORKPLACE-33	desktop-group-create	2.93.0	none	v1.0	ad group create --display-name {displayName} --mail-nickname {alias} -o json
+WORKPLACE-33	desktop-group-member-add	2.93.0	none	v1.0	ad group member add --group {groupObjectId} --member-id {userObjectId} -o none
+WORKPLACE-33	desktop-group-member-remove	2.93.0	none	v1.0	ad group member remove --group {groupObjectId} --member-id {userObjectId} -o none
+WORKPLACE-33	desktop-user-disable	2.93.0	none	v1.0	ad user update --id {userObjectId} --account-enabled false -o none
+WORKPLACE-33	desktop-assignment-put	2.93.0	none	2026-11-01	rest --method put --url {arm}{desktopId}?api-version=2026-11-01 --body {desktopPolicyJson} -o json
+WORKPLACE-33	desktop-assignment-get	2.93.0	none	2026-11-01	rest --method get --url {arm}{desktopId}?api-version=2026-11-01 -o json
+WORKPLACE-33	desktop-assignment-delete	2.93.0	none	2026-11-01	rest --method delete --url {arm}{desktopId}?api-version=2026-11-01
+WORKPLACE-33	desktop-vm-stop	2.93.0	none	2024-03-01	rest --method post --url {arm}{vmId}/powerOff?api-version=2024-03-01
+WORKPLACE-33	desktop-vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {arm}{vmId}?api-version=2024-03-01

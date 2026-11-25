@@ -93,7 +93,7 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	if err := sambaFederationGraph(ctx, lab.primary, "groupMemberAdd", nil, secondGroup, member); err != nil {
 		t.Fatal(err)
 	}
-	command := startAuthenticatedWebPolicyLab(t, lab, api, graph, authority, exchange)
+	compat, command := startAuthenticatedWebPolicyLab(t, lab, api, graph, authority, exchange)
 	callback, callbackCA := kerberosBrowserCallback(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if (r.URL.Path != "/a" && r.URL.Path != "/b") || !r.URL.Query().Has("code") {
 			http.NotFound(w, r)
@@ -195,6 +195,14 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	var firstBrowserSession string
 	authorizations := []browserAuthorization{newBrowserAuthorization(apps[0]), newBrowserAuthorization(apps[1])}
 	callbacks := externalMFABrowser(t, ctx, issuer, admin.endpoints[0], callbackCA, principal, lab.value("employee"), seed, authorizations, browser.Jar)
+	desktopVerifier, err := NewCompatibility(authority.URL, admin.endpoints[0], admin.client.Transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopConfig := compat.onboarding.config.WebDirectories[tenant.TenantID]
+	desktopConfig.DesktopApplicationID = apps[0].ID
+	desktopVerifier.onboarding = &onboarding{store: compat.onboarding.store, admin: admin,
+		config: OnboardingConfig{WebDirectories: map[string]WebDirectoryConfig{tenant.TenantID: desktopConfig}}}
 	for index, authorization := range authorizations {
 		page := browserPage{status: http.StatusFound, header: http.Header{"Location": {callbacks[index]}}}
 		token := exchangeBrowserCode(t, ctx, &browser, issuer, keys, authorization, page)
@@ -202,7 +210,17 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 			t.Fatal("the web apps did not reuse an assured session for the same AD user")
 		}
 		firstBrowserSession = token.SessionID
+		request := httptest.NewRequestWithContext(ctx, http.MethodPost, api.URL, nil)
+		request.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		desktop, err := desktopVerifier.AuthenticateDesktop(ctx, request)
+		if index == 0 && (err != nil || desktop.Tenant != tenant || desktop.DirectoryID != lab.directory.ID || desktop.UserID != member) {
+			t.Fatalf("the configured Keycloak desktop client did not resolve the enrolled AD object: %v", err)
+		}
+		if index == 1 && !errors.Is(err, ErrInvalidDesktopToken) {
+			t.Fatalf("a different web client received desktop authorization: %v", err)
+		}
 	}
+	t.Log("the configured desktop application authenticated the live federated browser user, and the other application's token was rejected")
 	t.Log("the two CLI-registered clients issued separate audiences for one LDAP subject and one MFA session")
 	started := time.Now()
 	if err := sambaFederationGraph(ctx, lab.primary, "groupMemberRemove", nil, secondGroup, member); err != nil {

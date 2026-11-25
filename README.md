@@ -121,6 +121,25 @@ az rest --method post \
   --url "${OCEAN_ARM_ENDPOINT}${OCEAN_VM_ID}/powerOff?api-version=2024-03-01"
 ```
 
+### Assign a personal desktop
+
+With the VM and managed directory profiles enabled, bind a prepared Linux VM
+to a managed workforce user or security group. Use the object ID from
+`az ad user show` or `az ad group show`. Set `OCEAN_DESKTOP_ID` to the resource
+ID in the same group, ending in `/providers/Ocean.Desktop/personalDesktops/{name}`.
+
+```sh
+az rest --method put \
+  --url "${OCEAN_ARM_ENDPOINT}${OCEAN_DESKTOP_ID}?api-version=2026-11-01" \
+  --body "{\"location\":\"${OCEAN_LOCATION}\",\"properties\":{\"virtualMachineId\":\"${OCEAN_VM_ID}\",\"principalType\":\"User\",\"principalId\":\"${OCEAN_DIRECTORY_OBJECT_ID}\"}}" \
+  -o json
+```
+
+Use `principalType: Group` for an AD security group. Replay preserves the
+assignment ID. Changing the principal creates a new assignment ID for the
+same VM. Delete the desktop assignment before deleting its VM. See the
+[desktop assignment acceptance case](lab/README.md#personal-desktop-assignment).
+
 ### Deploy a Linux HTTP Function
 
 Set `OCEAN_FUNCTION_APP` and `OCEAN_STORAGE_ACCOUNT` to available names and

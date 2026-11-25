@@ -38,6 +38,22 @@ def group_by_selector(database, scope, selector):
     return found[0]
 
 
+def desktop_user(database, task):
+    if not REQUEST_ID.fullmatch(task["selector"]):
+        raise GraphFailure(400)
+    user = get_user(database, workforce_dn(database), task["selector"])
+    view = user_view(database, user)
+    if not view["accountEnabled"]:
+        raise GraphFailure(404)
+    if "groupId" in task:
+        scope = ldb.Dn(database, GROUP_OU + "," + database.domain_dn())
+        group = group_by_selector(database, scope, task["groupId"])
+        expression = f"(memberOf={ldb.binary_encode(str(group.dn))})"
+        if not database.search(base=user.dn, scope=ldb.SCOPE_BASE, expression=expression, attrs=[]):
+            raise GraphFailure(404)
+    return {"status": 200, "user": view}
+
+
 def create(database, scope, fields):
     if not isinstance(fields, dict) or fields.keys() - {"displayName", "mailNickname", "description", "mailEnabled", "securityEnabled"}:
         raise GraphFailure(400)

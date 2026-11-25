@@ -285,7 +285,12 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows Kerberos serial capture")
 	desktopKerberos := probe("desktop-kerberos-delegation", options.domain, stateVariable, "verify_desktop_kerberos.py",
 		[]string{"WORKPLACE-32"}, []string{"desktop-kerberos-delegation.json"})
+	desktopAssignments := harness.Step{Name: "regional-desktop-assignments", Cases: []string{"WORKPLACE-33"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDesktopAssignments$", "./internal/controlplane"},
+		BlockedReason: regionalJoin.BlockedReason}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos,
+		desktopAssignments)
 }

@@ -47,6 +47,10 @@ func TestRegionalDirectoryGroups(t *testing.T) {
 	testRegionalDirectory(t, "groups")
 }
 
+func TestRegionalDesktopAssignments(t *testing.T) {
+	testRegionalDirectory(t, "desktops")
+}
+
 func testRegionalDirectory(t *testing.T, mode string) {
 	t.Helper()
 	endpoint, samba, adcli := os.Getenv("OCEAN_E2E_DIRECTORY_ETCD"), os.Getenv("OCEAN_E2E_SAMBA_IMAGE"), os.Getenv("OCEAN_E2E_ADCLI_IMAGE")
@@ -184,7 +188,12 @@ func testRegionalDirectory(t *testing.T, mode string) {
 	if err := compat.EnableManagedDirectories(r); err != nil {
 		t.Fatal(err)
 	}
-	handler = authority.Handler(compat.Handler())
+	handler = compat.Handler()
+	if mode == "desktops" {
+		handler = (arm.Server{Origin: api.URL, Location: r.name, Authenticate: compat.AuthenticateARM, Inventory: r,
+			Roles: r, VirtualMachines: r, Desktops: r}).Handler(handler)
+	}
+	handler = authority.Handler(handler)
 	close(ready)
 
 	authorization := operationID()
@@ -266,7 +275,11 @@ func testRegionalDirectory(t *testing.T, mode string) {
 			},
 			observe: observe, sign: sign,
 		}
-		fixture.verify(t, mode == "groups")
+		if mode == "desktops" {
+			fixture.verifyDesktops(t, r, scope)
+		} else {
+			fixture.verify(t, mode == "groups")
+		}
 		return
 	}
 	taskURL := func(controller Reservation) string {

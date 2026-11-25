@@ -369,10 +369,19 @@ func (r *Region) MutateVirtualMachine(ctx context.Context, scope arm.Subscriptio
 			current.Error = &arm.OperationError{Code: "OperationSuperseded", Message: "A deletion superseded this virtual machine operation."}
 			writes = append(writes, putJSON(r.operationKey(scope, current.ID), current))
 		}
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", revision),
-			clientv3.Compare(clientv3.Version(opKey), "=", 0)).Then(writes...).Commit()
+		guards := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", revision), clientv3.Compare(clientv3.Version(opKey), "=", 0)}
+		var conflicts []clientv3.Op
+		if desired == workload.Removed {
+			prefix := r.dependentsPrefix(scope, record.Address)
+			guards = append(guards, clientv3.Compare(clientv3.Version(prefix), "=", 0).WithPrefix())
+			conflicts = append(conflicts, clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithCountOnly()))
+		}
+		result, err := r.client.Txn(ctx).If(guards...).Then(writes...).Else(conflicts...).Commit()
 		if err != nil || result.Succeeded {
 			return &op, err
+		}
+		if desired == workload.Removed && result.Responses[0].GetResponseRange().Count != 0 {
+			return nil, arm.ErrLinkedResourceInUse
 		}
 	}
 	return nil, arm.ErrVMOperationBusy

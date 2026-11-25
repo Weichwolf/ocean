@@ -172,7 +172,7 @@ func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server
 	}
 }
 
-func startAuthenticatedWebPolicyLab(t *testing.T, lab sambaDirectoryLab, arm, graph, authority *httptest.Server, exchange string) func(string, ...string) []byte {
+func startAuthenticatedWebPolicyLab(t *testing.T, lab sambaDirectoryLab, arm, graph, authority *httptest.Server, exchange string) (*Compatibility, func(string, ...string) []byte) {
 	t.Helper()
 	compat := webPolicyLabCompatibility(t, lab, "https://"+authority.Listener.Addr().String(), nil, "")
 	compat.exchangeSecret = func(tenant string) (string, error) {
@@ -217,7 +217,7 @@ func startAuthenticatedWebPolicyLab(t *testing.T, lab sambaDirectoryLab, arm, gr
 	if output, err := prepare.CombinedOutput(); err != nil {
 		t.Fatalf("authenticate the fresh Azure CLI cache: %v\n%s", err, output)
 	}
-	return func(wantError string, args ...string) []byte {
+	return compat, func(wantError string, args ...string) []byte {
 		t.Helper()
 		command := exec.CommandContext(lab.ctx, "az", args...)
 		command.Env = env

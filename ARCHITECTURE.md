@@ -119,6 +119,21 @@ the original writer's lease expires and an authorized fencer confirms its
 power-off. Recovery preserves the image, guest identity and private IP.
 See the [KVM worker and acceptance guide](lab/README.md#debian-kvm-worker-service).
 
+Personal desktop assignment records link one prepared Linux VM to a user or
+security group in the tenant's managed Samba directory by object GUID. A
+regional transaction records the binding and audit event and guards against
+concurrent VM deletion or duplicate ownership. The VM's stable machine ID
+binds the profile to the provisioned guest through power cycles. An assignment
+ID stays stable on replay and changes with the principal.
+
+The desktop authorization action takes an MFA-assured token from a dedicated
+Keycloak application. The region resolves the federated subject to an AD object
+and checks the user's enabled state and any direct group grant on the Samba
+writer. It checks the KVM worker lease and compares current state revisions
+before returning a decision valid for at most 15 seconds. A successful decision
+contains the assignment and machine IDs. Starting and renewing a graphical
+session require the gateway and guest runtime.
+
 Pool policy constrains initial placement and recovery. The enrolled agent
 gets only the workload material required by its assignments. Regional key
 material protects sealed environment variables and volume keys. Assigned

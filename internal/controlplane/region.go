@@ -167,6 +167,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				}
 				if region.vms != nil {
 					resources.VirtualMachines = region
+					if cfg.Region.ManagedDirectories != nil {
+						resources.Desktops = region
+						resources.AuthenticateDesktop = compatibility.AuthenticateDesktop
+					}
 				}
 				if cfg.Region.FunctionPlans && cfg.Region.FunctionDomain != "" && cfg.Identity.Cloud.StorageEndpoint != "" &&
 					region.workloads != nil && region.storage != nil {

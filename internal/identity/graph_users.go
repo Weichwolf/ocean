@@ -35,13 +35,14 @@ type graphPassword struct {
 }
 
 type directoryUser struct {
-	ID         string              `json:"id"`
-	Name       string              `json:"username"`
-	Email      string              `json:"email,omitempty"`
-	FirstName  string              `json:"firstName,omitempty"`
-	LastName   string              `json:"lastName,omitempty"`
-	Enabled    bool                `json:"enabled"`
-	Attributes map[string][]string `json:"attributes,omitempty"`
+	ID             string              `json:"id"`
+	Name           string              `json:"username"`
+	Email          string              `json:"email,omitempty"`
+	FirstName      string              `json:"firstName,omitempty"`
+	LastName       string              `json:"lastName,omitempty"`
+	Enabled        bool                `json:"enabled"`
+	Attributes     map[string][]string `json:"attributes,omitempty"`
+	FederationLink string              `json:"federationLink,omitempty"`
 }
 
 type graphUserView struct {

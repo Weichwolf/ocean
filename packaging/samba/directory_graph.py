@@ -5,7 +5,7 @@ import time
 
 import ldb
 
-from directory_groups import group_operation
+from directory_groups import desktop_user, group_operation
 from directory_users import GraphFailure, user_operation
 from domain_join import REQUEST_ID, transaction
 
@@ -21,6 +21,8 @@ def run(database, domain, stream):
         with transaction(database):
             if int(time.time()) >= task["expiresAt"]:
                 raise GraphFailure(409)
+            if task["operation"] == "userDesktopCheck":
+                return desktop_user(database, task)
             if task["operation"].startswith("group"):
                 return group_operation(database, task)
             return user_operation(database, domain, task)

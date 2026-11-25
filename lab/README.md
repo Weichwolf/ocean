@@ -696,6 +696,24 @@ OCEAN_E2E_PROFILE=vm-worker \
     -run '^TestAcceptance$' ./tests/e2e
 ```
 
+### Personal desktop assignment
+
+Select `WORKPLACE-33` with disposable etcd and locally built Samba and
+Debian directory client images. The test seeds prepared VM metadata and
+sends stock Azure CLI requests through the regional API. The enrolled
+directory worker checks the user and group in the live Samba database. The
+test exercises the two assignments, cross-subscription denial, updates, and
+VM deletion guards. It checks admission against live AD membership and account
+status using the native object ID. Its runtime companion `VM-03` boots the small Debian VM
+and verifies profile persistence.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-33 \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
+  OCEAN_E2E_SAMBA_IMAGE="$LOCAL_SAMBA_IMAGE_ID" OCEAN_E2E_ADCLI_IMAGE="$LOCAL_ADCLI_IMAGE_ID" \
+  go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Small Debian desktop VM
 
 For `VM-03`, prepare a disposable Debian 13 UEFI cloud image on an 8 GiB
@@ -726,6 +744,15 @@ OCEAN_E2E_PROFILE=vm-worker-linux \
   go test -mod=readonly -tags=e2e -count=1 -timeout=20m -v \
     -run '^TestAcceptance$' ./tests/e2e
 ```
+
+For the browser identity path, configure `desktopApplicationId` with the
+published Graph application object ID in
+`identity.onboarding.webDirectories[tenantId]`. The configured application
+uses the tenant's dedicated MFA-protected web flow. The authorization action is
+`POST {desktopId}/authorize?api-version=2026-11-01` with the application's
+access token and an empty body. The result is a short-lived decision with an
+assignment ID and machine ID. `WORKPLACE-20` exercises the native Keycloak
+token binding and rejects a token issued to the second web application.
 
 ### Regional VM store probe
 

@@ -17,6 +17,7 @@ const (
 	DirectoryUserGet           = "userGet"
 	DirectoryUserList          = "userList"
 	DirectoryUserUpdate        = "userUpdate"
+	DirectoryUserDesktopCheck  = "userDesktopCheck"
 	DirectoryGroupCreate       = "groupCreate"
 	DirectoryGroupGet          = "groupGet"
 	DirectoryGroupList         = "groupList"
@@ -39,6 +40,7 @@ type DirectoryGraphInput struct {
 	Operation string               `json:"operation"`
 	Selector  string               `json:"selector,omitempty"`
 	Member    string               `json:"member,omitempty"`
+	GroupID   string               `json:"groupId,omitempty"`
 	Fields    json.RawMessage      `json:"fields,omitempty"`
 	Query     *DirectoryGraphQuery `json:"query,omitempty"`
 }
@@ -53,6 +55,9 @@ func (i DirectoryGraphInput) Valid() bool {
 	if i.Member != "" && i.Operation != DirectoryGroupMemberAdd && i.Operation != DirectoryGroupMemberRemove {
 		return false
 	}
+	if i.GroupID != "" && i.Operation != DirectoryUserDesktopCheck {
+		return false
+	}
 	switch i.Operation {
 	case DirectoryUserCreate, DirectoryGroupCreate:
 		return i.Selector == "" && fields && i.Query == nil
@@ -60,6 +65,8 @@ func (i DirectoryGraphInput) Valid() bool {
 		return selector && fields && i.Query == nil
 	case DirectoryUserGet:
 		return selector && noFields && i.Query == nil
+	case DirectoryUserDesktopCheck:
+		return group && noFields && q == nil && (i.GroupID == "" || ValidDirectoryJoinID(i.GroupID))
 	case DirectoryUserList:
 		return i.Selector == "" && noFields && paged && q.GroupName == "" && q.GroupAlias == "" &&
 			len(q.UPN) <= 128 && len(q.DisplayPrefix) <= 120 && (q.UPN == "" || q.DisplayPrefix == "" && q.Offset == 0)
@@ -165,7 +172,7 @@ func (r DirectoryGraphResult) Valid(operation string) bool {
 	case http.StatusOK:
 		return (operation == DirectoryUserList || operation == DirectoryGroupMembers) && collection && len(r.Groups) == 0 ||
 			operation == DirectoryGroupList && collection && len(r.Users) == 0 ||
-			operation == DirectoryUserGet && onlyUser || operation == DirectoryGroupGet && onlyGroup
+			(operation == DirectoryUserGet || operation == DirectoryUserDesktopCheck) && onlyUser || operation == DirectoryGroupGet && onlyGroup
 	}
 	return false
 }

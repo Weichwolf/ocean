@@ -19,29 +19,31 @@ import (
 const resourceAPIVersion = "2024-11-01"
 
 type Server struct {
-	Origin             string
-	Location           string
-	Authenticate       func(context.Context, *http.Request) (identity.ARMPrincipal, error)
-	Groups             GroupStore
-	Roles              RoleStore
-	Operations         OperationStore
-	Monitor            MonitorStore
-	Inventory          InventoryStore
-	Networks           NetworkStore
-	Deployments        NetworkDeploymentStore
-	GatewayDeployments ApplicationGatewayDeploymentStore
-	SiteConnections    SiteConnectionStore
-	Containers         ContainerGroupStore
-	VirtualMachines    VirtualMachineStore
-	ReplicaSets        ReplicaSetStore
-	Storage            StorageStore
-	SMBShares          SMBStore
-	FunctionPlans      bool
-	Functions          FunctionStore
-	FunctionDomain     string
-	FunctionRegistry   string
-	StorageSuffix      string
-	PrincipalExists    func(context.Context, string, string, string) (bool, error)
+	Origin              string
+	Location            string
+	Authenticate        func(context.Context, *http.Request) (identity.ARMPrincipal, error)
+	AuthenticateDesktop func(context.Context, *http.Request) (identity.DesktopPrincipal, error)
+	Groups              GroupStore
+	Roles               RoleStore
+	Operations          OperationStore
+	Monitor             MonitorStore
+	Inventory           InventoryStore
+	Networks            NetworkStore
+	Deployments         NetworkDeploymentStore
+	GatewayDeployments  ApplicationGatewayDeploymentStore
+	SiteConnections     SiteConnectionStore
+	Containers          ContainerGroupStore
+	VirtualMachines     VirtualMachineStore
+	ReplicaSets         ReplicaSetStore
+	Storage             StorageStore
+	SMBShares           SMBStore
+	Desktops            DesktopStore
+	FunctionPlans       bool
+	Functions           FunctionStore
+	FunctionDomain      string
+	FunctionRegistry    string
+	StorageSuffix       string
+	PrincipalExists     func(context.Context, string, string, string) (bool, error)
 }
 
 type armRoute struct {
@@ -100,6 +102,12 @@ func parseRoute(segments []string) armRoute {
 			return armRoute{collection: "inventory", group: group}
 		}
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
+			if len(segments) == 9 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) && strings.EqualFold(segments[8], "authorize") {
+				return armRoute{collection: "desktopAuthorization", group: group, name: segments[7]}
+			}
+			if len(segments) == 8 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) {
+				return armRoute{collection: "personalDesktop", group: group, name: segments[7]}
+			}
 			if len(segments) == 8 && strings.EqualFold(segments[5]+"/"+segments[6], smb.ResourceType) {
 				return armRoute{collection: "smbShare", group: group, name: segments[7]}
 			}
@@ -216,8 +224,12 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			fallback.ServeHTTP(w, r)
 			return
 		}
+		if route.collection == "desktopAuthorization" {
+			s.authorizePersonalDesktop(w, r, segments[1], route.group, route.name)
+			return
+		}
 		timeout := 5 * time.Second
-		if route.collection == "functionSite" {
+		if route.collection == "functionSite" || route.collection == "personalDesktop" && r.Method == http.MethodPut {
 			timeout = 27 * time.Second
 		}
 		if route.collection == "storageAccount" && (r.Method == http.MethodPut || r.Method == http.MethodDelete) && strings.Contains(strings.ToLower(route.name), "/fileservices/default/shares/") {
@@ -269,6 +281,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.storageAccount(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "smbShare":
 			s.smbShare(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "personalDesktop":
+			s.personalDesktop(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "replicaSet":
 			s.replicaSet(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "containerGroup":
@@ -305,7 +319,7 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 	}
 	if read && (route.collection == "replicaSet" || route.collection == "workloadMetrics" || route.collection == "resourceHealth" || route.collection == "activityLog" ||
 		route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "virtualMachine" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||
-		route.collection == "smbShare" || route.collection == "roleassignments" && route.group != "") {
+		route.collection == "smbShare" || route.collection == "personalDesktop" || route.collection == "roleassignments" && route.group != "") {
 		return true // Scoped reads apply the grant in the same store operation as the resource read.
 	}
 	if read && route.collection != "operationstatuses" && route.collection != "operationresults" {
@@ -347,10 +361,13 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 		}
 	}
 	if (r.Method == http.MethodPut || r.Method == http.MethodDelete) &&
-		(route.collection == "groups" || route.collection == "roleassignments" || networkResource) {
+		(route.collection == "groups" || route.collection == "roleassignments" || route.collection == "personalDesktop" || networkResource) {
 		action := "Microsoft.Resources/subscriptions/resourceGroups/"
 		if route.collection == "roleassignments" {
 			action = "Microsoft.Authorization/roleAssignments/"
+		}
+		if route.collection == "personalDesktop" {
+			action = DesktopType + "/"
 		}
 		if r.Method == http.MethodDelete {
 			action += "delete"
