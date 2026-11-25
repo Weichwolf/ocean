@@ -147,3 +147,5 @@ VM-01	vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {vmId}?api-ver
 VM-01	vm-private-nic-delete	2.93.0	none	2024-05-01	rest --method delete --url {nicId}?api-version=2024-05-01 -o json
 VM-01	vm-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId}?api-version=2024-07-01 -o json
 VM-02	vm-replacement-power-state	2.93.0	none	2024-03-01	rest --method get --url {vmId}/instanceView?api-version=2024-03-01 -o json
+WORKPLACE-17	web-app-register	2.93.0	none	v1.0	ad app create --display-name {name} --sign-in-audience AzureADMyOrg --web-redirect-uris {callback} -o json
+WORKPLACE-17	web-app-show	2.93.0	none	v1.0	ad app show --id {appId} -o json

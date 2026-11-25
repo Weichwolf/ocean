@@ -994,6 +994,20 @@ Use `az ad app credential reset --id <app-id> --append` to add a password creden
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users --directory-apps` to exercise these commands. The run verifies separate ARM and Graph tokens from fresh CLI caches, rejects cross-tenant reads, signs in with both secrets after append, and checks that the remaining secret works after revocation. Inspect `evidence/graph-applications.json` for the object IDs and assertions.
 
+For web application registration, use `az ad app create --display-name
+<name> --sign-in-audience AzureADMyOrg --web-redirect-uris <https-callback>`.
+The register and read contract stores exact HTTPS callback URIs and returns
+them under `web.redirectUris`. Replay uses the same callback list and retains
+the existing object and client IDs. A replay that changes the callback list
+returns a conflict. The Graph probe uses signed fixture identities and a
+disposable loopback etcd.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-17 \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
+  go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
 ## ARM resource groups
 
 Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.
