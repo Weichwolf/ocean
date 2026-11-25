@@ -66,6 +66,14 @@ def directory_settings():
             raise ValueError("invalid primary directory address")
         settings["primary"] = str(primary)
     recovery_name = os.environ.get("OCEAN_AD_RECOVERY_NAME")
+    local_name = os.environ.get("OCEAN_AD_CONTROLLER_NAME")
+    remote_name = os.environ.get("OCEAN_AD_PEER_NAME")
+    if local_name or remote_name:
+        if (recovery_name or not local_name or not remote_name or local_name == remote_name
+                or any(len(name) > 15 or not DNS_LABEL.fullmatch(name) or name.isdecimal()
+                       for name in (local_name, remote_name))):
+            raise ValueError("invalid managed controller names")
+        settings.update(controllerName=local_name, peerName=remote_name)
     if recovery_name:
         if index != "1" or writer != "1" or len(recovery_name) > 15 or recovery_name in ("dc01", "dc02") or not DNS_LABEL.fullmatch(recovery_name):
             raise ValueError("invalid standalone recovery controller name")
@@ -74,7 +82,7 @@ def directory_settings():
 
 
 def controller_name(settings):
-    return settings.get("recoveryName", f"dc0{settings.get('controller', 1)}")
+    return settings.get("controllerName") or settings.get("recoveryName") or f"dc0{settings.get('controller', 1)}"
 
 
 def is_writer(settings):
@@ -82,7 +90,7 @@ def is_writer(settings):
 
 
 def peer_name(settings):
-    return f"dc0{3 - settings.get('controller', 1)}"
+    return settings.get("peerName") or f"dc0{3 - settings.get('controller', 1)}"
 
 
 def bootstrap_password():
@@ -123,7 +131,7 @@ def provision(root, settings):
     # Run the Samba CLI in-process so the bootstrap password never enters argv.
     code = samba_tool(
         "domain", "provision", "--realm=" + settings["domain"].upper(), "--domain=" + settings["netbios"],
-        "--server-role=dc", "--dns-backend=SAMBA_INTERNAL", "--host-name=dc01",
+        "--server-role=dc", "--dns-backend=SAMBA_INTERNAL", "--host-name=" + controller_name(settings),
         "--host-ip=" + settings["address"], "--targetdir=" + str(root),
         "--adminpass=" + bootstrap_password(), "--option=dns forwarder =",
         "--option=vfs objects = dfs_samba4 acl_xattr xattr_tdb",
@@ -324,7 +332,7 @@ def refresh_policy(config, settings, previous):
 def checkpoint_identity(settings):
     # Writer and peer are placement decisions. The directory, slot and local
     # address identify the keys and database held in this volume.
-    return {key: value for key, value in settings.items() if key not in ("writer", "primary")}
+    return {key: value for key, value in settings.items() if key not in ("writer", "primary", "peerName")}
 
 
 def read_checkpoint(checkpoint, settings):
@@ -339,10 +347,13 @@ def read_checkpoint(checkpoint, settings):
     return root
 
 
-def write_checkpoint(checkpoint, root, settings):
+def write_checkpoint(checkpoint, root, settings, *, backup_checksum=None):
     temporary = checkpoint.with_suffix(".pending")
+    record = {"settings": checkpoint_identity(settings), "root": root.name}
+    if backup_checksum:
+        record["backupChecksum"] = backup_checksum
     with temporary.open("w") as stream:
-        json.dump({"settings": checkpoint_identity(settings), "root": root.name}, stream)
+        json.dump(record, stream)
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(checkpoint)
@@ -362,9 +373,14 @@ def prepare(root, action):
 def initialize(settings, expected_sid):
     checkpoint = STATE / "controller.json"
     if checkpoint.exists():
-        return read_checkpoint(checkpoint, settings) / "etc/smb.conf"
+        root = read_checkpoint(checkpoint, settings)
+        pending_backup = os.environ.get("OCEAN_AD_RECOVERY_SHA256")
+        if pending_backup and json.loads(checkpoint.read_text()).get("backupChecksum") != pending_backup:
+            raise DirectoryIdentityError("the active volume does not match the assigned recovery archive")
+        return root / "etc/smb.conf"
     replica = not is_writer(settings)
-    if settings.get("recoveryName") or (not replica and (expected_sid or settings.get("controller") == 2)):
+    if not replica and (expected_sid or settings.get("recoveryName") or settings.get("controllerName")
+                        or settings.get("controller") == 2):
         raise DirectoryIdentityError("the established primary requires its existing directory volume")
     joined = STATE / "replica-joined.json"
     if joined.exists():
@@ -463,7 +479,7 @@ def backup_domain(settings):
         domain_backup.write_bundle(sys.stdout.buffer, backup_identity(settings, sid), archives[0], snapshot)
 
 
-def restore_domain(settings, checksum):
+def restore_domain(settings, checksum, source=None):
     from contextlib import redirect_stdout
     from samba.netcmd.domain import backup as native
     from samba.netcmd.main import samba_tool
@@ -471,20 +487,31 @@ def restore_domain(settings, checksum):
 
     os.umask(0o077)
     expected_sid = os.environ.get("OCEAN_AD_EXPECTED_SID", "")
-    if (not settings.get("recoveryName") or not DOMAIN_SID.fullmatch(expected_sid)
+    managed = bool(settings.get("controllerName"))
+    if (not (managed or settings.get("recoveryName")) or not is_writer(settings) or not DOMAIN_SID.fullmatch(expected_sid)
             or not re.fullmatch(r"[a-f0-9]{64}", checksum) or not STATE.is_mount()):
         raise DirectoryIdentityError("recovery requires a fresh volume, backup checksum, SID and distinct controller name")
     if any(name != "lo" for _, name in socket.if_nameindex()):
         raise DirectoryIdentityError("restore the controller without any network attachment")
+    checkpoint = STATE / "controller.json"
     with (STATE / "owner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if any(path.name != "owner.lock" for path in STATE.iterdir()):
+        if managed and checkpoint.exists():
+            config = read_checkpoint(checkpoint, settings) / "etc/smb.conf"
+            if local_domain_sid(config) != expected_sid or json.loads(checkpoint.read_text()).get("backupChecksum") != checksum:
+                raise DirectoryIdentityError("the recovery volume already contains a different restore")
+            return
+        root = STATE / ("controller-" + (checksum[:16] if managed else secrets.token_hex(8)))
+        allowed = {"owner.lock", root.name, "controller.pending"} if managed else {"owner.lock"}
+        if any(path.name not in allowed for path in STATE.iterdir()):
             raise DirectoryIdentityError("the recovery volume is not empty")
         with tempfile.TemporaryDirectory() as private:
             directory = Path(private)
-            domain_backup.read_bundle(sys.stdin.buffer, directory, checksum, backup_identity(settings, expected_sid))
+            domain_backup.read_bundle(source if source is not None else sys.stdin.buffer, directory, checksum,
+                                      backup_identity(settings, expected_sid))
             STATE.chmod(0o711)
-            root = STATE / ("controller-" + secrets.token_hex(8))
+            if root.exists():
+                remove_restore_stage(root)
             root.mkdir(mode=0o700)
 
             def restore_policy(_native_archive, _native_path, _database, _config):
@@ -515,15 +542,24 @@ def restore_domain(settings, checksum):
                 if (lp.get("realm").lower() != settings["domain"] or lp.get("workgroup") != settings["netbios"]
                         or lp.get("netbios name").lower() != controller_name(settings) or local_domain_sid(config) != expected_sid):
                     raise DirectoryIdentityError("restored configuration does not match the managed directory")
-                domain_join.revoke_join_accounts(domain_join.open_directory(config), restore=True)
+                database = domain_join.open_directory(config)
+                domain_join.revoke_join_accounts(database, restore=True)
+                if managed:
+                    # Roll the reserved credential forward from the region.
+                    # Unrelated AD user and machine secrets stay in the archive.
+                    database.setpassword("(objectSid=" + expected_sid + "-500)", bootstrap_password(), False)
                 subprocess.run(["/usr/bin/sync", "-f", str(root)], check=True, timeout=30)
-                write_checkpoint(STATE / "controller.json", root, settings)
+                write_checkpoint(checkpoint, root, settings, backup_checksum=checksum if managed else None)
             finally:
                 native.backup_restore = original
-                if not (STATE / "controller.json").exists():
-                    if (root / "sysvol").is_dir():
-                        clear_staged_sysvol(root / "sysvol")
-                    shutil.rmtree(root)
+                if not checkpoint.exists():
+                    remove_restore_stage(root)
+
+
+def remove_restore_stage(root):
+    if (root / "sysvol").is_dir():
+        clear_staged_sysvol(root / "sysvol")
+    shutil.rmtree(root)
 
 
 def verify_promotion_sysvol(config):
@@ -706,7 +742,7 @@ def serve(settings):
         if expected_sid and not DOMAIN_SID.fullmatch(expected_sid):
             raise DirectoryIdentityError("invalid expected directory SID")
         require_authorization = os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1"
-        if settings.get("recoveryName") and (not expected_sid or not require_authorization):
+        if (settings.get("recoveryName") or settings.get("controllerName")) and (not expected_sid or not require_authorization):
             raise DirectoryIdentityError("the recovered controller requires SID authorization")
         promotion = os.environ.get("OCEAN_AD_PROMOTE")
         if promotion and (not is_writer(settings) or not expected_sid or not require_authorization):
@@ -834,6 +870,9 @@ if __name__ == "__main__":
             backup_domain(settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "restore-domain":
             restore_domain(settings, sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == "restore-domain-file":
+            with open("/run/ocean-directory-recovery.tar", "rb") as archive:
+                restore_domain(settings, sys.argv[2], archive)
         elif len(sys.argv) == 2 and sys.argv[1] in ("stage-join", "close-join"):
             authorize_join(settings, stage=sys.argv[1] == "stage-join")
         elif len(sys.argv) == 2 and sys.argv[1] == "graph":

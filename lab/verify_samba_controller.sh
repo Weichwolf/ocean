@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--delegated-join|--hold-controller|--promote-writer)?$ ]]; then
-    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--delegated-join|--hold-controller|--promote-writer]\n' "$0" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--restore-pair|--delegated-join|--hold-controller|--promote-writer)?$ ]]; then
+    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--restore-pair|--delegated-join|--hold-controller|--promote-writer]\n' "$0" >&2
     exit 2
 fi
 image=$1
@@ -39,6 +39,7 @@ cleanup() {
     done
     p network rm "$net" >/dev/null || true
     p secret rm "$secret" >/dev/null || true
+    if p secret inspect "$secret-recovery" >/dev/null 2>&1; then p secret rm "$secret-recovery" >/dev/null; fi
     rm -rf -- "$probe"
 }
 trap cleanup EXIT
@@ -366,6 +367,15 @@ verify_independent_restore() {
     local start_time=$SECONDS checksum restored machine
     local join_id join_expiry join_password join_fields join_receipt pending_user pending_sid flags
     local recovery_name=dc-recovery
+    local standby_name=dc-recovery2
+    local -a recovery_settings=(--env "OCEAN_AD_RECOVERY_NAME=$recovery_name")
+    local -a recovery_credential=()
+    if [[ ${1:-} == --restore-pair ]]; then
+        recovery_settings=(--env "OCEAN_AD_CONTROLLER_NAME=$recovery_name" --env "OCEAN_AD_PEER_NAME=$standby_name")
+        printf 'Rec9-%s\n' "$(openssl rand -hex 20)" >"$probe/recovery.secret"
+        p secret create "$secret-recovery" "$probe/recovery.secret" >/dev/null
+        recovery_credential=(--secret "$secret-recovery,target=ocean-directory-bootstrap,mode=0400")
+    fi
     local path=/usr/local/lib/ocean-directory/controller.py
     mkdir "$probe/member"
     machine_trust "$addr" dc01.ad.runtime.test join
@@ -405,7 +415,7 @@ verify_independent_restore() {
         --mount "type=volume,source=$recovered,target=/var/lib/ocean-ad"
         --env OCEAN_AD_DNS_NAME=ad.runtime.test --env OCEAN_AD_NETBIOS_NAME=OCEANRUN
         --env "OCEAN_AD_DIRECTORY_ID=$tenant" --env "OCEAN_AD_EXPECTED_SID=$domain_sid"
-        --env "OCEAN_AD_ADDRESS=$addr" --env "OCEAN_AD_RECOVERY_NAME=$recovery_name" "$image" restore-domain
+        --env "OCEAN_AD_ADDRESS=$addr" "${recovery_settings[@]}" "${recovery_credential[@]}" "$image" restore-domain
     )
     openssl cms -decrypt -binary -inform DER -recip "$probe/backup.crt" -inkey "$probe/backup.key" \
         -in "$probe/backup.cms" -out "$probe/backup.tar"
@@ -414,20 +424,43 @@ verify_independent_restore() {
         return 1
     fi
     start_time=$SECONDS
-    if ! p "${restore[@]}" "$checksum" <"$probe/backup.tar" >"$probe/restore.log" 2>&1; then
+    if [[ ${1:-} == --restore-pair ]]; then
+        if ! p "${restore[@]:0:${#restore[@]}-2}" \
+                --volume "$probe/backup.tar:/run/ocean-directory-recovery.tar:ro,nosuid,nodev,noexec" \
+                "$image" restore-domain-file "$checksum" >"$probe/restore.log" 2>&1; then
+            tail -35 "$probe/restore.log" >&2
+            return 1
+        fi
+    elif ! p "${restore[@]}" "$checksum" <"$probe/backup.tar" >"$probe/restore.log" 2>&1; then
         tail -35 "$probe/restore.log" >&2
         return 1
     fi
     rm -- "$probe/backup.tar"
+    if [[ ${1:-} == --restore-pair ]]; then
+        p "${restore[@]}" "$checksum" </dev/null
+        if p "${restore[@]}" "$(printf '%064d' 0)" </dev/null >/dev/null 2>&1; then
+            printf 'The initialized recovery volume accepted a different backup checksum.\n' >&2
+            return 1
+        fi
+    fi
     controller_host=$recovery_name start "$recovered" "$addr" 1 "$tenant" \
-        --env "OCEAN_AD_RECOVERY_NAME=$recovery_name" --env OCEAN_AD_REQUIRE_AUTHORIZATION=0
+        "${recovery_settings[@]}" --env OCEAN_AD_REQUIRE_AUTHORIZATION=0
     test "$(p wait "$recovered")" -ne 0
     p logs "$recovered" 2>&1 | grep -F 'Directory controller failed (DirectoryIdentityError).'
     p rm "$recovered" >/dev/null
+    local peer_address=
+    if [[ ${1:-} == --restore-pair ]]; then peer_address=$replica_addr; fi
     controller_host=$recovery_name start "$recovered" "$addr" 1 "$tenant" \
-        --env "OCEAN_AD_RECOVERY_NAME=$recovery_name" --env OCEAN_AD_REPLICA=
+        "${recovery_settings[@]}" --env "OCEAN_AD_REPLICA=$peer_address"
     wait_dns "$recovered" "$addr" 1 "$recovery_name"
     wait_health "$recovered" "$domain_sid"
+    if [[ ${1:-} == --restore-pair ]]; then
+        if administrator_policy "$addr" 1 read "$recovery_name" >"$probe/old-password.log" 2>&1; then
+            printf 'The recovered writer accepted the old administrator credential.\n' >&2
+            return 1
+        fi
+        cp -- "$probe/recovery.secret" "$probe/administrator.secret"
+    fi
     test "$original" = "$(account "$recovered")"
     test "$machine" = "$(directory_tool "$recovered" computer show OCEANMEMBER | grep '^objectGUID:')"
     machine_trust "$addr" "$recovery_name.ad.runtime.test" test
@@ -449,6 +482,28 @@ verify_independent_restore() {
     test "$expected_acl" = "$(administrator_policy "$addr" 1 read "$recovery_name")"
     printf 'Recovered the original SID, employee and machine GUIDs, machine trust, memberships, GPO version, contents and ACL in %d seconds.\n' \
         "$(( SECONDS - start_time ))"
+    if [[ ${1:-} == --restore-pair ]]; then
+        start_time=$SECONDS
+        p volume create "$replacement" >/dev/null
+        controller_host=$standby_name start "$replacement" "$replica_addr" 2 "$tenant" \
+            --env "OCEAN_AD_CONTROLLER_NAME=$standby_name" --env "OCEAN_AD_PEER_NAME=$recovery_name" \
+            --env "OCEAN_AD_PRIMARY=$addr" "${recovery_credential[@]}"
+        wait_dns "$replacement" "$replica_addr" 2 "$standby_name"
+        wait_health "$replacement" "$domain_sid"
+        test "$original" = "$(account "$replacement")"
+        test "$machine" = "$(directory_tool "$replacement" computer show OCEANMEMBER | grep '^objectGUID:')"
+        p stop --time 15 "$recovered" >/dev/null
+        machine_trust "$replica_addr" "$standby_name.ad.runtime.test" test
+        wait_membership "$replacement" LabPrimaryGroup employee "$SECONDS"
+        wait_membership "$replacement" LabReplicaGroup employee "$SECONDS"
+        test "$(gpo_version "$replacement")" = 1
+        restored=$(proof "$replica_addr" 2 guarded "$standby_name")
+        same_policy "$changed" "$restored"
+        test "$expected_acl" = "$(administrator_policy "$replica_addr" 2 read "$standby_name")"
+        administrator_policy "$replica_addr" 2 read-only "$standby_name"
+        printf 'A fresh read-only controller joined the recovered domain and served the original client alone in %d seconds.\n' \
+            "$(( SECONDS - start_time ))"
+    fi
 }
 start "$name" "$addr" 1 "$tenant"
 for i in $(seq 1 40); do
@@ -529,8 +584,8 @@ if (( SECONDS - policy_started >= 65 )); then
     exit 1
 fi
 printf 'Updated GPO bytes and custom ACL replicated in %d seconds.\n' "$(( SECONDS - policy_started ))"
-if [[ ${2:-} == --restore ]]; then
-    verify_independent_restore
+if [[ ${2:-} == --restore || ${2:-} == --restore-pair ]]; then
+    verify_independent_restore "$2"
     exit
 fi
 if [[ ${2:-} == --promote-writer ]]; then

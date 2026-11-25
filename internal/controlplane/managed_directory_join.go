@@ -42,9 +42,12 @@ func (r *Region) LookupDirectoryJoin(ctx context.Context, tenant identity.Tenant
 		return nil, identity.ErrDirectoryJoinNotFound
 	}
 	view, _, err := r.readDirectoryJoin(ctx, r.directoryJoinKey(*directory, id), id, revision)
-	if view != nil && view.State != identity.DirectoryJoinClosed && view.State != identity.DirectoryJoinRejected &&
-		time.Now().Unix() >= view.ExpiresAt {
-		view.State = identity.DirectoryJoinExpired
+	if view != nil && view.State != identity.DirectoryJoinClosed && view.State != identity.DirectoryJoinRejected {
+		if view.RecoveryEpoch != directory.RecoveryEpoch {
+			view.State, view.UPN = identity.DirectoryJoinRevoked, ""
+		} else if time.Now().Unix() >= view.ExpiresAt {
+			view.State = identity.DirectoryJoinExpired
+		}
 	}
 	return view, err
 }
@@ -106,7 +109,8 @@ func (r *Region) queueDirectoryJoin(ctx context.Context, tenant identity.TenantR
 		case !stage && prior == nil:
 			return nil, identity.ErrDirectoryJoinNotFound
 		case !stage:
-			if prior.State == identity.DirectoryJoinClosed || prior.State == identity.DirectoryJoinClosing || now.Unix() >= prior.ExpiresAt {
+			if prior.RecoveryEpoch != directory.RecoveryEpoch || prior.State == identity.DirectoryJoinClosed ||
+				prior.State == identity.DirectoryJoinClosing || now.Unix() >= prior.ExpiresAt {
 				return r.LookupDirectoryJoin(ctx, tenant, input.ID)
 			}
 			if prior.State != identity.DirectoryJoinReady {
@@ -137,7 +141,7 @@ func (r *Region) queueDirectoryJoin(ctx context.Context, tenant identity.TenantR
 		clear(data)
 		sealed, _ := json.Marshal(pending)
 		view := identity.DirectoryJoinAuthorization{ID: input.ID, Machine: input.Machine, ExpiresAt: input.ExpiresAt,
-			State: identity.DirectoryJoinPending}
+			State: identity.DirectoryJoinPending, RecoveryEpoch: directory.RecoveryEpoch}
 		if !stage {
 			view = *prior
 			view.State = identity.DirectoryJoinClosing

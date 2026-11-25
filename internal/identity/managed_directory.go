@@ -62,6 +62,7 @@ type ManagedDirectory struct {
 	RequestedAt    time.Time                       `json:"requestedAt"`
 	ProvisionedAt  time.Time                       `json:"provisionedAt,omitzero"`
 	DomainSID      string                          `json:"domainSid,omitempty"`
+	RecoveryEpoch  string                          `json:"recoveryEpoch,omitempty"`
 	Controllers    [2]DirectoryControllerReadiness `json:"-"`
 }
 
@@ -132,6 +133,10 @@ func (c *Compatibility) managedDirectory(w http.ResponseWriter, req *http.Reques
 	}
 	if req.PathValue("authorization") != "" {
 		c.manageDirectoryJoin(ctx, w, req, *record)
+		return
+	}
+	if req.PathValue("recovery") != "" {
+		c.recoverDirectory(ctx, w, req, *record)
 		return
 	}
 	if req.Method == http.MethodPost {

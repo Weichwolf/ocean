@@ -42,6 +42,9 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if _, err := exec.LookPath("openssl"); err != nil && recovery.BlockedReason == "" {
 		recovery.BlockedReason = "Install OpenSSL for the encrypted backup recovery probe."
 	}
+	pairRecovery := harness.Step{Name: "directory-pair-recovery", Cases: []string{"WORKPLACE-13"}, Timeout: 4 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--restore-pair"},
+		BlockedReason: recovery.BlockedReason}
 	delegation := harness.Step{Name: "directory-machine-authorization", Cases: []string{"WORKPLACE-08"}, Timeout: 2 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--delegated-join"},
 		BlockedReason: recovery.BlockedReason}
@@ -85,5 +88,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion)
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery)
 }

@@ -18,6 +18,7 @@ const (
 	DirectoryJoinClosed   = "Closed"
 	DirectoryJoinRejected = "Rejected"
 	DirectoryJoinExpired  = "Expired"
+	DirectoryJoinRevoked  = "Revoked"
 )
 
 var (
@@ -28,11 +29,12 @@ var (
 )
 
 type DirectoryJoinAuthorization struct {
-	ID        string `json:"requestId"`
-	Machine   string `json:"machineName"`
-	ExpiresAt int64  `json:"expiresAt"`
-	State     string `json:"state"`
-	UPN       string `json:"userPrincipalName,omitempty"`
+	ID            string `json:"requestId"`
+	Machine       string `json:"machineName"`
+	ExpiresAt     int64  `json:"expiresAt"`
+	State         string `json:"state"`
+	UPN           string `json:"userPrincipalName,omitempty"`
+	RecoveryEpoch string `json:"recoveryEpoch,omitempty"`
 }
 
 type directoryJoinStore interface {
@@ -103,7 +105,9 @@ func (c *Compatibility) manageDirectoryJoin(ctx context.Context, w http.Response
 			w.Header().Set("Location", c.cloud.ResourceManager+directoryPath(tenant.TenantID)+"/joinAuthorizations/"+id+"?api-version="+directoryAPIVersion)
 			w.Header().Set("Retry-After", "2")
 		}
-		writeJSON(w, status, view)
+		response := *view
+		response.RecoveryEpoch = ""
+		writeJSON(w, status, response)
 	}
 }
 

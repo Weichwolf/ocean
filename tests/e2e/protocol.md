@@ -88,6 +88,14 @@ promotes the second, tests Kerberos, existing member trust and writable
 policy, then joins a fresh read-only replica in the retired slot and verifies
 the updated policy and ACL.
 
+Select `WORKPLACE-13` with the same controller image and OpenSSL to reconstruct
+a pair from its independently encrypted backup in rootless Podman. The
+writer is restored on a new volume with a rotated bootstrap credential.
+The standby rejoins, serves the original member alone, and supplies the
+original policy and ACL. `WORKPLACE-05` covers the stock CLI recovery calls
+and `WORKPLACE-06` verifies regional two-host placement, fencing and recovery
+state against disposable etcd with signed fixture evidence.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

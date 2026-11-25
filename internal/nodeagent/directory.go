@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -82,6 +84,17 @@ func (j *joinClient) directoryTasks(ctx context.Context) (map[string]enrollment.
 			directory.PromoteFrom != "" && (!directory.IsWriter() || !taskIdentityPattern.MatchString(directory.PromoteFrom) || directory.RetireReplica != "") {
 			return nil, errors.New("invalid directory retirement task")
 		}
+		names := directory.ControllerNames
+		if names != [2]string{} && (!directoryControllerName.MatchString(names[0]) ||
+			!directoryControllerName.MatchString(names[1]) || names[0] == names[1]) {
+			return nil, errors.New("invalid directory controller names")
+		}
+		if directory.RecoveryID != "" || directory.RecoverySHA256 != "" {
+			if !directory.IsWriter() || names == [2]string{} || directory.RetireReplica != "" || directory.PromoteFrom != "" ||
+				!enrollment.ValidDirectoryJoinID(directory.RecoveryID) || !directoryImageID.MatchString("sha256:"+directory.RecoverySHA256) {
+				return nil, errors.New("invalid directory recovery task")
+			}
+		}
 		name := containerName(directoryTaskID(assignment))
 		tasks[name] = assignment
 	}
@@ -114,7 +127,7 @@ func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assign
 		clear(secret)
 		return bootstrap, errors.New("invalid directory identity response")
 	}
-	establishedPrimary := sids[0] != "" && a.Directory.IsWriter()
+	establishedPrimary := sids[0] != "" && a.Directory.IsWriter() && a.Directory.RecoveryID == ""
 	if err != nil || establishedPrimary && len(secret) != 0 || !establishedPrimary && (len(secret) < 24 || len(secret) > 128) {
 		clear(secret)
 		return bootstrap, errors.New("invalid directory bootstrap response")
@@ -125,6 +138,10 @@ func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assign
 const directoryControllerPath = "/usr/local/lib/ocean-directory/controller.py"
 
 var errDirectoryPromotionBlocked = errors.New("the directory replica is still serving read-only SYSVOL while promotion awaits a consistent policy snapshot")
+var errDirectoryRestorePending = errors.New("directory recovery is waiting for offline restore")
+var directoryControllerName = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$`)
+
+const directoryRestoreSuffix = "-restore"
 
 func (j *joinClient) confirmDirectoryStartup(ctx context.Context, name string, assignment enrollment.Assignment) error {
 	probe, cancel := context.WithTimeout(ctx, 4*time.Second)
@@ -244,6 +261,20 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 		return errors.New("could not list local directory controllers")
 	}
 	var failures []error
+	restores, err := localPodman(ctx, "ps", "--all", "--filter", "label=ocean.directory-restore", "--format", "{{.Names}}").Output()
+	if err != nil {
+		return errors.New("could not list offline directory restores")
+	}
+	for name := range strings.FieldsSeq(string(restores)) {
+		controller, ok := strings.CutSuffix(name, directoryRestoreSuffix)
+		if task, assigned := tasks[controller]; ok && validRuntimeName(controller) && (!assigned || task.Directory.RecoveryID == "") {
+			if err := podmanAction(ctx, "rm", "--force", "--ignore", name); err != nil {
+				failures = append(failures, err)
+			} else {
+				failures = append(failures, podmanAction(ctx, "secret", "rm", "--ignore", controller))
+			}
+		}
+	}
 	for name := range strings.FieldsSeq(string(names)) {
 		if _, assigned := tasks[name]; !assigned && validRuntimeName(name) {
 			// Keep the controller volume and stop servicing the stale assignment.
@@ -255,7 +286,9 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 		var syncErr error
 		if !task.NetworkUnavailable && task.Network != nil {
 			syncErr = j.syncDirectoryContainer(ctx, name, task)
-			failures = append(failures, syncErr)
+			if !errors.Is(syncErr, errDirectoryRestorePending) {
+				failures = append(failures, syncErr)
+			}
 			if syncErr == nil || errors.Is(syncErr, errDirectoryPromotionBlocked) {
 				health = directoryControllerHealth(ctx, name)
 			}
@@ -265,7 +298,7 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 		}
 		reportErr := j.reportDirectoryHealth(ctx, task, health)
 		failures = append(failures, reportErr)
-		if syncErr == nil && reportErr == nil && health.Ready && task.Directory.IsWriter() {
+		if syncErr == nil && reportErr == nil && health.Ready && task.Directory.IsWriter() && task.Directory.RecoveryID == "" {
 			if task.Directory.RetireReplica != "" || task.Directory.PromoteFrom != "" {
 				if err := j.acknowledgeDirectoryRetirement(ctx, name, task); err != nil {
 					failures = append(failures, err)
@@ -334,8 +367,11 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 	size := strconv.FormatInt(a.Resources.MemoryMiB, 10) + "m"
 	cpu := strconv.FormatFloat(float64(a.Resources.CPUMillis)/1000, 'f', 3, 64)
 	index := strconv.Itoa(directory.ControllerIndex)
-	args := []string{"run", "--detach", "--pull=never", "--name", name,
-		"--hostname", "dc0" + index, "--network=none", "--label", "ocean.directory-controller",
+	hostname := "dc0" + index
+	if directory.ControllerNames != [2]string{} {
+		hostname = directory.ControllerNames[directory.ControllerIndex-1]
+	}
+	args := []string{"--hostname", hostname, "--network=none",
 		"--cpus", cpu, "--memory", size, "--memory-swap", size, "--pids-limit", "128",
 		"--security-opt=no-new-privileges", "--cap-drop=ALL", "--cap-add=CHOWN", "--cap-add=SETUID", "--cap-add=SETGID",
 		"--cap-add=NET_BIND_SERVICE", "--log-driver=k8s-file", "--log-opt=max-size=256kb",
@@ -348,7 +384,20 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 		"--env", "OCEAN_AD_CONTROLLER=" + index, "--env", "OCEAN_AD_WRITER=" + strconv.Itoa(max(directory.WriterIndex, 1)),
 		"--env", "OCEAN_AD_REQUIRE_AUTHORIZATION=1",
 		"--env", "OCEAN_AD_EXPECTED_SID=" + bootstrap.DomainSID}
-	if len(bootstrap.Credential) > 0 {
+	if directory.ControllerNames != [2]string{} {
+		args = append(args, "--env", "OCEAN_AD_CONTROLLER_NAME="+hostname,
+			"--env", "OCEAN_AD_PEER_NAME="+directory.ControllerNames[2-directory.ControllerIndex])
+	}
+	if directory.RecoveryID != "" {
+		complete, err := j.syncDirectoryRestore(ctx, name, directory, args)
+		if err != nil {
+			return err
+		}
+		if !complete {
+			return errDirectoryRestorePending
+		}
+		args = append(args, "--env", "OCEAN_AD_RECOVERY_SHA256="+directory.RecoverySHA256)
+	} else if len(bootstrap.Credential) > 0 {
 		args = append(args, "--secret", name+",target=ocean-directory-bootstrap,mode=0400")
 	}
 	peer := directory.ControllerIPv4[2-directory.ControllerIndex]
@@ -361,5 +410,37 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 		args = append(args, "--label", "ocean.directory-promotion="+directory.PromoteFrom,
 			"--env", "OCEAN_AD_PROMOTE="+directory.PromoteFrom)
 	}
-	return podmanAction(ctx, append(args, "--", j.config.DirectoryImage)...)
+	run := []string{"run", "--detach", "--pull=never", "--name", name, "--label", "ocean.directory-controller"}
+	return podmanAction(ctx, append(append(run, args...), "--", j.config.DirectoryImage)...)
+}
+
+func (j *joinClient) syncDirectoryRestore(ctx context.Context, name string, directory *enrollment.DirectoryAssignment, args []string) (bool, error) {
+	restorer := name + directoryRestoreSuffix
+	status, present, err := inspectContainer(ctx, restorer, localPodman)
+	if err != nil || status.Running {
+		return false, err
+	}
+	if present {
+		if status.ExitCode == 0 && status.StartedAt != "" && !strings.HasPrefix(status.StartedAt, "0001-") {
+			return true, nil
+		}
+		if err := podmanAction(ctx, "rm", "--ignore", restorer); err != nil {
+			return false, err
+		}
+		return false, errors.New("offline directory restore failed; check the assigned backup or its local staged copy")
+	}
+	path := filepath.Join(j.config.StateDirectory, "directory-recovery", directory.RecoveryID+".tar")
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || strings.ContainsAny(path, ":\r\n") {
+		return false, errors.New("the assigned directory backup must be staged as a private regular file")
+	}
+	run := []string{"run", "--detach", "--pull=never", "--name", restorer, "--label", "ocean.directory-restore",
+		"--secret", name + ",target=ocean-directory-bootstrap,mode=0400",
+		"--volume", path + ":/run/ocean-directory-recovery.tar:ro,nosuid,nodev,noexec"}
+	run = append(run, args...)
+	run = append(run, "--", j.config.DirectoryImage, "restore-domain-file", directory.RecoverySHA256)
+	return false, podmanAction(ctx, run...)
 }

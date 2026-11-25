@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
@@ -30,7 +29,8 @@ func (r *Region) readyDirectoryWriter(ctx context.Context, directory identity.Ma
 		return Reservation{}, nil, err
 	}
 	var placement directoryPlacement
-	if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &placement) != nil || placement.DirectoryID != directory.ID || placement.Promoting {
+	if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &placement) != nil || placement.DirectoryID != directory.ID ||
+		placement.Promoting || placement.Recovery != "" {
 		return Reservation{}, nil, identity.ErrDirectoryJoinUnavailable
 	}
 	index := placement.writerSlot()
@@ -121,8 +121,8 @@ func (r *Region) readManagedDirectoryHealth(ctx context.Context, directory *iden
 			return "", nil, errors.New("invalid managed directory controller")
 		}
 		directory.Controllers[i] = identity.DirectoryControllerReadiness{
-			DNSName: fmt.Sprintf("dc%02d.%s", i+1, directory.Spec.DNSName), PrivateIPv4: controller.PrivateIPv4,
-			Writer: i == placement.writerSlot() && !placement.Promoting,
+			DNSName: placement.controllerName(i) + "." + directory.Spec.DNSName, PrivateIPv4: controller.PrivateIPv4,
+			Writer: i == placement.writerSlot() && !placement.Promoting && placement.Recovery == "",
 		}
 		sid, checked, err := r.directoryControllerHealth(ctx, *directory, scope, controller, i, revision)
 		if err != nil {

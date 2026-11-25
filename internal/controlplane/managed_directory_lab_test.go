@@ -478,6 +478,8 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 		t.Fatal("a revoked primary confirmed startup")
 	}
 	assertHealth(true, true, true)
+	seedHost("host-g", "approved", true)
+	testDirectoryPairRecovery(t, ctx, r, tenant, directory.ID, ready, private, func() { seedHost("host-h", "approved", true) })
 }
 
 func testDirectoryReplicaReplacement(t *testing.T, ctx context.Context, r *Region, tenant identity.TenantReservation,

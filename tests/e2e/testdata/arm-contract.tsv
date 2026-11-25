@@ -15,6 +15,8 @@ WORKPLACE-05	managed-directory-request	2.93.0	none	2026-11-01	rest --method put 
 WORKPLACE-05	managed-directory-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 -o json
 WORKPLACE-05	managed-directory-replace-replica	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/replaceReplica?api-version=2026-11-01 --body @{signed_directory_fence_json} -o none
 WORKPLACE-05	managed-directory-replace-primary	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/replacePrimary?api-version=2026-11-01 --body @{signed_primary_fence_json} -o none
+WORKPLACE-05	managed-directory-recover	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/recoveries/{recovery_id}?api-version=2026-11-01 --body @{signed_directory_recovery_json} -o json
+WORKPLACE-05	managed-directory-recovery-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/recoveries/{recovery_id}?api-version=2026-11-01 -o json
 WORKPLACE-09	directory-join-request	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}?api-version=2026-11-01 --body @{join_authorization_json} -o json
 WORKPLACE-09	directory-join-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}?api-version=2026-11-01 -o json
 WORKPLACE-09	directory-join-close	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}/close?api-version=2026-11-01 -o json

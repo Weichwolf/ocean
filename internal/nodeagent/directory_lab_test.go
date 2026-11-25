@@ -5,12 +5,14 @@ package nodeagent
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -108,5 +110,90 @@ func TestDirectoryControllerRuntimeHandoff(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "OCEAN_AD_EXPECTED_SID="+establishedSID) ||
 		strings.Contains(string(data), "ocean-directory-bootstrap") {
 		t.Fatal("the replacement container did not receive the established SID without a credential mount")
+	}
+}
+
+func TestDirectoryRecoveryRuntimeIsolation(t *testing.T) {
+	image := os.Getenv("OCEAN_E2E_SAMBA_IMAGE")
+	if image == "" {
+		t.Skip("requires a local Samba controller image in rootless Podman")
+	}
+	const recovery = "7832c08a-92e9-4c36-bec5-d5a44b6b4b84"
+	const sid = "S-1-5-21-123-456-789"
+	address := netip.MustParseAddr("10.254.247.11")
+	directory := &enrollment.DirectoryAssignment{
+		DirectoryID: "398994bd-dd01-46e9-a2b0-c1290d70b25d", DNSName: "ad.runtime.test", NetBIOSName: "OCEANRUN",
+		ControllerIndex: 1, ControllerIPv4: [2]netip.Addr{address, netip.MustParseAddr("10.254.247.12")},
+		ControllerNames: [2]string{"dc-recovery", "dc-recovery2"}, RecoveryID: recovery, RecoverySHA256: strings.Repeat("a", 64),
+	}
+	a := enrollment.Assignment{ID: "directory-restore-test", Generation: strings.ToLower(rand.Text()),
+		TenantID: "0ccef74a-66da-4f20-bffb-73875b79be57", SubscriptionID: "92c64582-7cfe-43c4-a121-b04519f71815",
+		PrivateIPv4: address, Resources: enrollment.Capacity{CPUMillis: 500, MemoryMiB: 768}, Directory: directory}
+	name := containerName(directoryTaskID(a))
+	restorer := name + directoryRestoreSuffix
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = podmanAction(ctx, "rm", "--force", "--ignore", name, restorer)
+		_ = podmanAction(ctx, "secret", "rm", "--ignore", name)
+		_ = podmanAction(ctx, "volume", "rm", name)
+	})
+	issuer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/ocean/hosts/node/directories/"+a.TenantID+"/"+a.Generation+"/bootstrap" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set(enrollment.DirectoryDomainSIDHeader, sid)
+		_, _ = fmt.Fprint(w, "Ocn9-"+strings.Repeat("A", 32))
+	}))
+	defer issuer.Close()
+	state := t.TempDir()
+	j := joinClient{config: joinConfig{DirectoryImage: image, Origin: issuer.URL, HostID: "node",
+		StateDirectory: state}, client: issuer.Client()}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if err := j.syncDirectoryContainer(ctx, name, a); !errors.Is(err, errDirectoryRestorePending) {
+		t.Fatalf("a missing archive did not wait: %v", err)
+	}
+	folder := filepath.Join(state, "directory-recovery")
+	if err := os.Mkdir(folder, 0700); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(folder, recovery+".tar")
+	if err := os.WriteFile(archive, []byte("corrupt recovery archive"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.syncDirectoryContainer(ctx, name, a); err == nil || errors.Is(err, errDirectoryRestorePending) {
+		t.Fatalf("an archive readable by other users could enter the restore container: %v", err)
+	}
+	if err := os.Chmod(archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.syncDirectoryContainer(ctx, name, a); !errors.Is(err, errDirectoryRestorePending) {
+		t.Fatalf("did not start the offline restore job: %v", err)
+	}
+	networkMode, err := localPodman(ctx, "inspect", "--format", "{{.HostConfig.NetworkMode}}", restorer).Output()
+	if err != nil || strings.TrimSpace(string(networkMode)) != "none" {
+		t.Fatalf("the restore may have been attached to a network: %q %v", networkMode, err)
+	}
+	for {
+		status, exists, err := inspectContainer(ctx, restorer, localPodman)
+		if err != nil || !exists {
+			t.Fatalf("the agent did not retain its offline recovery status: %v", err)
+		}
+		if !status.Running {
+			if status.ExitCode == 0 {
+				t.Fatal("a corrupt archive was accepted")
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if _, exists, err := inspectContainer(ctx, name, localPodman); err != nil || exists {
+		t.Fatalf("the agent started Samba after a failed offline restore: %v", err)
 	}
 }

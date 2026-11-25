@@ -114,7 +114,7 @@ func (r *Region) requestDirectoryReplacement(ctx context.Context, tenant identit
 	if failed.HostID != fence.HostID || failed.ID != fence.PlacementID || failed.Generation != fence.Generation {
 		return denied
 	}
-	if placement.Repair != "" || result.Responses[3].GetResponseRange().Count != 0 {
+	if placement.Repair != "" || placement.Recovery != "" || result.Responses[3].GetResponseRange().Count != 0 {
 		return identity.ErrDirectoryFencePending
 	}
 	hosts := result.Responses[2].GetResponseRange().Kvs

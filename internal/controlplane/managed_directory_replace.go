@@ -129,7 +129,8 @@ func (r *Region) placeDirectoryReplicaReplacement(ctx context.Context, tenantID,
 		SubnetID: current.SubnetID, PrivateIPv4: current.PrivateIPv4,
 		Directory: &enrollment.DirectoryAssignment{DirectoryID: directory.ID, DNSName: directory.Spec.DNSName, NetBIOSName: directory.Spec.NetBIOSName,
 			ControllerIndex: replicaSlot + 1, WriterIndex: placement.WriterIndex,
-			ControllerIPv4: [2]netip.Addr{placement.Controllers[0].PrivateIPv4, placement.Controllers[1].PrivateIPv4}}}
+			ControllerNames: placement.Names,
+			ControllerIPv4:  [2]netip.Addr{placement.Controllers[0].PrivateIPv4, placement.Controllers[1].PrivateIPv4}}}
 	allocation := r.subnetNetworkPlacements(scope, parent, subnet) + current.PrivateIPv4.String()
 	oldSpread, newSpread := r.spreadHostKey(scope, old.SpreadSet, old.HostID), r.spreadHostKey(scope, old.SpreadSet, current.HostID)
 	guards = append(guards, target.guards...)

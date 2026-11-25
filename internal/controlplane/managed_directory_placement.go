@@ -27,6 +27,15 @@ type directoryPlacement struct {
 	Repair      string                                `json:"repair,omitempty"`
 	WriterIndex int                                   `json:"writerIndex,omitempty"`
 	Promoting   bool                                  `json:"promoting,omitempty"`
+	Recovery    string                                `json:"recovery,omitempty"`
+	Names       [directoryControllerCount]string      `json:"names,omitzero"`
+}
+
+func (placement directoryPlacement) controllerName(index int) string {
+	if placement.Names[index] != "" {
+		return placement.Names[index]
+	}
+	return fmt.Sprintf("dc%02d", index+1)
 }
 
 func (placement directoryPlacement) writerSlot() int {
@@ -122,6 +131,9 @@ func (r *Region) placeManagedDirectory(ctx context.Context, tenantID string) err
 		}
 		if placement.Repair != "" {
 			return r.placeDirectoryReplicaReplacement(ctx, tenantID, placement.Repair)
+		}
+		if placement.Recovery != "" {
+			return r.reconcileDirectoryRecovery(ctx, tenantID, placement.Recovery)
 		}
 		return nil
 	}

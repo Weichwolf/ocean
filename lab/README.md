@@ -532,7 +532,7 @@ recorded SID before responding to the startup challenge. Check DNS, fresh
 Kerberos authentication, the existing member's secure channel, group
 membership and SYSVOL access before restoring client routing. This
 operator procedure restores a standalone controller. Regional orchestration
-and rebuilding a managed controller pair are separate recovery gates.
+can rebuild the pair using the same backup format.
 
 Run the local probe using the built controller image. The probe encrypts a
 backup, deletes both original controller volumes, rejects a corrupted archive
@@ -543,6 +543,56 @@ OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-07 \
   OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
   go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
+
+### Coordinated directory recovery
+
+The site fencing authority must verify that both assigned controller hosts
+are powered off and keep their old volumes isolated. Sign one attestation
+with `action: RecoverDirectory`, the tenant, subscription and directory IDs,
+a new lowercase UUID in `recoveryId`, the plaintext backup digest in
+`backupSha256`, and `observation: PoweredOff` with an RFC 3339 `observedAt`.
+Put both current assignments in `controllers` in slot order with their
+`hostId`, `placementId` and `generation`. Encode the signed bytes and
+Ed25519 signature in the same base64 envelope as controller replacement.
+
+```sh
+recovery_url="https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID/directory/recoveries/$RECOVERY_ID?api-version=2026-11-01"
+az rest --method put --url "$recovery_url" --body @signed-directory-recovery.json
+az rest --method get --url "$recovery_url"
+```
+
+`Fenced` means both old host identities were revoked and their active
+delegated authorizations were invalidated. The regional reconciler reserves
+two distinct eligible hosts and keeps the tenant's IP and quota reservations.
+When the operation shows `AwaitingRestore`, deliver the decrypted archive to
+its `writerHostId` through the site's private operator channel. On that host,
+stage the archive as a regular file owned by the agent with mode 0600 at
+`<enrollment.stateDirectory>/directory-recovery/<recoveryId>.tar`. Publish it
+with an atomic rename once the copy and checksum verification have completed.
+Keep the encrypted original and decryption key independently available.
+
+The agent restores into its new private volume in an offline container.
+It checks the signed digest, the component digests and
+the directory SID. The restore resets the built-in administrator credential
+to a fresh value sealed by the region and removes old delegated grants. The
+new writer requests regional startup authorization before listening.
+The standby joins the restored domain once the writer reports healthy.
+Both controllers get new names and generations. Clients keep their existing
+DNS addresses and rediscover the new names through AD DNS.
+
+Ocean resumes Graph and new join authorization work after both controllers
+report the original SID. The status becomes `Succeeded` and the operation
+can be replayed with the same signed envelope. Remove the site-staged
+plaintext after successful recovery. Issue fresh join IDs for machines that
+still need to join. Clients and credentials created after the backup can
+require reconciliation because the restore returns the directory to the
+captured state.
+
+Use `WORKPLACE-13` to recover a new pair from encrypted media and measure
+recovery on one lab host. `WORKPLACE-05` exercises the CLI contract and
+`WORKPLACE-06` exercises the regional transaction with signed fixture
+evidence and disposable etcd. The Windows and independent-host recovery
+gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ## Tenant directory users
 

@@ -19,9 +19,20 @@ func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certif
 		return enrollment.DirectoryBootstrap{}, err
 	}
 	bootstrap := enrollment.DirectoryBootstrap{DomainSID: binding.directory.DomainSID}
-	if binding.index == binding.placement.writerSlot() && bootstrap.DomainSID != "" {
+	writer := binding.placement.writerSlot()
+	if binding.index == writer && bootstrap.DomainSID != "" && binding.assignment.Directory.RecoveryID == "" {
 		// A previously initialized writer only needs its existing local keys.
 		return bootstrap, nil
+	}
+	if binding.index != writer && binding.placement.Recovery != "" {
+		scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: binding.directory.SubscriptionID}
+		sid, _, err := r.directoryControllerHealth(ctx, binding.directory, scope, binding.placement.Controllers[writer], writer, binding.revision)
+		if err != nil {
+			return bootstrap, err
+		}
+		if sid == "" {
+			return bootstrap, enrollment.ErrDirectoryAssignmentChanged
+		}
 	}
 	bootstrap.Credential, err = r.workloads.sealer.Open(nil, nil, binding.placement.Bootstrap,
 		binding.placement.bootstrapLabel(r.managedDirectoryPlacementKey(tenant)))
@@ -62,16 +73,17 @@ func (r *Region) CommitDirectoryIdentity(ctx context.Context, host string, certi
 }
 
 type authorizedDirectoryController struct {
-	placement directoryPlacement
-	directory identity.ManagedDirectory
-	index     int
-	revision  int64
-	lease     clientv3.LeaseID
-	guards    []clientv3.Cmp
+	placement  directoryPlacement
+	directory  identity.ManagedDirectory
+	index      int
+	assignment enrollment.Assignment
+	revision   int64
+	lease      clientv3.LeaseID
+	guards     []clientv3.Cmp
 }
 
 func (binding *authorizedDirectoryController) activeWriter() bool {
-	return binding.index == binding.placement.writerSlot() && !binding.placement.Promoting
+	return binding.index == binding.placement.writerSlot() && !binding.placement.Promoting && binding.placement.Recovery == ""
 }
 
 func (r *Region) authorizeDirectoryController(ctx context.Context, host string, certificate []byte, tenant, generation string) (*authorizedDirectoryController, error) {
@@ -121,10 +133,12 @@ func (r *Region) authorizeDirectoryController(ctx context.Context, host string, 
 	if err != nil {
 		return nil, err
 	}
-	if len(active.Kvs) != 1 || !directoryAssignmentMatches(active.Kvs[0].Value, directory, controller, index) {
+	var assignment enrollment.Assignment
+	if len(active.Kvs) != 1 || !directoryAssignmentMatches(active.Kvs[0].Value, directory, controller, index) ||
+		json.Unmarshal(active.Kvs[0].Value, &assignment) != nil || assignment.Directory.ControllerNames != placement.Names {
 		return nil, enrollment.ErrHostDenied
 	}
-	binding := &authorizedDirectoryController{placement: placement, directory: directory, index: index, revision: snapshot.Header.Revision,
+	binding := &authorizedDirectoryController{placement: placement, directory: directory, index: index, assignment: assignment, revision: snapshot.Header.Revision,
 		lease: clientv3.LeaseID(snapshot.Responses[1].GetResponseRange().Kvs[0].Lease)}
 	for _, response := range snapshot.Responses {
 		kv := response.GetResponseRange().Kvs[0]

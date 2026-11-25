@@ -107,6 +107,9 @@ type DirectoryAssignment struct {
 	WriterIndex     int           `json:"writerIndex,omitempty"`
 	RetireReplica   string        `json:"retireReplicaGeneration,omitempty"`
 	PromoteFrom     string        `json:"promoteFromGeneration,omitempty"`
+	ControllerNames [2]string     `json:"controllerNames,omitzero"`
+	RecoveryID      string        `json:"recoveryId,omitempty"`
+	RecoverySHA256  string        `json:"recoverySha256,omitempty"`
 }
 
 func (a DirectoryAssignment) IsWriter() bool {

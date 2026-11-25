@@ -159,6 +159,7 @@ type containerProcess struct {
 	Pid       int
 	Running   bool
 	StartedAt string
+	ExitCode  int
 }
 
 func inspectContainer(ctx context.Context, name string, podman func(context.Context, ...string) *exec.Cmd) (containerProcess, bool, error) {

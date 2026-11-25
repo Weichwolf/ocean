@@ -35,6 +35,22 @@ func (f directoryTenantFixture) LookupTenant(_ context.Context, tenant string) (
 type directoryRequestFixture struct {
 	received        *ManagedDirectory
 	lastReplacement string
+	recovery        *DirectoryRecovery
+}
+
+func (f *directoryRequestFixture) RequestDirectoryRecovery(_ context.Context, _ TenantReservation, id string, fence SignedDirectoryFence) (*DirectoryRecovery, error) {
+	if string(fence.Attestation) != "fixture-attestation" || string(fence.Signature) != "fixture-signature" {
+		return nil, ErrDirectoryFenceDenied
+	}
+	f.recovery = &DirectoryRecovery{ID: id, State: DirectoryRecoveryFenced, BackupSHA: strings.Repeat("d", 64)}
+	return f.recovery, nil
+}
+
+func (f *directoryRequestFixture) LookupDirectoryRecovery(_ context.Context, _ TenantReservation, id string) (*DirectoryRecovery, error) {
+	if f.recovery != nil && f.recovery.ID == id {
+		return f.recovery, nil
+	}
+	return nil, nil
 }
 
 func (f *directoryRequestFixture) RequestDirectoryReplicaReplacement(_ context.Context, _ TenantReservation, fence SignedDirectoryFence) error {
@@ -136,6 +152,7 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 	input := `{"dnsName":"AD.Example.Test","netbiosName":"office","subnetId":"/fixture"}`
 	replacement := path + "/replaceReplica"
 	primaryReplacement := path + "/replacePrimary"
+	recovery := path + "/recoveries/" + newUUID()
 	fence, _ := json.Marshal(SignedDirectoryFence{Attestation: []byte("fixture-attestation"), Signature: []byte("fixture-signature")})
 	for _, check := range []struct {
 		name, method, path, query, subject, content string
@@ -153,6 +170,10 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 		{"replacement unavailable", http.MethodPost, replacement, query, tenant.Administrator, string(fence), http.StatusConflict},
 		{"primary replacement member", http.MethodPost, primaryReplacement, query, member, string(fence), http.StatusForbidden},
 		{"primary replacement unavailable", http.MethodPost, primaryReplacement, query, tenant.Administrator, string(fence), http.StatusConflict},
+		{"recovery member", http.MethodPut, recovery, query, member, string(fence), http.StatusForbidden},
+		{"recovery invalid id", http.MethodGet, path + "/recoveries/latest", query, tenant.Administrator, "", http.StatusBadRequest},
+		{"recovery nonexistent", http.MethodGet, recovery, query, tenant.Administrator, "", http.StatusNotFound},
+		{"recovery invalid envelope", http.MethodPut, recovery, query, tenant.Administrator, `{"x":true}`, http.StatusBadRequest},
 	} {
 		t.Run(check.name, func(t *testing.T) {
 			result := send(check.method, check.path, check.query, check.subject, check.content)
@@ -191,6 +212,10 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 		result.Header().Get("Location") != armOrigin+path+query || store.lastReplacement != ReplaceDirectoryPrimary {
 		t.Fatalf("primary replacement response (%d) %s", result.Code, result.Body)
 	}
+	if result := send(http.MethodPut, recovery, query, tenant.Administrator, string(fence)); result.Code != http.StatusAccepted ||
+		result.Header().Get("Location") != armOrigin+recovery+query || !strings.Contains(result.Body.String(), `"state":"Fenced"`) {
+		t.Fatalf("recovery admission response (%d) %s", result.Code, result.Body)
+	}
 	if os.Getenv("OCEAN_E2E_DIRECTORY_CLI") == "1" {
 		t.Run("pinned Azure CLI", func(t *testing.T) {
 			ready := make(chan struct{})
@@ -202,12 +227,12 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 			compat.cloud.ResourceManager = server.URL
 			close(ready)
 			testManagedDirectoryCLI(t, server, path+query, input, signedToken(server.URL, tenant.Administrator), store.received.ID,
-				[]string{replacement + query, primaryReplacement + query}, fence)
+				[]string{replacement + query, primaryReplacement + query}, recovery+query, fence)
 		})
 	}
 }
 
-func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, input, token, expectedID string, replacements []string, fence []byte) {
+func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, input, token, expectedID string, replacements []string, recovery string, fence []byte) {
 	t.Helper()
 	temp := t.TempDir()
 	ca, body := filepath.Join(temp, "test-ca.pem"), filepath.Join(temp, "directory.json")
@@ -263,5 +288,17 @@ func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, 
 		run("rest", "--method", "post", "--url", api.URL+replacement, "--headers", "Authorization=Bearer "+token,
 			"--body", "@"+fenceFile, "--only-show-errors", "-o", "none")
 		t.Logf("Azure CLI %s az rest post submitted the %s envelope", version.CLI, strings.SplitN(replacement, "?", 2)[0])
+	}
+	for _, method := range []string{"put", "get"} {
+		args := []string{"rest", "--method", method, "--url", api.URL + recovery,
+			"--headers", "Authorization=Bearer " + token, "--only-show-errors", "-o", "json"}
+		if method == "put" {
+			args = append(args, "--body", "@"+fenceFile)
+		}
+		var status DirectoryRecovery
+		if err := json.Unmarshal(run(args...), &status); err != nil || status.State != DirectoryRecoveryFenced ||
+			!strings.Contains(recovery, status.ID+"?") || len(status.BackupSHA) != 64 {
+			t.Fatalf("az rest %s recovery status %+v (%v)", method, status, err)
+		}
 	}
 }
