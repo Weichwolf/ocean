@@ -12,11 +12,12 @@ from uuid import uuid4
 
 sys.dont_write_bytecode = True
 from prepare_application_gateway import GATEWAYS, NAMESPACE as HTTPS
-from region import OPERATOR, ROOT, eventually, ssh, upload
+from region import OPERATOR, ROOT, etcdctl, eventually, ssh, upload
 from verify_egress_hosts import SOURCE_SERVER, gateway_files, require
 from verify_https_hosts import DEST as HTTPS_FILES, PROBE, cleanup_probe, configure_probe
 from verify_identity import CLIENT
 from verify_onboarding import prepare_operator_client
+from verify_operations import verify_workload_create
 from verify_wireguard_hosts import macvlan
 
 CUSTOMER = "farm-1-customer"
@@ -102,7 +103,7 @@ fi
     restore_gateway(state)
 
 
-def verify(state):
+def verify(state, parallel_create=False):
     source = state / "functions-registry/images.json"
     images = json.loads(source.read_text())
     prepare_operator_client(state, ("arm_cli.py", "arm_rbac_cli.py", "functions_cli.py", "application_gateway_cli.py",
@@ -114,12 +115,15 @@ def verify(state):
         print(f"Functions lab phase {phase}", file=sys.stderr, flush=True)
         cmd = ["python3", f"{CLIENT}/functions_cli.py", "--settings", f"{CLIENT}/operator.secret", "--matrix",
                f"{CLIENT}/arm-contract.tsv", "--images", f"{CLIENT}/function-images.json", "--fixture", fixture, "--phase", phase]
+        if parallel_create and phase == "setup":
+            cmd.append("--parallel-create")
         return json.loads(ssh(state, OPERATOR, shlex.join(cmd)))
 
     probe = False
     restored = False
     try:
         setup = invoke("setup")
+        retry = verify_workload_create(state, setup, 750, 416) if parallel_create else {}
         authorization = invoke("authorize")
         integration = invoke("integrate")
         ingress = invoke("publish")
@@ -199,7 +203,10 @@ def verify(state):
         require(elapsed <= DEADLINE_SECONDS * 1000, "the Function egress recovery exceeded the lab deadline")
         cleanup = invoke("cleanup")
         restored = True
-        return {**setup, **authorization, **integration, **updates, **nat, **cleanup, "fixtureImages": images,
+        usage = f"/ocean/v1/regions/farm-1/tenants/{setup['tenant']}/arm/{setup['subscription']}/placement-usage"
+        require(json.loads(ssh(state, OPERATOR, etcdctl(f"get {usage} --print-value-only"))) == {"cpuMillis": 0, "memoryMiB": 0},
+                "deleting the Functions fixture did not release its capacity")
+        return {**setup, **retry, **authorization, **integration, **updates, **nat, **cleanup, "fixtureImages": images, "quotaReleased": True,
                 "httpsIPv4": address, "gatewayDNSVerified": True, "trustedHTTPS": True, "missingKeyDenied": True, "invalidKeyDenied": True,
                 "lifecycleVerified": True, "stoppedEndpointState": stop_endpoint_state, "persistentKeyAfterRestart": True, "observedIPv4Before": fixed,
                 "observedIPv4After": fixed, "recoveryMs": elapsed, "deadlineMs": DEADLINE_SECONDS * 1000}
@@ -215,9 +222,10 @@ def verify(state):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--parallel-create", action="store_true")
     args = parser.parse_args()
     state = args.state.resolve()
-    result = verify(state)
+    result = verify(state, args.parallel_create)
     evidence = state / "evidence"
     evidence.mkdir(mode=0o700, exist_ok=True)
     (evidence / "http-functions.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

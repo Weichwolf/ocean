@@ -29,7 +29,7 @@ type labSessions struct {
 }
 
 func orderLabSteps(steps []harness.Step) []harness.Step {
-	rank := map[string]int{"": 0, "storage-ha": 1, "single-farm-3": 2, "scale-16": 3}
+	rank := map[string]int{"single-farm-3": 0, "": 1, "storage-ha": 2, "scale-16": 3}
 	slices.SortStableFunc(steps, func(a, b harness.Step) int { return rank[a.LabProfile] - rank[b.LabProfile] })
 	return steps
 }
@@ -134,11 +134,15 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 	if err := sessions.up(ctx, lab, names); err != nil {
 		return err
 	}
+	readiness := "curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem https://arm.farm-1.ocean.test/readyz"
+	if lab.profile != "single-farm-3" {
+		readiness += " && curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem " +
+			"https://oauth.farm-1.ocean.test/realms/c8c02ae2-b2c9-4762-9bb5-08b660caf0ae/.well-known/openid-configuration"
+	}
 	lastErr := errors.New("the management endpoint did not become ready")
 	for attempt := 0; attempt < 60; attempt++ {
-		probe, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, err := sessions.command(probe, "ssh", lab.state, "farm-1-operator", "--",
-			"curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem https://arm.farm-1.ocean.test/readyz")
+		probe, cancel := context.WithTimeout(ctx, 8*time.Second)
+		_, err := sessions.command(probe, "ssh", lab.state, "farm-1-operator", "--", readiness)
 		cancel()
 		if err == nil {
 			sessions.current = state

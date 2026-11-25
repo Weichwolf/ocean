@@ -63,6 +63,26 @@ def verify_store(state, result):
     return {"acceptedRevision": item["create_revision"], "completedRevision": item["mod_revision"], "operationsForFirstDeletion": 1}
 
 
+def verify_workload_create(state, result, cpu, memory):
+    tenant, subscription = (str(uuid.UUID(result[key])) for key in ("tenant", "subscription"))
+    name = result["group"]
+    root = "/ocean/v1/regions/farm-1"
+    arm = f"{root}/tenants/{tenant}/arm/{subscription}"
+    prefix = f"{root}/operations/records/{tenant}/{subscription}/"
+    rows = json.loads(ssh(state, OPERATOR, etcdctl(f"get {prefix} --prefix -w json"))).get("kvs", [])
+    records = [json.loads(base64.b64decode(row["value"])) for row in rows]
+    creations = [row for row in records if row.get("kind") == "CreateContainerGroup" and row.get("group") == name]
+    if len(creations) != 1 or creations[0].get("status") != "Succeeded":
+        raise RuntimeError("concurrent creates did not converge on exactly one successful durable operation")
+    if json.loads(ssh(state, OPERATOR, etcdctl(f"get {arm}/placement-usage --print-value-only"))) != {
+            "cpuMillis": cpu, "memoryMiB": memory}:
+        raise RuntimeError("concurrent creates did not reserve exactly one workload allocation")
+    pending = json.loads(ssh(state, OPERATOR, etcdctl(f"get {root}/operations/pending/{creations[0]['operationId']} -w json")))
+    if pending.get("count", 0) != 0:
+        raise RuntimeError("a successful workload create remained pending")
+    return {"createOperationId": creations[0]["operationId"], "oneReservation": True, "createStatus": "Succeeded"}
+
+
 def verify(state):
     prepare_operator_client(state, ("arm_cli.py", "arm_operations_cli.py", "testdata/arm-contract.tsv"))
     session_dir = ssh(state, OPERATOR, "mktemp -d /tmp/ocean-operation.XXXXXXXX").decode().strip()

@@ -59,6 +59,7 @@ func TestAcceptance(t *testing.T) {
 	}
 	t.Logf("Acceptance artifacts in %s", runner.Directory)
 	azVersions, extensions := []string{}, []string{}
+	apiVersions := map[string]bool{}
 	for _, row := range contract {
 		if !slices.Contains(azVersions, row.CLI) {
 			azVersions = append(azVersions, row.CLI)
@@ -66,13 +67,22 @@ func TestAcceptance(t *testing.T) {
 		if !slices.Contains(extensions, row.Extensions) {
 			extensions = append(extensions, row.Extensions)
 		}
+		for _, api := range strings.Split(row.APIVersion, "+") {
+			apiVersions[api] = true
+		}
 	}
+	apis := make([]string, 0, len(apiVersions))
+	for api := range apiVersions {
+		apis = append(apis, api)
+	}
+	slices.Sort(apis)
 	options := configureLab(root, profile)
 	options.evidence = runner.Evidence
 	meta := harness.RunMetadata{ID: id, Profile: profile, Revision: revision(root), StartedAt: now,
 		Inputs: map[string]string{
 			"Host":                  fmt.Sprintf("%s/%s with %d visible CPUs", runtime.GOOS, runtime.GOARCH, runtime.NumCPU()),
 			"CLI contract versions": strings.Join(azVersions, ", "), "Pinned CLI extensions": strings.Join(extensions, ", "),
+			"API contract versions":     strings.Join(apis, ", "),
 			"Acceptance matrix SHA-256": digest(filepath.Join(root, "acceptance.tsv")), "CLI contract SHA-256": digest(contractFile),
 			"Image lock SHA-256": digest(filepath.Join(root, "tests", "e2e", "testdata", "images.lock.yaml")),
 		}}
@@ -83,6 +93,16 @@ func TestAcceptance(t *testing.T) {
 	}
 	if file := options.packageDeb; file != "" {
 		meta.Inputs["Agent package SHA-256"] = digest(file)
+	}
+	for _, file := range []string{filepath.Join(root, "acceptance.tsv"), contractFile,
+		filepath.Join(root, "tests", "e2e", "testdata", "images.lock.yaml")} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("record acceptance input: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(runner.Evidence, filepath.Base(file)), data, 0o600); err != nil {
+			t.Fatalf("record acceptance input: %v", err)
+		}
 	}
 	outcomes := []harness.Outcome{}
 	t.Cleanup(func() {
