@@ -151,3 +151,14 @@ WORKPLACE-17	web-app-register	2.93.0	none	v1.0	ad app create --display-name {nam
 WORKPLACE-17	web-app-show	2.93.0	none	v1.0	ad app show --id {appId} -o json
 WORKPLACE-20	web-policy-put	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/webApplications/{applicationObjectId}?api-version=2026-11-01 --body {groupPolicyJson} -o json
 WORKPLACE-20	web-policy-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/webApplications/{applicationObjectId}?api-version=2026-11-01 -o json
+WORKPLACE-22	cli-cloud-register	2.93.0	none	2022-09-01	cloud register --name ocean --endpoint-resource-manager {arm} -o none
+WORKPLACE-22	cli-cloud-select	2.93.0	none	local	cloud set --name ocean -o none
+WORKPLACE-22	cli-device-login	2.93.0	none	v2.0+2022-12-01	login --tenant {tenant} --use-device-code -o none
+WORKPLACE-22	cli-service-principal-login	2.93.0	none	v2.0+2022-12-01	login --tenant {tenant} --service-principal --username {appId} --password={secret} -o none
+WORKPLACE-22	cli-account-list	2.93.0	none	local	account list --all -o json
+WORKPLACE-22	cli-account-select	2.93.0	none	local	account set --subscription {subscription}
+WORKPLACE-22	cli-location-list	2.93.0	none	2022-12-01	account list-locations --query [].name -o json
+WORKPLACE-22	cli-audience-token	2.93.0	none	v2.0	account get-access-token --resource {resource} --query accessToken -o tsv
+WORKPLACE-22	cli-subscription-read	2.93.0	none	2022-12-01	rest --method get --url {arm}/subscriptions/{subscription}?api-version=2022-12-01 -o json
+WORKPLACE-22	cli-graph-app-read	2.93.0	none	v1.0	ad app show --id {applicationObjectId} -o json
+WORKPLACE-22	cli-web-policy-publish	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/webApplications/{applicationObjectId}?api-version=2026-11-01 --body {groupPolicyJson} -o json

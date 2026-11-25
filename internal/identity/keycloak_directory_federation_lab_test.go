@@ -51,6 +51,11 @@ type sambaDirectoryLab struct {
 
 func keycloakSambaLab(t *testing.T, cloud CloudEndpoints) sambaDirectoryLab {
 	t.Helper()
+	return keycloakSambaExchangeLab(t, cloud, newClientSecret())
+}
+
+func keycloakSambaExchangeLab(t *testing.T, cloud CloudEndpoints, exchange string) sambaDirectoryLab {
+	t.Helper()
 	state := os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE")
 	if state == "" {
 		t.Skip("set OCEAN_E2E_SAMBA_FEDERATION_STATE for the disposable Samba replica pair")
@@ -67,7 +72,7 @@ func keycloakSambaLab(t *testing.T, cloud CloudEndpoints) sambaDirectoryLab {
 	if !strings.HasPrefix(primary, "ocean-web-ad-") {
 		t.Fatal("use a disposable Samba federation fixture")
 	}
-	ctx, admin, tenant, cloud, firstAdmin := keycloakTenantLab(t, cloud)
+	ctx, admin, tenant, cloud, firstAdmin := keycloakTenantExchangeLab(t, cloud, exchange)
 	directory := ManagedDirectory{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID, ID: value("directory-id"),
 		Spec:        DirectorySpec{DNSName: federationLabDomain, NetBIOSName: "OCEANWEB", SubnetID: "/fixture/subnet"},
 		RequestedAt: time.Now().Add(-time.Minute), ProvisionedAt: time.Now(), DomainSID: value("sid")}

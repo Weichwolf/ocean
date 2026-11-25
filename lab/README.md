@@ -1114,6 +1114,17 @@ fixture KDC to the isolated lab, and keep the ticket cache and keytab private.
 The probe also checks the live UserInfo response for the token issued before
 the account is disabled and measures the denial of a new authorization code.
 
+`WORKPLACE-22` exercises stock Azure CLI 2.93.0 against the compatibility
+handlers and the same real Keycloak and Samba fixtures. Set `SSL_CERT_FILE`
+to the Keycloak lab CA and provide the Kerberos fixture keytab. The probe
+creates an existing tenant and a tenant eligible for web federation. It runs
+device-code and service-principal sign-in from separate temporary CLI caches
+for each tenant. It checks subscription and location discovery, audience and
+subject stability, tenant isolation in Graph, and administrator-only access.
+The managed tenant publishes its Kerberos policy with an authenticated
+`az rest` call, and both tenants repeat the checks with new caches. The
+regional reservation and application records are disposable fixture data.
+
 ## ARM resource groups
 
 Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.

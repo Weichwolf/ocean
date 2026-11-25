@@ -214,11 +214,43 @@ def check(config):
     return {"user": user, "application": app, "invalidCredentialsRejected": True}
 
 
+def check_web_regression(config):
+    with (tempfile.TemporaryDirectory(prefix="ocean-web-cli-user-") as user_cache,
+          tempfile.TemporaryDirectory(prefix="ocean-web-cli-sp-") as app_cache):
+        administrator = AzureCLI(config, user_cache)
+        version = json.loads(administrator.run("version", "-o", "json"))
+        if version["azure-cli"] != "2.93.0" or version["extensions"]:
+            raise RuntimeError("expected Azure CLI 2.93.0 with no installed extensions")
+        administrator.login_device()
+        administrator.check_subscription()
+        user = administrator.resource_subject()
+        graph = json.loads(administrator.run("ad", "app", "show", "--id", config["appObject"], "-o", "json"))
+        if graph["id"] != config["appObject"] or graph["appId"] != config["app"]:
+            raise RuntimeError("Graph returned the wrong tenant application")
+        administrator.run("ad", "app", "show", "--id", config["foreignAppObject"], "-o", "json", reject=True)
+        cli = AzureCLI(config, app_cache)
+        cli.login_service_principal(config["app"], config["secret"])
+        cli.check_subscription()
+        app = cli.resource_subject()
+        cli.run("ad", "app", "show", "--id", config["appObject"], "-o", "json", reject=True)
+        policy = config.get("webPolicy")
+        if policy is not None:
+            path = f"/ocean/tenants/{config['tenant']}/directory/webApplications/{policy['appObject']}"
+            url = config["arm"] + path + "?api-version=2026-11-01"
+            result = json.loads(administrator.run("rest", "--method", "put", "--url", url,
+                                                  "--body", json.dumps({"groupIds": policy["groupIds"]}), "-o", "json"))
+            if result["properties"]["provisioningState"] != "Succeeded":
+                raise RuntimeError("the tenant administrator could not publish the Kerberos web policy")
+    return {"user": user, "application": app}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
+    parser.add_argument("--web-regression", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(check(json.loads(args.settings.read_text())), sort_keys=True))
+    probe = check_web_regression if args.web_regression else check
+    print(json.dumps(probe(json.loads(args.settings.read_text())), sort_keys=True))
 
 
 if __name__ == "__main__":

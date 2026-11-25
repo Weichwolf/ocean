@@ -23,6 +23,7 @@ import (
 type webPolicyLabStore struct {
 	directoryTenantFixture
 	directoryRequestFixture
+	existing   TenantReservation
 	controller string
 	apps       map[string]webPolicyLabRecord
 	mu         sync.Mutex
@@ -33,26 +34,35 @@ type webPolicyLabRecord struct {
 	revision int64
 }
 
+func (s *webPolicyLabStore) LookupTenant(ctx context.Context, tenant string) (*TenantReservation, error) {
+	if s.existing.TenantID != "" && tenant == s.existing.TenantID {
+		return &s.existing, nil
+	}
+	return s.directoryTenantFixture.LookupTenant(ctx, tenant)
+}
+
 func (s *webPolicyLabStore) FindApplication(_ context.Context, tenant, field, value string) (*Application, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, found := s.apps[value]
-	if !found || field != "id" || tenant != s.tenant.TenantID {
-		return nil, 0, nil
+	for _, record := range s.apps {
+		app := record.app
+		if app.TenantID != tenant || !(field == "id" && app.ID == value || field == "appId" && app.ClientID == value) {
+			continue
+		}
+		if app.WebPolicy != nil {
+			policy := *app.WebPolicy
+			policy.GroupIDs = slices.Clone(policy.GroupIDs)
+			app.WebPolicy = &policy
+		}
+		return &app, record.revision, nil
 	}
-	app := record.app
-	if app.WebPolicy != nil {
-		policy := *app.WebPolicy
-		policy.GroupIDs = slices.Clone(policy.GroupIDs)
-		app.WebPolicy = &policy
-	}
-	return &app, record.revision, nil
+	return nil, 0, nil
 }
 
 func (s *webPolicyLabStore) SaveApplication(_ context.Context, app Application, rev int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !app.Valid(s.tenant.TenantID) || s.apps[app.ID].revision != rev {
+	if !app.Valid(app.TenantID) || (app.TenantID != s.tenant.TenantID && app.TenantID != s.existing.TenantID) || s.apps[app.ID].revision != rev {
 		return false, nil
 	}
 	s.apps[app.ID] = webPolicyLabRecord{app, rev + 1}
