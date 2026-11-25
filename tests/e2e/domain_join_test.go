@@ -230,7 +230,11 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	for _, user := range []string{"smbwriter", "smbreader", "smbdenied"} {
 		smb = requireFile(smb, filepath.Join(smbFixture, user), "the disposable credential for "+user)
 	}
+	smbQuota := probe("kerberos-smb-quota", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-26"},
+		[]string{"kerberos-smb-quota.json"}, "--fixture", smbFixture, "--rbd-quota")
+	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "smbwriter"), "the disposable SMB writer credential")
+	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "rbd-volume-id"), "the encrypted RBD fixture volume ID")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota)
 }

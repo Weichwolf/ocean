@@ -55,8 +55,8 @@ func Prepare(ctx context.Context, member Member, destination string) error {
 			acls[i] = acl
 		}
 		for i, share := range member.Shares {
-			if err := applyACL(ctx, root, share.VolumeID, acls[i]); err != nil {
-				return fmt.Errorf("apply ACL on share %s: %w", share.Name, err)
+			if err := applySharePolicy(ctx, root, share, acls[i]); err != nil {
+				return fmt.Errorf("apply policy on share %s: %w", share.Name, err)
 			}
 		}
 	}
@@ -83,7 +83,7 @@ func validateShare(ctx context.Context, root *os.Root, domain string, share Shar
 	if err != nil || !rootOwnedDirectory(volume) || volume.Mode().Perm()&0022 != 0 {
 		return nil, errors.New("the assigned mount directory must be owned and writable by root only")
 	}
-	if err := verifyMount(ctx, filepath.Join(MountRoot, share.VolumeID)); err != nil {
+	if err := verifyMount(ctx, filepath.Join(MountRoot, share.VolumeID), share.QuotaMiB > 0); err != nil {
 		return nil, err
 	}
 	rules := []string{"u::rwx", "g::---", "o::---", "d:u::rwx", "d:g::---", "d:o::---"}
@@ -103,14 +103,19 @@ func validateShare(ctx context.Context, root *os.Root, domain string, share Shar
 	return rules, nil
 }
 
-func applyACL(ctx context.Context, root *os.Root, volumeID string, rules []string) error {
-	directory := filepath.Join(volumeID, "data")
+func applySharePolicy(ctx context.Context, root *os.Root, share Share, rules []string) error {
+	directory := filepath.Join(share.VolumeID, "data")
 	if err := root.Mkdir(directory, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
 	info, err := root.Lstat(directory)
 	if err != nil || !rootOwnedDirectory(info) {
 		return errors.New("the assigned share data path must be a root-owned directory")
+	}
+	if share.QuotaMiB > 0 {
+		if err := applyProjectQuota(ctx, root, directory, share.QuotaMiB); err != nil {
+			return err
+		}
 	}
 	_, err = run(ctx, "/usr/bin/setfacl", "--physical", "--set", strings.Join(rules, ","), filepath.Join(MountRoot, directory))
 	return err
@@ -121,10 +126,10 @@ func rootOwnedDirectory(info os.FileInfo) bool {
 	return ok && stat.Uid == 0 && info.IsDir()
 }
 
-func verifyMount(ctx context.Context, path string) error {
-	output, err := run(ctx, "/usr/bin/findmnt", "-nro", "SOURCE,FSTYPE,VFS-OPTIONS", "--mountpoint", path)
+func verifyMount(ctx context.Context, path string, needsQuota bool) error {
+	output, err := run(ctx, "/usr/bin/findmnt", "-nro", "SOURCE,FSTYPE,VFS-OPTIONS,FS-OPTIONS", "--mountpoint", path)
 	fields := strings.Fields(output)
-	if err != nil || len(fields) != 3 || fields[1] != "ext4" || !strings.HasPrefix(fields[0], "/dev/") {
+	if err != nil || len(fields) != 4 || fields[1] != "ext4" || !strings.HasPrefix(fields[0], "/dev/") {
 		return errors.New("a dedicated ext4 volume must be mounted at the assigned path")
 	}
 	options := strings.Split(fields[2], ",")
@@ -133,9 +138,14 @@ func verifyMount(ctx context.Context, path string) error {
 			return errors.New("the assigned volume is missing its required mount options")
 		}
 	}
-	typeName, err := run(ctx, "/usr/bin/lsblk", "-dnro", "TYPE", "--", fields[0])
-	if err != nil || typeName != "crypt" {
-		return errors.New("the assigned filesystem is not backed by a dm-crypt device")
+	if needsQuota && !slices.Contains(strings.Split(fields[3], ","), "prjquota") {
+		return errors.New("the assigned volume must have ext4 project quotas enabled")
+	}
+	details, err := run(ctx, "/usr/sbin/cryptsetup", "status", fields[0])
+	if err != nil || !slices.ContainsFunc(strings.Split(details, "\n"), func(line string) bool {
+		return slices.Equal(strings.Fields(line), []string{"type:", "LUKS2"})
+	}) {
+		return errors.New("the assigned filesystem must use an active LUKS2 device")
 	}
 	return nil
 }

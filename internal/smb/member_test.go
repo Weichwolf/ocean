@@ -30,6 +30,8 @@ func TestMemberScopeAndAccessConfiguration(t *testing.T) {
 		"foreign group":           func(m *Member) { m.Shares[0].WriterSIDs = []string{"S-1-5-21-99-201-942-1402"} },
 		"reserved section":        func(m *Member) { m.Shares[0].Name = "global" },
 		"volume escape":           func(m *Member) { m.Shares[0].VolumeID = "vol-../etc" },
+		"negative quota":          func(m *Member) { m.Shares[0].QuotaMiB = -1 },
+		"quota above profile":     func(m *Member) { m.Shares[0].QuotaMiB = 16*1024 + 1 },
 		"duplicate grant":         func(m *Member) { m.Shares[0].WriterSIDs = m.Shares[0].ReaderSIDs },
 		"duplicate volume":        func(m *Member) { m.Shares = append(m.Shares, m.Shares[0]); m.Shares[1].Name = "other-files" },
 		"empty policy":            func(m *Member) { m.Shares[0].ReaderSIDs, m.Shares[0].WriterSIDs = nil, nil },

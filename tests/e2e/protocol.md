@@ -135,6 +135,13 @@ identities in the audit journal and measures the delay from group removal
 to denial with a newly issued TGT from the writable controller. Prepare the
 fixture with the [SMB member lab guide](../../lab/README.md#kerberos-smb-member).
 
+Select `WORKPLACE-26` for concurrent writes and byte-range locks over
+two fresh encrypted SMB connections. The member serves a LUKS2 volume
+mapped from Ceph RBD. The case requires a shared eight-MiB project quota,
+checks acknowledged writes across both connections and records the client
+error on a write over budget. One connection holds a lock while the other
+attempts to acquire the same byte before and after release.
+
 ## Workload fixtures
 
 Resolve public images as `repository@digest` using [images.lock.yaml](testdata/images.lock.yaml). The stored tags identify the upstream sources for refreshing the lock. Record the digests of the built artifacts and the platform used by the test run.

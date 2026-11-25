@@ -3,12 +3,13 @@
 
 import argparse
 import json
+import re
 import secrets
 import shlex
 import time
 from pathlib import Path
 
-from region import eventually, ssh
+from region import ROOT, eventually, ssh
 from verify_domain_join import CLIENT, DC, DOMAIN, FOREIGN, REALM, write_evidence
 
 MEMBER = "farm-1-node-04"
@@ -28,17 +29,24 @@ mode=$2
 file=$3
 private=$(mktemp -d)
 cleanup() {
-    for name in ticket krb5.conf payload downloaded auth; do
+    for name in ticket krb5.conf kdc.trace payload downloaded auth; do
         if test -f "$private/$name"; then unlink "$private/$name"; fi
     done
     rmdir "$private"
 }
 trap cleanup EXIT
 export KRB5_CONFIG="$private/krb5.conf" KRB5CCNAME="FILE:$private/ticket"
-printf '%s\n' '[libdefaults]' 'default_realm = AD.OCEAN.TEST' '[realms]' \
+export SSSD_KRB5_LOCATOR_DISABLE=1 KRB5_TRACE="$private/kdc.trace"
+printf '%s\n' '[libdefaults]' 'default_realm = AD.OCEAN.TEST' \
+    'dns_lookup_kdc = false' 'dns_uri_lookup = false' '[realms]' \
     'AD.OCEAN.TEST = {' 'kdc = 10.232.1.11' '}' > "$KRB5_CONFIG"
 printf '%s\n' "$password" | kinit "$account@AD.OCEAN.TEST" >/dev/null
 kvno cifs/files04.ad.ocean.test
+if ! grep -Eq ' (dgram|stream) 10\.232\.1\.11:88' "$KRB5_TRACE" ||
+    grep -Eq ' (dgram|stream) 10\.232\.1\.13:88' "$KRB5_TRACE"; then
+    echo 'The ticket probe must use the writable controller' >&2
+    exit 1
+fi
 smb=(smbclient //files04.ad.ocean.test/company-files
     --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" --client-protection=encrypt)
 
@@ -116,31 +124,33 @@ with closing(socket.socket()) as sock:
         raise SystemExit("A foreign tenant reached the SMB listener")'""")
 
     written = client("smbwriter", "writer").splitlines()
-    checksums = [line for line in written if len(line) == 64]
-    if len(checksums) != 1 or f"cifs/{MEMBER_NAME}@{REALM}: kvno =" not in "\n".join(written):
-        raise RuntimeError("The writer did not produce a CIFS service ticket and content checksum")
-    client("smbreader", "reader")
-    client("smbdenied", "denied")
-    audit = on(MEMBER, "sudo journalctl --no-pager -t smbd_audit -o cat -n 150")
-    entries = [line for line in audit.splitlines() if line.endswith("/" + marker)]
-    for user, event in (("smbwriter", "pwrite_recv"), ("smbreader", "create_file")):
-        if not any(line.startswith(f"OCEANLAB|{user}|10.232.1.12|{SHARE}|{event}|ok|") for line in entries):
-            raise RuntimeError(f"The SMB audit lacks the native identity and operation for {user}")
-
-    start = time.monotonic()
-    membership("removemembers")
     try:
-        eventually(lambda: client("smbwriter", "denied"), REVOCATION_BOUND_SECONDS)
-        elapsed = time.monotonic() - start
-        if elapsed > REVOCATION_BOUND_SECONDS:
-            raise RuntimeError("A new Kerberos SMB session exceeded the revocation bound")
+        checksums = [line for line in written if re.fullmatch(r"[0-9a-f]{64}", line)]
+        if len(checksums) != 1 or f"cifs/{MEMBER_NAME}@{REALM}: kvno =" not in "\n".join(written):
+            raise RuntimeError("The writer did not produce a CIFS service ticket and content checksum")
+        client("smbreader", "reader")
+        client("smbdenied", "denied")
+        audit = on(MEMBER, "sudo journalctl --no-pager -t smbd_audit -o cat -n 150")
+        entries = [line for line in audit.splitlines() if line.endswith("/" + marker)]
+        for user, event in (("smbwriter", "pwrite_recv"), ("smbreader", "create_file")):
+            if not any(line.startswith(f"OCEANLAB|{user}|10.232.1.12|{SHARE}|{event}|ok|") for line in entries):
+                raise RuntimeError(f"The SMB audit lacks the native identity and operation for {user}")
+
+        start = time.monotonic()
+        membership("removemembers")
+        try:
+            eventually(lambda: client("smbwriter", "denied"), REVOCATION_BOUND_SECONDS)
+            elapsed = time.monotonic() - start
+            if elapsed > REVOCATION_BOUND_SECONDS:
+                raise RuntimeError("A new Kerberos SMB session exceeded the revocation bound")
+        finally:
+            membership("addmembers")
     finally:
-        membership("addmembers")
-    eventually(lambda: client("smbwriter", "cleanup"), REVOCATION_BOUND_SECONDS)
+        eventually(lambda: client("smbwriter", "cleanup"), REVOCATION_BOUND_SECONDS)
     return {
         "client": CLIENT,
         "member": MEMBER_NAME,
-        "directoryController": f"dc01.{DOMAIN}",
+        "ticketIssuer": f"dc01.{DOMAIN}",
         "sambaVersion": on(CLIENT, "smbclient --version"),
         "contentSHA256": checksums[0],
         "privateListener": f"{ADDRESS}:445",
@@ -156,16 +166,53 @@ with closing(socket.socket()) as sock:
     }
 
 
+def verify_quota(state, fixture):
+    volume = (fixture / "rbd-volume-id").read_text().strip()
+    if not re.fullmatch(r"vol-[0-9a-f-]{36}", volume):
+        raise RuntimeError("The RBD quota fixture requires an allocated volume ID")
+    path = f"/srv/ocean-smb/volumes/{volume}"
+
+    def member(*args):
+        return ssh(state, MEMBER, shlex.join(args), timeout=15).decode().strip()
+
+    mapper = member("findmnt", "-nro", "SOURCE", "--mountpoint", path)
+    if not mapper.startswith("/dev/mapper/"):
+        raise RuntimeError("The quota test requires an encrypted share mount")
+    encryption = member("sudo", "cryptsetup", "status", mapper)
+    if not re.search(r"^\s*type:\s+LUKS2$", encryption, re.MULTILINE):
+        raise RuntimeError("The share mount does not use LUKS2")
+    device = re.search(r"^\s*device:\s+(/dev/rbd\d+)$", encryption, re.MULTILINE)
+    mappings = json.loads(member("sudo", "rbd", "device", "list", "--format", "json"))
+    if not device or not any(entry["name"] == volume and entry["device"] == device[1] for entry in mappings):
+        raise RuntimeError("The encrypted filesystem is not using the assigned RBD image")
+    quota_mib = 8
+    quotas = member("sudo", "repquota", "-P", "-n", path)
+    row = re.search(r"^#1\s+\S+\s+\d+\s+(\d+)\s+(\d+)", quotas, re.MULTILINE)
+    if not row or (int(row[1]), int(row[2])) != (quota_mib * 1024, quota_mib * 1024):
+        raise RuntimeError("The active filesystem does not have the expected project quota")
+
+    script = (ROOT / "lab/verify_smb_quota.sh").read_text()
+    command = shlex.join(["keyctl", "session", "-", "bash", "-c", script, "--", str(quota_mib)])
+    output = ssh(state, CLIENT, command, private_password(fixture / "smbwriter"), timeout=45)
+    result = json.loads(output.decode().strip().splitlines()[-1])
+    return {"volumeId": volume, "encryption": "LUKS2", "blockDevice": device[1], **result}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
+    parser.add_argument("--rbd-quota", action="store_true")
     args = parser.parse_args()
     for directory in (args.state, args.fixture):
         if not directory.is_dir() or directory.stat().st_mode & 0o077:
             parser.error(f"{directory} must be an owner-only fixture directory")
-    write_evidence(args.state, "kerberos-smb-member.json", verify(args.state, args.fixture))
-    print("Verified the native Debian Kerberos SMB session and fresh-ticket group revocation.")
+    if args.rbd_quota:
+        write_evidence(args.state, "kerberos-smb-quota.json", verify_quota(args.state, args.fixture))
+        print("Verified concurrent SMB writes, the RBD volume quota, and byte-range lock conflicts.")
+    else:
+        write_evidence(args.state, "kerberos-smb-member.json", verify(args.state, args.fixture))
+        print("Verified the native Debian Kerberos SMB session and fresh-ticket group revocation.")
 
 
 if __name__ == "__main__":

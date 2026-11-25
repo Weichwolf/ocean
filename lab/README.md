@@ -208,7 +208,26 @@ OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-25 \
 The case writes `kerberos-smb-member.json` with the content checksum,
 audited principals, observed group change delay, and its local test bound.
 The 20-second bound is measured with a fresh TGT and new SMB connection
-against the writable controller.
+against the writable controller. The verifier checks the actual Kerberos
+destination so the joined client's SSSD discovery cannot select a replica
+that still holds an earlier membership. A deployment-wide revocation
+budget must account for replication and already established sessions.
+
+For `WORKPLACE-26`, use a dedicated exclusively mapped RBD image in a
+three-replica Ceph pool. Open the volume with LUKS2. Format the newly
+allocated filesystem with `mkfs.ext4 -m 0 -O quota,project -E quotatype=prjquota`.
+Include `prjquota` among the mount options, set the member share's
+`quotaMiB` to 8, and place that volume's ID in the fixture file
+`rbd-volume-id`. Install `quota` on the member and `cifs-utils` and
+`keyutils` on the client. The test needs the disposable SSH user's
+default file credential cache to be empty.
+
+The member assigns project ID 1 to the new share directory and enables
+inheritance so every file contributes to the same hard block quota. Keep
+the ext4 image intact when restoring a share to preserve existing project
+assignments. Select `OCEAN_E2E_CASES=WORKPLACE-26` to run the two-connection
+write and lock probe. The evidence records the configured bytes, the
+acknowledged writes, the refusal errno and the lock outcomes.
 
 ## KVM tenant guest runtime probe
 

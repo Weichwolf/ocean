@@ -38,10 +38,12 @@ type Member struct {
 }
 
 // Share grants admission and write access to native AD security group SIDs.
-// Each share occupies its own capacity-limited encrypted filesystem.
+// Each share occupies its own encrypted filesystem. QuotaMiB adds a project
+// quota when the storage allocation reserves room for filesystem overhead.
 type Share struct {
 	Name       string   `json:"name"`
 	VolumeID   string   `json:"volumeId"`
+	QuotaMiB   int      `json:"quotaMiB,omitempty"`
 	ReaderSIDs []string `json:"readerSids,omitempty"`
 	WriterSIDs []string `json:"writerSids,omitempty"`
 }
@@ -63,6 +65,9 @@ func (m Member) Validate() error {
 		if !storage.ValidShare(share.Name) || slices.Contains([]string{"global", "homes", "printers"}, share.Name) ||
 			!storage.ValidID(share.VolumeID) || !strings.HasPrefix(share.VolumeID, "vol-") || names[share.Name] || volumes[share.VolumeID] {
 			return errors.New("invalid or duplicate Samba share name or volume")
+		}
+		if share.QuotaMiB < 0 || share.QuotaMiB > 16*1024 {
+			return errors.New("the Samba share quota must be between zero and 16 GiB")
 		}
 		names[share.Name], volumes[share.VolumeID] = true, true
 		if len(share.ReaderSIDs)+len(share.WriterSIDs) == 0 {
