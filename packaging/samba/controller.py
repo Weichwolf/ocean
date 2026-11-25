@@ -731,6 +731,13 @@ def health(settings):
                 or entry["isSynchronized"][0] != b"TRUE"
                 or entry["defaultNamingContext"][0].lower() != naming_context):
             raise RuntimeError("controller LDAP root does not match the assigned domain")
+    # Samba creates its TLS material during its first daemon start, after
+    # the database checkpoint. Publish no healthy observation until those
+    # runtime files are durable as well.
+    durable = STARTUP / "durable"
+    if not durable.exists():
+        subprocess.run(["/usr/bin/sync", "-f", str(root)], check=True, timeout=2)
+        durable.touch()
         print(ndr_unpack(dom_sid, domain_entry["objectSid"][0]))
 
 
