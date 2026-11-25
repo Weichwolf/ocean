@@ -149,7 +149,7 @@ def verify_recovery(state, share, volume, invoke, archive):
         op_path = f"/opt/ocean-recovery-client-{run_id}"
         upload(state, OPERATOR, {"resolver.hosts": hosts}, op_path)
         checked = invoke("metadata-check", f"{op_path}/resolver.hosts")
-        ssh(state, RECOVERY, "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "
+        ssh(state, RECOVERY, "sudo env OCEAN_AGENT_DEFER_START=1 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "
             "ceph-common cryptsetup-bin e2fsprogs && sudo apt-get clean")
         backend = {"pool": POOL, "client": CLIENT, "cephConfig": f"{namespace}/ceph.conf", "keyring": f"{namespace}/ceph.key", "mountRoot": f"{namespace}/mounts"}
         credentials = command(state, ["ceph", "auth", "get", f"client.{CLIENT}"])
