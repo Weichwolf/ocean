@@ -32,6 +32,7 @@ WORKPLACE-11	workforce-group-show	2.93.0	none	v1.0	ad group show --group {group_
 WORKPLACE-11	workforce-group-member-add	2.93.0	none	v1.0	ad group member add --group {group_id} --member-id {user_id} -o none
 WORKPLACE-11	workforce-group-member-list	2.93.0	none	v1.0	ad group member list --group {group_id} -o json
 WORKPLACE-11	workforce-group-member-remove	2.93.0	none	v1.0	ad group member remove --group {group_id} --member-id {user_id} -o none
+WORKPLACE-15	workforce-group-create-without-description	2.93.0	none	v1.0	ad group create --display-name {display_name} --mail-nickname {alias} -o json
 NETWORK-01	vnet-create	2.93.0	none	2025-07-01	network vnet create --resource-group {group} --name {vnet} --location {location} --address-prefixes {vnet_prefix} --subnet-name {subnet} --subnet-prefixes {subnet_prefix} -o json
 NETWORK-01	vnet-show	2.93.0	none	2025-07-01	network vnet show --resource-group {group} --name {vnet} -o json
 NETWORK-01	vnet-list	2.93.0	none	2025-07-01	network vnet list --resource-group {group} -o json

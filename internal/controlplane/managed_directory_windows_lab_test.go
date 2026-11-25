@@ -46,6 +46,15 @@ type windowsRecoveryArchive struct {
 }
 
 func TestRegionalWindowsDirectoryRecovery(t *testing.T) {
+	runRegionalWindowsDirectory(t, false)
+}
+
+func TestRegionalWindowsDirectoryGraph(t *testing.T) {
+	runRegionalWindowsDirectory(t, true)
+}
+
+func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
+	t.Helper()
 	state, archive := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_STATE"), os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE")
 	endpoint, image := os.Getenv("OCEAN_E2E_DIRECTORY_ETCD"), os.Getenv("OCEAN_E2E_SAMBA_IMAGE")
 	if state == "" || archive == "" || endpoint == "" || image == "" {
@@ -113,7 +122,7 @@ func TestRegionalWindowsDirectoryRecovery(t *testing.T) {
 	}
 	tenant, old := seedWindowsRecoveryDirectory(t, ctx, r, metadata)
 
-	issuer, sign, _ := directoryJoinIssuer(t, tenant.TenantID)
+	issuer, sign, enableLogin := directoryJoinIssuer(t, tenant.TenantID)
 	ca, caPrivate, _, _ := directoryJoinClientCertificates(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
 	caKey, err := x509.MarshalPKCS8PrivateKey(caPrivate)
@@ -129,12 +138,15 @@ func TestRegionalWindowsDirectoryRecovery(t *testing.T) {
 	}
 	api := httptest.NewUnstartedServer(nil)
 	defer api.Close()
+	graph := httptest.NewUnstartedServer(nil)
+	defer graph.Close()
 	origin := "https://" + api.Listener.Addr().String()
+	graphOrigin := "https://" + graph.Listener.Addr().String()
 	guestOrigin := "https://" + net.JoinHostPort("10.0.2.2", fmt.Sprint(api.Listener.Addr().(*net.TCPAddr).Port))
 	api.TLS = windowsRecoveryServerTLS(t, ca, caPrivate)
 	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
 		ProviderCAFile: file("issuer.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),
-		Cloud:          &identity.CloudEndpoints{ResourceManager: origin, MicrosoftGraph: "https://graph.ocean.test"},
+		Cloud:          &identity.CloudEndpoints{ResourceManager: origin, MicrosoftGraph: graphOrigin},
 	}).OpenCompatibility()
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +159,9 @@ func TestRegionalWindowsDirectoryRecovery(t *testing.T) {
 	if err := compat.EnableManagedDirectories(r); err != nil {
 		t.Fatal(err)
 	}
-	api.Config.Handler = authority.Handler(compat.Handler())
+	graph.Config.Handler = compat.Handler()
+	api.Config.Handler = authority.Handler(graph.Config.Handler)
+	graph.StartTLS()
 	api.StartTLS()
 
 	runID := operationID()
@@ -260,6 +274,13 @@ func TestRegionalWindowsDirectoryRecovery(t *testing.T) {
 	diagnosticPath := filepath.Join(state, "recovery-fixture-admin.secret")
 	writeWindowsRecoverySecret(t, diagnosticPath, diagnostic)
 	defer os.Remove(diagnosticPath)
+	if graphProbe {
+		app, secret := operationID(), rand.Text()
+		enableLogin(api.URL, graph.URL, app, secret, tenant.Administrator)
+		verifyRegionalWindowsGraph(t, regionalGraphFixture{ctx: ctx, private: private, api: api, graph: graph, apiCA: caPEM,
+			issuer: issuer, tenant: tenant, app: app, secret: secret}, fixture, runID, metadata, stateView.Controllers[0])
+		return
+	}
 	verifyRegionalWindowsClients(t, ctx, vm, fixture, runID, metadata, stateView, func() windowsDirectoryView {
 		var view windowsDirectoryView
 		rest("get", "", &view)

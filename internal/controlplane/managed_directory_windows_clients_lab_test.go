@@ -60,7 +60,7 @@ func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab
 	pollWindowsRecovery(t, ctx, "both guests to read the recovered directory and policy", func() bool {
 		hosts.refresh(ctx, nil)
 		for i, profile := range windowsRecoveryProfiles {
-			for _, line := range readWindowsRecoveryProof(t, hosts.state, profile) {
+			for _, line := range readWindowsProbeRecords[windowsRecoveryProof](t, hosts.state, profile, "OCEAN-REGIONAL-RECOVERY ") {
 				if valid(line, i, "pair", view.Controllers[0], start) && line.Check == "Machine" && line.Secure && line.PolicyACL != "" {
 					proof[i][0] = line
 				}
@@ -86,7 +86,7 @@ func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab
 	pollWindowsRecovery(t, ctx, "both guests to verify machine trust, Kerberos sign-in and preserved policy on the survivor", func() bool {
 		hosts.run(ctx, hosts.names[1], "touch /run/ocean-workload-network/.available", nil)
 		for i, profile := range windowsRecoveryProfiles {
-			for _, line := range readWindowsRecoveryProof(t, hosts.state, profile) {
+			for _, line := range readWindowsProbeRecords[windowsRecoveryProof](t, hosts.state, profile, "OCEAN-REGIONAL-RECOVERY ") {
 				if !valid(line, i, "survivor", view.Controllers[1], stopped) || line.Machine != proof[i][0].Machine {
 					continue
 				}
@@ -132,7 +132,7 @@ func writeWindowsRecoveryResult(t *testing.T, path string, data any) {
 	}
 }
 
-func readWindowsRecoveryProof(t *testing.T, state, profile string) []windowsRecoveryProof {
+func readWindowsProbeRecords[T any](t *testing.T, state, profile, prefix string) []T {
 	t.Helper()
 	data, err := os.Open(filepath.Join(state, profile, "guest-serial.log"))
 	if os.IsNotExist(err) {
@@ -143,13 +143,13 @@ func readWindowsRecoveryProof(t *testing.T, state, profile string) []windowsReco
 	}
 	defer data.Close()
 	scan := bufio.NewScanner(data)
-	var observations []windowsRecoveryProof
+	var observations []T
 	for scan.Scan() {
-		record, found := strings.CutPrefix(strings.TrimSpace(scan.Text()), "OCEAN-REGIONAL-RECOVERY ")
+		record, found := strings.CutPrefix(strings.TrimSpace(scan.Text()), prefix)
 		if !found {
 			continue
 		}
-		var line windowsRecoveryProof
+		var line T
 		if json.Unmarshal([]byte(record), &line) == nil {
 			observations = append(observations, line)
 		}

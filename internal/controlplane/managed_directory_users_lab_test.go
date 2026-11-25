@@ -26,6 +26,7 @@ type regionalGraphFixture struct {
 	ctx                           context.Context
 	root, private                 string
 	api, graph, issuer            *httptest.Server
+	apiCA                         []byte
 	tenant                        identity.TenantReservation
 	app, secret, member           string
 	clientImage, network, address string
@@ -61,50 +62,9 @@ func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
 			t.Errorf("directory Graph worker: %v", err)
 		}
 	}()
-	rootPEM := filepath.Join(f.private, "graph-ca.pem")
-	var trust []byte
-	for _, server := range []*httptest.Server{f.api, f.graph, f.issuer} {
-		trust = append(trust, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})...)
-	}
-	if err := os.WriteFile(rootPEM, trust, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	password := "Oc9-" + rand.Text() + rand.Text()
 	replacementPassword := "Oc9-" + rand.Text() + rand.Text()
-	run := func(reject bool, args ...string) []byte {
-		t.Helper()
-		cmd := exec.CommandContext(f.ctx, "az", args...)
-		cmd.Env = append(os.Environ(), "AZURE_CONFIG_DIR="+filepath.Join(f.private, "graph-az"), "REQUESTS_CA_BUNDLE="+rootPEM,
-			"AZURE_CORE_INSTANCE_DISCOVERY=false", "AZURE_CORE_COLLECT_TELEMETRY=0", "AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no")
-		var diagnostics bytes.Buffer
-		cmd.Stderr = &diagnostics
-		out, err := cmd.Output()
-		if (err != nil) != reject {
-			label := args[:2]
-			if len(args) > 2 && args[0] == "ad" {
-				label = args[:3]
-			}
-			t.Fatalf("Azure CLI %s returned %v: %s", strings.Join(label, " "), err,
-				strings.NewReplacer(f.secret, "[fixture secret]", password, "[directory password]",
-					replacementPassword, "[directory password]").Replace(string(out)+diagnostics.String()))
-		}
-		if reject {
-			return diagnostics.Bytes()
-		}
-		return out
-	}
-	var version struct {
-		CLI        string            `json:"azure-cli"`
-		Extensions map[string]string `json:"extensions"`
-	}
-	if err := json.Unmarshal(run(false, "version", "-o", "json"), &version); err != nil || version.CLI != "2.93.0" || len(version.Extensions) != 0 {
-		t.Fatal("the Graph user case requires the pinned CLI")
-	}
-	run(false, "cloud", "register", "--name", "directory-fixture", "--endpoint-resource-manager", f.api.URL,
-		"--endpoint-active-directory", f.issuer.URL+"/", "--endpoint-active-directory-resource-id", f.api.URL+"/",
-		"--endpoint-microsoft-graph-resource-id", f.graph.URL+"/")
-	run(false, "cloud", "set", "--name", "directory-fixture")
-	run(false, "login", "--service-principal", "--username", f.app, "--password", f.secret, "--tenant", f.tenant.TenantID, "-o", "none")
+	run := f.loginCLI(t, password, replacementPassword)
 
 	ad := func(reject bool, args ...string) []byte {
 		t.Helper()
@@ -185,4 +145,61 @@ func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
 		}
 	}
 	t.Log("Azure CLI 2.93.0 created, listed, read, rotated the password and disabled a Samba workforce user through mTLS and etcd. Debian obtained a fresh Kerberos ticket with the new password and was denied after disable.")
+}
+
+func (f regionalGraphFixture) loginCLI(t *testing.T, sensitive ...string) func(bool, ...string) []byte {
+	t.Helper()
+	rootPEM := filepath.Join(f.private, "graph-ca.pem")
+	var trust []byte
+	servers := []*httptest.Server{f.graph, f.issuer}
+	if len(f.apiCA) == 0 {
+		servers = append(servers, f.api)
+	}
+	for _, server := range servers {
+		trust = append(trust, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})...)
+	}
+	trust = append(trust, f.apiCA...)
+	if err := os.WriteFile(rootPEM, trust, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacements := []string{f.secret, "[fixture secret]"}
+	for _, secret := range sensitive {
+		replacements = append(replacements, secret, "[directory password]")
+	}
+	redact := strings.NewReplacer(replacements...)
+	run := func(reject bool, args ...string) []byte {
+		t.Helper()
+		cmd := exec.CommandContext(f.ctx, "az", args...)
+		cmd.Env = append(os.Environ(), "AZURE_CONFIG_DIR="+filepath.Join(f.private, "graph-az"), "REQUESTS_CA_BUNDLE="+rootPEM,
+			"AZURE_CORE_INSTANCE_DISCOVERY=false", "AZURE_CORE_COLLECT_TELEMETRY=0", "AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no")
+		var diagnostics bytes.Buffer
+		cmd.Stderr = &diagnostics
+		out, err := cmd.Output()
+		if (err != nil) != reject {
+			label := args[:2]
+			if len(args) > 2 && args[0] == "ad" {
+				label = args[:3]
+			}
+			t.Fatalf("Azure CLI %s returned %v: %s", strings.Join(label, " "), err,
+				redact.Replace(string(out)+diagnostics.String()))
+		}
+		if reject {
+			return diagnostics.Bytes()
+		}
+		return out
+	}
+	var version struct {
+		CLI        string            `json:"azure-cli"`
+		Extensions map[string]string `json:"extensions"`
+	}
+	if err := json.Unmarshal(run(false, "version", "-o", "json"), &version); err != nil || version.CLI != "2.93.0" || len(version.Extensions) != 0 {
+		t.Fatal("the directory Graph cases require the pinned CLI")
+	}
+	run(false, "cloud", "register", "--name", "directory-fixture", "--endpoint-resource-manager", f.api.URL,
+		"--endpoint-active-directory", f.issuer.URL+"/", "--endpoint-active-directory-resource-id", f.api.URL+"/",
+		"--endpoint-microsoft-graph-resource-id", f.graph.URL+"/")
+	run(false, "cloud", "set", "--name", "directory-fixture")
+	run(false, "login", "--service-principal", "--username", f.app, "--password", f.secret, "--tenant", f.tenant.TenantID, "-o", "none")
+
+	return run
 }

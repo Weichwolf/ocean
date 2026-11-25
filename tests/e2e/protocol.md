@@ -105,6 +105,17 @@ report machine trust and policy access. It requires fresh client records
 from the surviving controller before recording success. The preparation and
 interactive Windows steps are in the [lab guide](../../lab/README.md).
 
+Select `WORKPLACE-15` with the same recovery inputs and the Server Core
+member. Stock Azure CLI drives user and group changes through the regional
+Graph endpoint using the `WORKPLACE-10` and `WORKPLACE-11` command profiles.
+This case also creates a group without a description. Fresh Windows logon
+sessions verify the native account and group SIDs, a CIFS ticket and the
+contents of a group-restricted file.
+Membership revocation denies the file, rotation rejects the old password,
+and account disable prevents a new logon. The [Windows Graph lab
+guide](../../lab/README.md#regional-graph-changes-on-windows) describes the
+guest probe and evidence.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

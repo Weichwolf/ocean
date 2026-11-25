@@ -646,6 +646,42 @@ This lab exercises the Windows data path and real regional recovery on
 one KVM host. Production fencing and independent physical failure domains
 have separate acceptance gates.
 
+### Regional Graph changes on Windows
+
+`WORKPLACE-15` uses the same disposable recovery lab and independent archive.
+Start the two Debian nodes and the existing Server Core member. Attach
+`lab/verify_windows_directory_graph.ps1` to the member's `OCEAN_PROBE` media
+before boot. Run the command above with `OCEAN_E2E_CASES=WORKPLACE-15`.
+
+After recovery, the test signs in with the stock Azure CLI to the isolated
+fixture OAuth issuer. It creates a user and security group through the regional
+Graph API and checks their GUIDs and SIDs directly on the writer. The group's
+test share contains a per-run value. The certified node agent applies the
+directory changes.
+
+Sign into the existing Server Core member as the temporary recovery
+administrator and open elevated Windows PowerShell. Get its private password
+from `recovery-fixture-admin.secret`. When `graph-phase.json` appears, invoke
+the probe once for each new stage:
+
+```powershell
+$media = Get-Volume -FileSystemLabel OCEAN_PROBE
+& ($media.DriveLetter + ':\verify_windows_directory_graph.ps1') `
+  -RunId $runId -Stage $stage -Controller $controller -Address $address -GroupSid $groupSid
+```
+
+Use the fields from the phase file. Enter the password from
+`graph-fixture-initial.secret` or `graph-fixture-rotated.secret` as indicated by
+the phase's `credential` field. The probe starts a new Windows logon session,
+verifies the actual group SID and requests a fresh CIFS ticket. It checks the
+SMB result before membership, with membership, and after revocation. It also
+checks sign-in after the CLI rotates the password and disables the user.
+The acceptance case verifies the original account's disabled flag directly
+in Samba and records the Windows logon error code.
+Store the secret files in the private lab directory and keep them out of
+test artifacts. The serial records and acceptance evidence contain only the
+test identities and results.
+
 ## Tenant directory users
 
 The initial tenant administrator uses Microsoft Graph `v1.0` with a Graph

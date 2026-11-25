@@ -103,11 +103,19 @@ func domainJoinSteps(options labOptions) []harness.Step {
 			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_WINDOWS_RECOVERY_STATE with the prepared isolated KVM topology."
 		case windowsArchive == "":
 			windowsRecovery.BlockedReason = "Provide OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE with the private independent backup."
+		default:
+			windowsRecovery.BlockedReason = cli.BlockedReason
 		}
 	}
 	windowsRecovery = requireFile(windowsRecovery, filepath.Join(windowsState, "state.json"), "the isolated recovery lab state")
 	windowsRecovery = requireFile(windowsRecovery, windowsArchive, "the independent backup")
 	windowsRecovery = requireFile(windowsRecovery, filepath.Join(filepath.Dir(windowsArchive), "metadata.json"), "the independent backup manifest")
-	windowsRecovery = requireFile(windowsRecovery, filepath.Join("bin", "ocean-agent"), "the locally built Ocean node agent")
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery)
+	windowsRecovery = requireFile(windowsRecovery, filepath.Join("..", "..", "bin", "ocean-agent"), "the locally built Ocean node agent")
+	windowsGraph := harness.Step{Name: "regional-windows-directory-graph", Cases: []string{"WORKPLACE-15"}, Timeout: 13 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-count=1", "-v", "-run",
+			"^TestRegionalWindowsDirectoryGraph$", "./internal/controlplane"},
+		BlockedReason: windowsRecovery.BlockedReason,
+		Evidence: []harness.EvidenceSource{{Name: "regional-windows-graph.json",
+			Path: filepath.Join(windowsState, "evidence", "regional-windows-graph.json")}}}
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery, windowsGraph)
 }
