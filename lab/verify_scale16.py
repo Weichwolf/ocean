@@ -16,6 +16,7 @@ from enrollment import approval, publish
 from prepare_application_gateway import prepare as prepare_gateway
 from prepare_container_groups import NETWORK, SERVICE, prepare as prepare_compute
 from prepare_functions import prepare as prepare_functions
+from prepare_functions import podman, registry_name
 from prepare_storage_provider import prepare as prepare_storage_provider
 from region import ARM, NODES, OPERATOR, ROOT, etcdctl, eventually, run, ssh, upload
 from storage import prepare as prepare_ceph
@@ -136,10 +137,13 @@ def verify(state, package, registry_port, java_cache):
                   "functions": functions, "votersAfterWorkloads": peers, "enrollmentSeconds": join_seconds,
                   "enrollmentWaitLimitSeconds": 720}
     finally:
-        for guest in reversed(added):
-            node = guest["name"]
-            if status(state).get(node):
-                run([LAB, "stop", "-state", state, node])
+        try:
+            for guest in reversed(added):
+                node = guest["name"]
+                if status(state).get(node):
+                    run([LAB, "stop", "-state", state, node])
+        finally:
+            podman("stop", "--ignore", "--time", 5, registry_name(state))
     if any(status(state).get(guest["name"]) for guest in added):
         raise RuntimeError("one or more added compute guests remained active after cleanup")
 
