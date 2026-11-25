@@ -166,6 +166,50 @@ Shut down the Windows guests from the guest console, then run
 `bin/ocean-lab shutdown -state "$OCEAN_AD_STATE"` to stop the Debian
 guests and their switches.
 
+## KVM tenant guest runtime probe
+
+The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`
+machine, OVMF UEFI, an AHCI boot disk and the `e1000e` Ethernet device.
+`Standard_B1ms` requests one vCPU and 2 GiB, and `Standard_B2s` requests
+two vCPUs and 4 GiB. Each guest has a persistent firmware UUID, a MAC derived
+from that UUID and its own writable firmware variables. The only host control
+socket is a local QMP socket in a private directory. The runtime starts QEMU
+with niceness 10 and carries an exclusive local writer lock in that process.
+[QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html)
+
+Use a powered-off Server 2025 Core fixture installed from operator-supplied
+media. Supply its disk and OVMF variables as `WINDOWS_PREPARED_QCOW2` and
+`WINDOWS_PREPARED_VARS`. This example uses a fixture with static IPv4 address
+`10.232.1.20/24`, BusyBox `arping`, `/dev/kvm` and `/dev/net/tun`. The test
+touches the disposable copies in its state directory and runs on a private
+TAP segment inside a user and network namespace.
+
+```sh
+umask 077
+OCEAN_KVM_SMOKE_STATE=$(mktemp -d /tmp/ocean-kvm.XXXXXX)
+export OCEAN_KVM_SMOKE_STATE
+export OCEAN_KVM_SMOKE_PRIVATE_IP=10.232.1.20
+qemu-img convert -f qcow2 -O raw "$WINDOWS_PREPARED_QCOW2" "$OCEAN_KVM_SMOKE_STATE/disk.raw"
+install -m 0600 "$WINDOWS_PREPARED_VARS" "$OCEAN_KVM_SMOKE_STATE/OVMF_VARS.fd"
+go test -mod=readonly -tags=e2e -c -o "$OCEAN_KVM_SMOKE_STATE/runtime.test" ./internal/qemu
+unshare --user --map-root-user --net --pid --fork --mount-proc sh -ec '
+  ip tuntap add dev oceanvmtest mode tap
+  ip addr add 10.232.1.254/24 dev oceanvmtest
+  ip link set oceanvmtest up
+  exec "$OCEAN_KVM_SMOKE_STATE/runtime.test" -test.v -test.run "^TestKVMGuestPowerLifecycle$"
+'
+```
+
+The probe checks KVM acceleration, replays the start, rejects a different
+generation, and verifies that a missing QMP socket leaves the writer lock in
+effect. It times the ACPI shutdown and resolves the private guest address to
+the same MAC on both boots. Use a fixture whose guest power-button policy
+permits ACPI shutdown. `OCEAN_KVM_SMOKE_STOP_MODE=force` exercises immediate
+QEMU exit and restart, and records the selected stop mode. Capture the
+installation media and prepared disk chain digests with the result. Regional
+ARM operations, tenant isolation and cross-host fencing are separate
+acceptance steps. [Tenant VM issue](https://github.com/Weichwolf/ocean/issues/51)
+
 ## Azure CLI identity compatibility
 
 After starting the regional stack and the replicated database, deploy two Keycloak instances and run the sign-in fault check. The verification uses the isolated operator VM and the unmodified Microsoft Debian AMD64 package for Azure CLI 2.93.0. Use the package argument to install it if it is absent. The deploy and verification scripts check the SHA-256 of the supplied artifacts. [Keycloak 26.8.2](https://github.com/keycloak/keycloak/releases/tag/26.8.2) · [Microsoft Azure CLI packages](https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/)
