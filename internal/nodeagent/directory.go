@@ -21,6 +21,7 @@ import (
 
 var directoryImageID = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var directoryHostname = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,252}$`)
+var directoryStartupChallenge = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type directoryIDMapEntry struct {
 	ContainerID int64 `json:"container_id"`
@@ -87,26 +88,67 @@ func directoryTaskID(assignment enrollment.Assignment) workload.AssignmentID {
 		ID: assignment.ID, Generation: assignment.Generation}
 }
 
-func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assignment) ([]byte, error) {
+func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assignment) (enrollment.DirectoryBootstrap, error) {
+	var bootstrap enrollment.DirectoryBootstrap
 	path := j.url() + "/directories/" + a.TenantID + "/" + a.Generation + "/bootstrap"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return nil, err
+		return bootstrap, err
 	}
 	response, err := j.client.Do(request)
 	if err != nil {
-		return nil, err
+		return bootstrap, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("directory bootstrap returned HTTP %d", response.StatusCode)
+		return bootstrap, fmt.Errorf("directory bootstrap returned HTTP %d", response.StatusCode)
 	}
+	sids := response.Header.Values(enrollment.DirectoryDomainSIDHeader)
 	secret, err := io.ReadAll(io.LimitReader(response.Body, 129))
-	if err != nil || len(secret) < 24 || len(secret) > 128 {
+	if len(sids) != 1 || sids[0] != "" && !(enrollment.DirectoryHealth{Ready: true, DomainSID: sids[0]}).Valid() {
 		clear(secret)
-		return nil, errors.New("invalid directory bootstrap response")
+		return bootstrap, errors.New("invalid directory identity response")
 	}
-	return secret, nil
+	establishedPrimary := sids[0] != "" && a.Directory.ControllerIndex == 1
+	if err != nil || establishedPrimary && len(secret) != 0 || !establishedPrimary && (len(secret) < 24 || len(secret) > 128) {
+		clear(secret)
+		return bootstrap, errors.New("invalid directory bootstrap response")
+	}
+	return enrollment.DirectoryBootstrap{DomainSID: sids[0], Credential: secret}, nil
+}
+
+const directoryControllerPath = "/usr/local/lib/ocean-directory/controller.py"
+
+func (j *joinClient) confirmDirectoryStartup(ctx context.Context, name string, assignment enrollment.Assignment) error {
+	probe, cancel := context.WithTimeout(ctx, 4*time.Second)
+	result, err := localPodman(probe, "exec", name, "/usr/bin/timeout", "3", "/usr/bin/python3",
+		directoryControllerPath, "startup-identity").Output()
+	cancel()
+	if err != nil {
+		// A controller outside the startup handshake has nothing to authorize.
+		return nil
+	}
+	fields := strings.Fields(string(result))
+	if len(fields) != 2 || !(enrollment.DirectoryHealth{Ready: true, DomainSID: fields[0]}).Valid() ||
+		!directoryStartupChallenge.MatchString(fields[1]) {
+		return errors.New("invalid staged directory identity")
+	}
+	body, _ := json.Marshal(map[string]string{"domainSid": fields[0]})
+	path := j.url() + "/directories/" + assignment.TenantID + "/" + assignment.Generation + "/identity"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := j.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("directory startup authorization returned HTTP %d", response.StatusCode)
+	}
+	return podmanAction(ctx, "exec", name, "/usr/bin/python3", directoryControllerPath, "authorize-startup", fields[0], fields[1])
 }
 
 func (j *joinClient) reportDirectoryHealth(ctx context.Context, assignment enrollment.Assignment, health enrollment.DirectoryHealth) error {
@@ -132,7 +174,7 @@ func directoryControllerHealth(ctx context.Context, name string) enrollment.Dire
 	probe, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	result, err := localPodman(probe, "exec", name, "/usr/bin/timeout", "3", "/usr/bin/python3",
-		"/usr/local/lib/ocean-directory/controller.py", "health").Output()
+		directoryControllerPath, "health").Output()
 	health := enrollment.DirectoryHealth{Ready: true, DomainSID: strings.TrimSpace(string(result))}
 	if err != nil || !health.Valid() {
 		return enrollment.DirectoryHealth{}
@@ -180,6 +222,9 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 				failures = append(failures, err)
 			} else {
 				health = directoryControllerHealth(ctx, name)
+				if !health.Ready {
+					failures = append(failures, j.confirmDirectoryStartup(ctx, name, task))
+				}
 			}
 		}
 		failures = append(failures, j.reportDirectoryHealth(ctx, task, health))
@@ -192,18 +237,23 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 	if err != nil || status.Running {
 		return err
 	}
-	if present {
-		return podmanAction(ctx, "start", name)
-	}
-	secret, err := j.directoryBootstrap(ctx, a)
+	bootstrap, err := j.directoryBootstrap(ctx, a)
 	if err != nil {
 		return err
 	}
-	defer clear(secret)
-	createSecret := localPodman(ctx, "secret", "create", "--replace", name, "-")
-	createSecret.Stdin = bytes.NewReader(secret)
-	if err := createSecret.Run(); err != nil {
-		return errors.New("could not prepare a private directory bootstrap credential")
+	defer clear(bootstrap.Credential)
+	if present {
+		// A restarted controller needs a fresh authorization and fresh tmpfs.
+		if err := podmanAction(ctx, "rm", "--ignore", name); err != nil {
+			return err
+		}
+	}
+	if len(bootstrap.Credential) > 0 {
+		createSecret := localPodman(ctx, "secret", "create", "--replace", name, "-")
+		createSecret.Stdin = bytes.NewReader(bootstrap.Credential)
+		if err := createSecret.Run(); err != nil {
+			return errors.New("could not prepare a private directory bootstrap credential")
+		}
 	}
 	if err := localPodman(ctx, "volume", "exists", name).Run(); err != nil {
 		var missing *exec.ExitError
@@ -225,11 +275,15 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 		"--cap-add=NET_BIND_SERVICE", "--log-driver=k8s-file", "--log-opt=max-size=256kb",
 		"--uidmap", "0:0:1", "--uidmap", "1:1:60000", "--uidmap", "3000000:60001:5535",
 		"--gidmap", "0:0:1", "--gidmap", "1:1:60000", "--gidmap", "3000000:60001:5535",
-		"--secret", name + ",target=ocean-directory-bootstrap,mode=0400",
+		"--tmpfs", "/run/ocean-directory-startup:rw,mode=0700",
 		"--mount", "type=volume,source=" + name + ",target=/var/lib/ocean-ad",
 		"--env", "OCEAN_AD_DNS_NAME=" + directory.DNSName, "--env", "OCEAN_AD_NETBIOS_NAME=" + directory.NetBIOSName,
 		"--env", "OCEAN_AD_DIRECTORY_ID=" + directory.DirectoryID, "--env", "OCEAN_AD_ADDRESS=" + a.PrivateIPv4.String(),
-		"--env", "OCEAN_AD_CONTROLLER=" + index}
+		"--env", "OCEAN_AD_CONTROLLER=" + index, "--env", "OCEAN_AD_REQUIRE_AUTHORIZATION=1",
+		"--env", "OCEAN_AD_EXPECTED_SID=" + bootstrap.DomainSID}
+	if len(bootstrap.Credential) > 0 {
+		args = append(args, "--secret", name+",target=ocean-directory-bootstrap,mode=0400")
+	}
 	if directory.ControllerIndex == 2 {
 		args = append(args, "--env", "OCEAN_AD_PRIMARY="+directory.ControllerIPv4[0].String())
 	} else if directory.ControllerIPv4[1].Is4() {

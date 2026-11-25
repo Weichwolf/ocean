@@ -76,8 +76,7 @@ func (d ManagedDirectory) Valid(tenant TenantReservation) bool {
 	spec, ok := d.Spec.Canonical()
 	return tenant.Valid(d.TenantID) && d.SubscriptionID == tenant.SubscriptionID &&
 		tenantID.MatchString(d.ID) && ok && d.Spec == spec && !d.RequestedAt.IsZero() &&
-		(d.ProvisionedAt.IsZero() && d.DomainSID == "" ||
-			d.DomainSID != "" && !d.ProvisionedAt.Before(d.RequestedAt))
+		(d.ProvisionedAt.IsZero() || d.DomainSID != "" && !d.ProvisionedAt.Before(d.RequestedAt))
 }
 
 // ManagedDirectoryStore reserves a tenant directory in the regional store.

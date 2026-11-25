@@ -15,11 +15,19 @@ secret=$name
 addr=10.254.247.11
 replica="$name-replica"
 replica_addr=10.254.247.12
+empty_primary="$name-empty"
+replacement="$name-replacement"
+expected_sid=""
 tenant=$(cat /proc/sys/kernel/random/uuid)
 p() { nice -n 10 podman "$@"; }
 cleanup() {
-    p rm --force --ignore "$name" "$replica" >/dev/null
-    p volume rm "$volume" "$replica" >/dev/null || true
+    local storage
+    p rm --force --ignore "$name" "$replica" "$empty_primary" "$replacement" >/dev/null
+    for storage in "$volume" "$replica" "$empty_primary" "$replacement"; do
+        if p volume exists "$storage"; then
+            p volume rm "$storage" >/dev/null || true
+        fi
+    done
     p network rm "$net" >/dev/null || true
     p secret rm "$secret" >/dev/null || true
     rm -f "$probe/employee.secret" "$probe/administrator.secret"
@@ -39,18 +47,36 @@ start() {
        --cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID --cap-add=SETGID --cap-add=NET_BIND_SERVICE \
        --uidmap 0:0:1 --uidmap 1:1:60000 --uidmap 3000000:60001:5535 \
        --gidmap 0:0:1 --gidmap 1:1:60000 --gidmap 3000000:60001:5535 \
+       --tmpfs /run/ocean-directory-startup:rw,mode=0700 \
        --mount "type=volume,source=$container,target=/var/lib/ocean-ad" \
        --env OCEAN_AD_DNS_NAME=ad.runtime.test --env OCEAN_AD_NETBIOS_NAME=OCEANRUN \
        --env "OCEAN_AD_CONTROLLER=$controller" --env "OCEAN_AD_DIRECTORY_ID=$id" \
+       --env OCEAN_AD_REQUIRE_AUTHORIZATION=1 --env "OCEAN_AD_EXPECTED_SID=$expected_sid" \
        --env "OCEAN_AD_REPLICA=$replica_addr" \
        --env "OCEAN_AD_ADDRESS=$address" "$@" "$image" >/dev/null
 }
 wait_dns() {
-    local container=$1 address=$2 controller=$3 i
+    local container=$1 address=$2 controller=$3 i offer sid challenge
     for i in $(seq 1 60); do
         if ! p inspect -f '{{.State.Running}}' "$container" | grep -Fxq true; then
             p logs "$container" 2>&1 | tail -12 >&2
             exit 1
+        fi
+        if offer=$(p exec "$container" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py startup-identity 2>/dev/null); then
+            read -r sid challenge <<<"$offer"
+            if [[ -z "$expected_sid" ]]; then
+                [[ "$controller" == 1 ]]
+                expected_sid=$sid
+            fi
+            [[ "$expected_sid" == "$sid" ]]
+            if p run --rm --network "$net" --entrypoint /usr/bin/dig "$image" \
+                +time=1 +tries=1 +short "@$address" SRV _ldap._tcp.dc._msdcs.ad.runtime.test |
+                grep -qF "389 dc0$controller.ad.runtime.test."; then
+                printf 'The controller exposed DNS before startup authorization.\n' >&2
+                return 1
+            fi
+            p exec "$container" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py authorize-startup "$sid" "$challenge"
+            printf 'Authorized the persisted SID for controller %s after verifying that DNS was closed.\n' "$controller"
         fi
         if p run --rm --network "$net" --entrypoint /usr/bin/dig "$image" \
             +time=1 +tries=1 +short "@$address" SRV _ldap._tcp.dc._msdcs.ad.runtime.test |
@@ -279,6 +305,18 @@ if (( SECONDS - policy_started >= 65 )); then
 fi
 printf 'Updated GPO bytes and custom ACL replicated in %d seconds.\n' "$(( SECONDS - policy_started ))"
 p stop --time 15 "$name" >/dev/null
+p volume create "$empty_primary" >/dev/null
+start "$empty_primary" "$addr" 1 "$tenant" --secret "$secret,target=ocean-directory-bootstrap,mode=0400"
+for i in $(seq 1 40); do
+    if ! p inspect -f '{{.State.Running}}' "$empty_primary" | grep -Fxq true; then break; fi
+    sleep 0.25
+done
+test "$(p inspect -f '{{.State.ExitCode}}' "$empty_primary")" -ne 0
+p logs "$empty_primary" 2>&1 | grep -F 'Directory controller failed (DirectoryIdentityError).'
+mountpoint=$(p volume inspect -f '{{.Mountpoint}}' "$empty_primary")
+test -z "$(p unshare find "$mountpoint" -maxdepth 1 -name 'controller-*' -print)"
+p rm "$empty_primary" >/dev/null
+printf 'An empty primary volume could not create a second domain even with the original bootstrap password.\n'
 p rm "$replica" --force >/dev/null
 start "$replica" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr"
 wait_dns "$replica" "$replica_addr" 2
@@ -296,12 +334,30 @@ recovery_started=$SECONDS
 p start "$name" >/dev/null
 wait_dns "$name" "$addr" 1
 wait_membership "$name" LabPrimaryGroup "" "$recovery_started"
+old_account=$(directory_tool "$replica" computer show DC02 | grep '^objectGUID:')
 p stop --time 15 "$replica" >/dev/null
 wait_health "$name" "$domain_sid"
 after=$(proof "$addr" 1 guarded)
 same_policy "$changed" "$after"
 printf 'The primary served Kerberos and SYSVOL with the replica stopped.\n'
+p rm "$replica" >/dev/null
+directory_tool "$name" domain demote --remove-other-dead-server=DC02
+p volume create "$replacement" >/dev/null
+replacement_started=$SECONDS
+start "$replacement" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr" \
+    --secret "$secret,target=ocean-directory-bootstrap,mode=0400"
+wait_dns "$replacement" "$replica_addr" 2
+wait_health "$replacement" "$domain_sid"
+test "$old_account" != "$(directory_tool "$replacement" computer show DC02 | grep '^objectGUID:')"
+test "$original" = "$(account "$replacement")"
+test "$(gpo_version "$replacement")" = 1
+test "$expected_acl" = "$(administrator_policy "$replica_addr" 2 read)"
+wait_membership "$replacement" LabReplicaGroup employee "$SECONDS"
 p stop --time 15 "$name" >/dev/null
+recovered=$(proof "$replica_addr" 2 guarded)
+same_policy "$changed" "$recovered"
+printf 'A new replica with an empty volume recovered the established domain, employee identity, GPO contents and ACL in %d seconds.\n' \
+    "$(( SECONDS - replacement_started ))"
 p rm "$name" >/dev/null
 start "$name" "$addr" 1 "$(cat /proc/sys/kernel/random/uuid)"
 for i in $(seq 1 12); do

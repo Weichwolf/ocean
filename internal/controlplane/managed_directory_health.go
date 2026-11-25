@@ -32,6 +32,9 @@ func (r *Region) ReportDirectoryHealth(ctx context.Context, host string, certifi
 	if err != nil {
 		return err
 	}
+	if health.Ready && (binding.directory.DomainSID == "" || binding.directory.DomainSID != health.DomainSID) {
+		health = enrollment.DirectoryHealth{}
+	}
 	report, _ := json.Marshal(directoryObservation{DirectoryHealth: health, ObservedAt: time.Now().UTC()})
 	committed, err := r.client.Txn(ctx).If(binding.guards...).Then(
 		clientv3.OpPut(r.directoryObservationKey(tenant, generation), string(report), clientv3.WithLease(binding.lease))).Commit()
@@ -65,7 +68,6 @@ func (r *Region) completeDirectoryProvisioning(ctx context.Context, tenant strin
 		return err
 	}
 	directory.ProvisionedAt = time.Now().UTC()
-	directory.DomainSID = sid
 	data, _ := json.Marshal(directory)
 	guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", result.Kvs[0].ModRevision))
 	scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: directory.SubscriptionID}

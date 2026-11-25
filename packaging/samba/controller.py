@@ -22,10 +22,17 @@ import sysvol as policy
 
 STATE = Path("/var/lib/ocean-ad")
 ADMIN_SECRET = Path("/run/secrets/ocean-directory-bootstrap")
+STARTUP = Path("/run/ocean-directory-startup")
 SCRIPT = Path(__file__).resolve()
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 NETBIOS = re.compile(r"[A-Z](?:[A-Z0-9-]{0,13}[A-Z0-9])?")
 DIRECTORY_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+DOMAIN_SID = re.compile(r"S-1-5-21(?:-[0-9]{1,10}){3}")
+STARTUP_TOKEN = re.compile(r"[0-9a-f]{32}")
+
+
+class DirectoryIdentityError(RuntimeError):
+    pass
 
 
 def directory_settings():
@@ -315,11 +322,13 @@ def prepare(root, action):
                        stdin=subprocess.DEVNULL, stdout=diagnostics, stderr=diagnostics)
 
 
-def initialize(settings):
+def initialize(settings, expected_sid):
     checkpoint = STATE / "controller.json"
     if checkpoint.exists():
         return read_checkpoint(checkpoint, settings) / "etc/smb.conf"
     replica = settings.get("controller") == 2
+    if expected_sid and not replica:
+        raise DirectoryIdentityError("the established primary requires its existing directory volume")
     joined = STATE / "replica-joined.json"
     if joined.exists():
         root = read_checkpoint(joined, settings)
@@ -351,6 +360,51 @@ def wait_for_address(address):
             except OSError:
                 time.sleep(0.25)
     raise RuntimeError("the assigned directory address did not become available")
+
+
+def local_domain_sid(config):
+    from samba.auth import system_session
+    from samba.param import LoadParm
+    from samba.samdb import SamDB
+
+    lp = LoadParm()
+    lp.load(str(config))
+    database = SamDB(lp=lp, session_info=system_session())
+    sid = database.get_domain_sid()
+    if not DOMAIN_SID.fullmatch(sid):
+        raise DirectoryIdentityError("the local directory has an invalid SID")
+    return sid
+
+
+def authorize_startup(sid, challenge):
+    if (not DOMAIN_SID.fullmatch(sid) or not STARTUP_TOKEN.fullmatch(challenge)
+            or (STARTUP / "offer").read_text() != f"{sid} {challenge}\n"):
+        raise DirectoryIdentityError("the startup challenge changed")
+    temporary = STARTUP / "approval.pending"
+    temporary.write_text(f"{sid} {challenge}\n")
+    temporary.replace(STARTUP / "approval")
+
+
+def wait_for_startup_authorization(sid):
+    if not STARTUP.is_mount():
+        raise DirectoryIdentityError("startup requires a dedicated temporary container filesystem")
+    offer = STARTUP / "offer"
+    approval = STARTUP / "approval"
+    approval.unlink(missing_ok=True)
+    pending = STARTUP / "offer.pending"
+    challenge = f"{sid} {secrets.token_hex(16)}\n"
+    pending.write_text(challenge)
+    pending.replace(offer)
+    try:
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if approval.exists() and approval.read_text() == challenge:
+                return
+            time.sleep(0.25)
+        raise DirectoryIdentityError("directory startup authorization was not received")
+    finally:
+        offer.unlink(missing_ok=True)
+        approval.unlink(missing_ok=True)
 
 
 def health(settings):
@@ -412,7 +466,16 @@ def serve(settings):
             if primary.strip() not in hosts.read_text().splitlines():
                 with hosts.open("a") as stream:
                     stream.write(primary)
-        config = initialize(settings)
+        expected_sid = os.environ.get("OCEAN_AD_EXPECTED_SID", "")
+        if expected_sid and not DOMAIN_SID.fullmatch(expected_sid):
+            raise DirectoryIdentityError("invalid expected directory SID")
+        config = initialize(settings, expected_sid)
+        if expected_sid or os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1":
+            sid = local_domain_sid(config)
+            if expected_sid and sid != expected_sid:
+                raise DirectoryIdentityError("the local directory SID differs from the established SID")
+            if os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1":
+                wait_for_startup_authorization(sid)
         maintain_policy = True
         if settings.get("controller") == 2:
             content = config.read_text()
@@ -496,6 +559,13 @@ if __name__ == "__main__":
             sync_policy(Path(sys.argv[2]), settings)
         elif len(sys.argv) == 2 and sys.argv[1] == "health":
             health(settings)
+        elif len(sys.argv) == 2 and sys.argv[1] == "startup-identity":
+            offer = STARTUP / "offer"
+            if not offer.is_file():
+                sys.exit(3)
+            print(offer.read_text(), end="")
+        elif len(sys.argv) == 4 and sys.argv[1] == "authorize-startup":
+            authorize_startup(sys.argv[2], sys.argv[3])
         elif len(sys.argv) == 1:
             signal.signal(signal.SIGTERM, stop_before_service)
             signal.signal(signal.SIGINT, stop_before_service)

@@ -263,27 +263,27 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 		!left.PrivateIPv4.Is4() || !right.PrivateIPv4.Is4() || left.Generation == right.Generation {
 		t.Fatalf("invalid distinct placements %+v", latest.Controllers)
 	}
-	password, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation)
-	if err != nil || !bytes.HasPrefix(password, []byte("Ocn9-")) || bytes.Equal(password, latest.Bootstrap) {
+	primary, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation)
+	if err != nil || primary.DomainSID != "" || !bytes.HasPrefix(primary.Credential, []byte("Ocn9-")) || bytes.Equal(primary.Credential, latest.Bootstrap) {
 		t.Fatal("the assigned host could not recover the sealed bootstrap credential")
 	}
-	defer clear(password)
+	defer clear(primary.Credential)
 	retry, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation)
-	if err != nil || !bytes.Equal(retry, password) {
+	if err != nil || !bytes.Equal(retry.Credential, primary.Credential) || retry.DomainSID != "" {
 		t.Fatal("a retry changed the directory bootstrap credential")
 	}
-	clear(retry)
+	clear(retry.Credential)
 	peerBootstrap, err := r.HostDirectoryBootstrap(ctx, right.HostID, []byte(right.HostID), tenant.TenantID, right.Generation)
-	if err != nil || !bytes.Equal(peerBootstrap, password) {
+	if err != nil || !bytes.Equal(peerBootstrap.Credential, primary.Credential) {
 		t.Fatal("the assigned replica could not read the expected bootstrap credential")
 	}
-	clear(peerBootstrap)
+	clear(peerBootstrap.Credential)
 	for _, request := range []struct{ host, certificate, generation string }{
 		{left.HostID, "other-certificate", left.Generation},
 		{left.HostID, left.HostID, right.Generation},
 		{right.HostID, right.HostID, left.Generation},
 	} {
-		if secret, err := r.HostDirectoryBootstrap(ctx, request.host, []byte(request.certificate), tenant.TenantID, request.generation); secret != nil || !errors.Is(err, enrollment.ErrHostDenied) {
+		if bootstrap, err := r.HostDirectoryBootstrap(ctx, request.host, []byte(request.certificate), tenant.TenantID, request.generation); bootstrap.Credential != nil || !errors.Is(err, enrollment.ErrHostDenied) {
 			t.Fatal("an unauthorized host or generation could read a bootstrap credential")
 		}
 	}
@@ -324,6 +324,9 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	}
 	const domainSID = "S-1-5-21-123-456-789"
 	const differentSID = "S-1-5-21-123-456-999"
+	commit := func(controller Reservation, sid string) error {
+		return r.CommitDirectoryIdentity(ctx, controller.HostID, []byte(controller.HostID), tenant.TenantID, controller.Generation, sid)
+	}
 	ready := enrollment.DirectoryHealth{Ready: true, DomainSID: domainSID}
 	report := func(controller Reservation, health enrollment.DirectoryHealth) {
 		t.Helper()
@@ -332,6 +335,30 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 		}
 	}
 	assertHealth(false, false, false)
+	if err := commit(right, domainSID); !errors.Is(err, enrollment.ErrDirectoryAssignmentChanged) {
+		t.Fatal("an uninitialized replica committed a primary domain identity")
+	}
+	report(left, ready)
+	assertHealth(false, false, false)
+	if err := commit(left, domainSID); err != nil {
+		t.Fatalf("initial primary could not commit its SID: %v", err)
+	}
+	if err := commit(left, domainSID); err != nil {
+		t.Fatalf("startup retry could not confirm the same SID: %v", err)
+	}
+	if err := commit(left, differentSID); !errors.Is(err, enrollment.ErrDirectoryAssignmentChanged) {
+		t.Fatal("the established primary could replace the fixed SID")
+	}
+	if err := commit(right, differentSID); !errors.Is(err, enrollment.ErrDirectoryAssignmentChanged) {
+		t.Fatal("the replica confirmed a different SID")
+	}
+	if err := commit(right, domainSID); err != nil {
+		t.Fatal(err)
+	}
+	reopen, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation)
+	if err != nil || len(reopen.Credential) != 0 || reopen.DomainSID != domainSID {
+		t.Fatal("the primary received a bootstrap credential after its domain SID was established")
+	}
 	if err := r.ReportDirectoryHealth(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, right.Generation, ready); !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatal("a host reported health of another controller")
 	}
@@ -341,7 +368,7 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	report(left, ready)
 	assertHealth(true, false, false)
 	report(right, enrollment.DirectoryHealth{Ready: true, DomainSID: differentSID})
-	assertHealth(false, false, false)
+	assertHealth(true, false, false)
 	report(right, ready)
 	report(right, ready)
 	assertHealth(true, true, true)
@@ -429,11 +456,14 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	if err := r.RevokeHost(ctx, left.HostID); err != nil {
 		t.Fatal(err)
 	}
-	if secret, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation); secret != nil || !errors.Is(err, enrollment.ErrHostDenied) {
+	if bootstrap, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation); bootstrap.Credential != nil || !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatal("a revoked primary could recover the bootstrap credential")
 	}
 	if err := r.ReportDirectoryHealth(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation, ready); !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatal("a revoked primary reported health")
+	}
+	if err := commit(left, domainSID); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatal("a revoked primary confirmed startup")
 	}
 	assertHealth(false, true, true)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
@@ -12,17 +13,58 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certificate []byte, tenant, generation string) ([]byte, error) {
+func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certificate []byte, tenant, generation string) (enrollment.DirectoryBootstrap, error) {
 	binding, err := r.authorizeDirectoryController(ctx, host, certificate, tenant, generation)
 	if err != nil {
-		return nil, err
+		return enrollment.DirectoryBootstrap{}, err
 	}
-	return r.workloads.sealer.Open(nil, nil, binding.placement.Bootstrap,
+	bootstrap := enrollment.DirectoryBootstrap{DomainSID: binding.directory.DomainSID}
+	if binding.index == 0 && bootstrap.DomainSID != "" {
+		// A previously initialized primary only needs its existing local keys.
+		return bootstrap, nil
+	}
+	bootstrap.Credential, err = r.workloads.sealer.Open(nil, nil, binding.placement.Bootstrap,
 		binding.placement.bootstrapLabel(r.managedDirectoryPlacementKey(tenant)))
+	return bootstrap, err
+}
+
+// CommitDirectoryIdentity authorizes a controller to start its AD listeners.
+func (r *Region) CommitDirectoryIdentity(ctx context.Context, host string, certificate []byte, tenant, generation, sid string) error {
+	if !(enrollment.DirectoryHealth{Ready: true, DomainSID: sid}).Valid() {
+		return enrollment.ErrDirectoryAssignmentChanged
+	}
+	binding, err := r.authorizeDirectoryController(ctx, host, certificate, tenant, generation)
+	if err != nil {
+		return err
+	}
+	key := r.managedDirectoryKey(tenant)
+	directory := binding.directory
+	var writes []clientv3.Op
+	switch {
+	case directory.DomainSID == sid:
+		writes = append(writes, clientv3.OpGet(key, clientv3.WithCountOnly()))
+	case directory.DomainSID == "" && binding.index == 0:
+		directory.DomainSID = sid
+		data, _ := json.Marshal(directory)
+		scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: directory.SubscriptionID}
+		writes = append(writes, clientv3.OpPut(key, string(data)), r.auditOp(scope, arm.AuditEvent{
+			Time: time.Now().UTC(), Actor: "managed-directory-controller", Action: "Ocean.Identity/directories/initialize",
+			Target: directory.ID, Outcome: "Succeeded",
+		}))
+	default:
+		return enrollment.ErrDirectoryAssignmentChanged
+	}
+	result, err := r.client.Txn(ctx).If(binding.guards...).Then(writes...).Commit()
+	if err == nil && !result.Succeeded {
+		return enrollment.ErrDirectoryAssignmentChanged
+	}
+	return err
 }
 
 type authorizedDirectoryController struct {
 	placement directoryPlacement
+	directory identity.ManagedDirectory
+	index     int
 	lease     clientv3.LeaseID
 	guards    []clientv3.Cmp
 }
@@ -77,7 +119,8 @@ func (r *Region) authorizeDirectoryController(ctx context.Context, host string, 
 	if len(active.Kvs) != 1 || !directoryAssignmentMatches(active.Kvs[0].Value, directory, controller, index) {
 		return nil, enrollment.ErrHostDenied
 	}
-	binding := &authorizedDirectoryController{placement: placement, lease: clientv3.LeaseID(snapshot.Responses[1].GetResponseRange().Kvs[0].Lease)}
+	binding := &authorizedDirectoryController{placement: placement, directory: directory, index: index,
+		lease: clientv3.LeaseID(snapshot.Responses[1].GetResponseRange().Kvs[0].Lease)}
 	for _, response := range snapshot.Responses {
 		kv := response.GetResponseRange().Kvs[0]
 		binding.guards = append(binding.guards, clientv3.Compare(clientv3.ModRevision(string(kv.Key)), "=", kv.ModRevision))

@@ -271,10 +271,17 @@ its own network and domain sign-in probes.
 Build the controller image and install the same image on the selected hosts.
 Set `enrollment.directoryImage` in each node agent config to its local
 `sha256:<image-id>`. Each assigned host can retrieve its controller's
-bootstrap credential over host mTLS. The region seals that credential in etcd
-with the workload key. The agent passes it to Podman through stdin and mounts
-it read-only with mode 0400. Each controller uses its own generation-specific
-persistent volume on restart.
+initial bootstrap credential over host mTLS. The region seals that credential
+in etcd with the workload key. The agent passes it to Podman through stdin and
+mounts it read-only with mode 0400. Each controller uses its own
+generation-specific persistent volume on restart.
+
+Before opening its AD listeners, a controller stages its local domain SID.
+The node agent confirms it against the controller's current assignment over
+host mTLS. The first primary commits the SID in regional etcd. Each startup
+must match that SID. A restarted primary receives its expected SID and uses
+its existing volume without the bootstrap password. An empty primary volume
+can only provision during initial domain creation.
 
 The primary provisions the domain. The replica uses the bootstrap credential
 to join over Kerberos, then seeds SYSVOL with its machine account. It checks
@@ -302,7 +309,9 @@ OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha
 ```
 
 The probe runs both controllers on one isolated rootless Podman network. It
-compares employee identity and SYSVOL bytes, checks that the employee cannot
+checks that DNS stays closed until the staged SID is authorized. It verifies
+that a fresh primary volume refuses to provision after the SID is established.
+It compares employee identity and SYSVOL bytes, checks that the employee cannot
 write the policy, and tests each controller with its peer stopped. The client
 uses AD DNS for Kerberos and SMB discovery. The probe reopens both volumes
 without bootstrap credentials and requires new group memberships to converge
@@ -314,12 +323,19 @@ ACE on the replica within 65 seconds, and repeats the checks after the
 primary stops and the replica restarts. The harness stores the Markdown
 report, TSV, and client logs under `artifacts/e2e`.
 
+The fixture also permanently removes its stopped replica container, cleans
+up its directory and DNS metadata through the surviving controller, and
+joins a replacement replica on an empty volume. It checks a fresh controller
+account GUID and the original domain and employee identities, membership,
+policy version, and ACL. The replacement then serves clients with the primary
+stopped. This recovery run uses controlled Podman stops on one host.
+
 The same profile runs the `az rest` request and status commands with Azure
 CLI 2.93.0 against a loopback HTTPS contract fixture and a signed fixture
 token. The runtime and CLI probes are independently selectable with
 `OCEAN_E2E_CASES=WORKPLACE-04` or `OCEAN_E2E_CASES=WORKPLACE-05`.
-Controller replacement, independent backup recovery, and separate-host
-and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+Placement and fencing for controller replacement across hosts, independent
+backup recovery, and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ## Tenant directory users
 

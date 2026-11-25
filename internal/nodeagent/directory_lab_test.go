@@ -49,13 +49,19 @@ func TestDirectoryControllerRuntimeHandoff(t *testing.T) {
 		_ = podmanAction(ctx, "volume", "rm", name)
 	})
 	private := "Ocn9-" + rand.Text()
+	const establishedSID = "S-1-5-21-123-456-789"
 	var reads, reports atomic.Int32
 	issuer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		base := "/ocean/hosts/node/directories/" + tenant + "/" + generation
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == base+"/bootstrap":
-			reads.Add(1)
-			_, _ = fmt.Fprint(w, private)
+			if reads.Add(1) == 1 {
+				w.Header().Set(enrollment.DirectoryDomainSIDHeader, "")
+				_, _ = fmt.Fprint(w, private)
+			} else {
+				w.Header().Set(enrollment.DirectoryDomainSIDHeader, establishedSID)
+				w.WriteHeader(http.StatusOK)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == base+"/health":
 			if body, err := io.ReadAll(r.Body); err != nil || string(body) != `{"ready":false}` || r.TLS == nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -89,13 +95,18 @@ func TestDirectoryControllerRuntimeHandoff(t *testing.T) {
 	if err := j.syncDirectoryContainer(t.Context(), name, a); err != nil || reads.Load() != 1 {
 		t.Fatal("an already running controller requested another bootstrap")
 	}
-	// Removing the container leaves the operator's generation-specific volume.
-	// The normal agent path must reopen it and must not try to create it again.
-	if err := podmanAction(t.Context(), "rm", "--force", "--time", "1", name); err != nil {
+	// A stopped container's launch configuration is stale, while its volume
+	// still belongs to the same generation.
+	if err := podmanAction(t.Context(), "stop", "--time", "1", name); err != nil {
 		t.Fatal(err)
 	}
 	if err := j.syncDirectoryContainer(t.Context(), name, a); err != nil || reads.Load() != 2 {
 		t.Fatalf("the agent did not reopen an existing directory volume: %v", err)
 	}
 	check()
+	data, err = localPodman(t.Context(), "inspect", name).Output()
+	if err != nil || !strings.Contains(string(data), "OCEAN_AD_EXPECTED_SID="+establishedSID) ||
+		strings.Contains(string(data), "ocean-directory-bootstrap") {
+		t.Fatal("the replacement container did not receive the established SID without a credential mount")
+	}
 }
