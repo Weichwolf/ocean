@@ -126,7 +126,7 @@ def verify(state, package, registry_port, java_cache):
         print("Running the pinned container, persistent writer drain, and native Functions fixtures.", flush=True)
         containers = verify_containers(state, "farm-1-node-06")
         storage = verify_storage(state, "farm-1-node-04", False, drain_writer=True)
-        functions = verify_functions(state)
+        functions = verify_functions(state, smoke=True)
         if not storage["persistentDataMatched"] or storage["drainedWriterHost"] == storage["replacementHost"]:
             raise RuntimeError("the live writer checkpoint did not survive drain onto another permitted host")
         peers = verify_topology(state, "scale-16")["quorumVoters"]

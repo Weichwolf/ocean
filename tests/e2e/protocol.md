@@ -163,6 +163,9 @@ qualification revokes its fixture certificate. Prepare the scale base with
 `python3 -B lab/prepare_scale16.py --help` and the same locally pinned
 Debian, etcd, Keycloak and Azure CLI inputs as the regional lab. The scale
 probe boots and enrolls the remaining thirteen guests when it runs.
+The scale profile serves a keyed Java Function over HTTPS and releases its
+capacity after deletion. The regional workload probe exercises image
+updates, lifecycle operations, and fixed egress failover.
 
 The default artifact directory is `artifacts/e2e/<run-id>/`. Set
 `OCEAN_E2E_RUN_ID` for a named run or `OCEAN_E2E_ARTIFACTS` for a different
