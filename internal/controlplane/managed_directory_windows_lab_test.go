@@ -60,7 +60,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	if state == "" || archive == "" || endpoint == "" || image == "" {
 		t.Skip("requires the isolated Windows recovery lab, private backup, disposable etcd and Samba image ID")
 	}
-	if hexID, prefixed := strings.CutPrefix(image, "sha256:"); !prefixed || !windowsRecoveryDigest(hexID) {
+	if hexID, prefixed := strings.CutPrefix(image, "sha256:"); !prefixed || !directoryLabDigest(hexID) {
 		t.Fatal("use a pinned local SHA-256 image ID")
 	}
 	root, err := filepath.Abs("../..")
@@ -143,7 +143,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	origin := "https://" + api.Listener.Addr().String()
 	graphOrigin := "https://" + graph.Listener.Addr().String()
 	guestOrigin := "https://" + net.JoinHostPort("10.0.2.2", fmt.Sprint(api.Listener.Addr().(*net.TCPAddr).Port))
-	api.TLS = windowsRecoveryServerTLS(t, ca, caPrivate)
+	api.TLS = directoryLabServerTLS(t, ca, caPrivate)
 	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
 		ProviderCAFile: file("issuer.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),
 		Cloud:          &identity.CloudEndpoints{ResourceManager: origin, MicrosoftGraph: graphOrigin},
@@ -166,7 +166,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 
 	runID := operationID()
 	stage := "ocean-recovery-" + runID
-	fixture := windowsRecoveryHosts{root: root, state: state, directory: stage, t: t}
+	fixture := directoryKVMHosts{root: root, state: state, directory: stage, t: t}
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 12*time.Second)
 		defer stop()
@@ -174,7 +174,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	}()
 	fixture.startAgents(ctx, r, nodes, guestOrigin, image, caPEM)
 	go r.reconcileManagedDirectories(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	pollWindowsRecovery(t, ctx, "two enrolled KVM hosts to publish capacity", func() bool {
+	pollDirectoryLab(t, ctx, "two enrolled KVM hosts to publish capacity", func() bool {
 		fixture.refresh(ctx, nil)
 		for _, host := range fixture.names {
 			rows, err := client.Get(ctx, r.hostKey("live", host))
@@ -236,7 +236,7 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	if recovery.ID != runID || recovery.BackupSHA != metadata.Digest || recovery.State != identity.DirectoryRecoveryFenced {
 		t.Fatalf("unexpected signed recovery admission: %+v", recovery)
 	}
-	pollWindowsRecovery(t, ctx, "the regional controller to reserve both replacements", func() bool {
+	pollDirectoryLab(t, ctx, "the regional controller to reserve both replacements", func() bool {
 		fixture.refresh(ctx, nil)
 		rest("get", suffix, &recovery)
 		return recovery.State == identity.DirectoryRecoveryStaged
@@ -246,8 +246,8 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 	}
 	fixture.stageArchive(ctx, recovery.Writer, runID, archive)
 	t.Log("Azure CLI submitted the signed recovery. The operator staged the archive on the assigned writer.")
-	var stateView windowsDirectoryView
-	pollWindowsRecovery(t, ctx, "both real agents to restore, bind and report the original domain", func() bool {
+	var stateView directoryLabView
+	pollDirectoryLab(t, ctx, "both real agents to restore, bind and report the original domain", func() bool {
 		fixture.refresh(ctx, []string{"10.232.1.11/24", "10.232.1.12/24"})
 		rest("get", suffix, &recovery)
 		return recovery.State == identity.DirectoryRecoveryReady
@@ -281,14 +281,14 @@ func runRegionalWindowsDirectory(t *testing.T, graphProbe bool) {
 			issuer: issuer, tenant: tenant, app: app, secret: secret}, fixture, runID, metadata, stateView.Controllers[0])
 		return
 	}
-	verifyRegionalWindowsClients(t, ctx, vm, fixture, runID, metadata, stateView, func() windowsDirectoryView {
-		var view windowsDirectoryView
+	verifyRegionalWindowsClients(t, ctx, vm, fixture, runID, metadata, stateView, func() directoryLabView {
+		var view directoryLabView
 		rest("get", "", &view)
 		return view
 	})
 }
 
-type windowsDirectoryView struct {
+type directoryLabView struct {
 	ID           string                                  `json:"directoryId"`
 	Availability string                                  `json:"availability"`
 	Controllers  []identity.DirectoryControllerReadiness `json:"controllers"`
@@ -300,7 +300,7 @@ func readWindowsRecoveryArchive(t *testing.T, archive string) windowsRecoveryArc
 	raw, err := os.ReadFile(filepath.Join(filepath.Dir(archive), "metadata.json"))
 	if err != nil || json.Unmarshal(raw, &metadata) != nil || !enrollment.ValidDirectoryJoinID(metadata.Identity.DirectoryID) ||
 		!(enrollment.DirectoryHealth{Ready: true, DomainSID: metadata.Identity.SID}).Valid() ||
-		!windowsRecoveryDigest(metadata.Policy) || !windowsRecoveryDigest(metadata.Digest) {
+		!directoryLabDigest(metadata.Policy) || !directoryLabDigest(metadata.Digest) {
 		t.Fatalf("invalid backup manifest or missing policy digest: %v", err)
 	}
 	file, err := os.Open(archive)
@@ -319,7 +319,7 @@ func readWindowsRecoveryArchive(t *testing.T, archive string) windowsRecoveryArc
 	return metadata
 }
 
-func windowsRecoveryDigest(value string) bool {
+func directoryLabDigest(value string) bool {
 	decoded, err := hex.DecodeString(value)
 	return err == nil && len(decoded) == sha256.Size && strings.ToLower(value) == value
 }
@@ -338,7 +338,7 @@ func writeWindowsRecoverySecret(t *testing.T, path string, secret []byte) {
 	}
 }
 
-func windowsRecoveryServerTLS(t *testing.T, ca *x509.Certificate, signer ed25519.PrivateKey) *tls.Config {
+func directoryLabServerTLS(t *testing.T, ca *x509.Certificate, signer ed25519.PrivateKey) *tls.Config {
 	t.Helper()
 	public, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -357,7 +357,7 @@ func windowsRecoveryServerTLS(t *testing.T, ca *x509.Certificate, signer ed25519
 		Certificates: []tls.Certificate{{Certificate: [][]byte{raw}, PrivateKey: key}}}
 }
 
-func seedWindowsRecoveryDirectory(t *testing.T, ctx context.Context, r *Region, backup windowsRecoveryArchive) (identity.TenantReservation, directoryPlacement) {
+func seedDirectoryTenantNetwork(t *testing.T, ctx context.Context, r *Region, label string) (identity.TenantReservation, string) {
 	t.Helper()
 	tenant := identity.TenantReservation{TenantID: operationID(), SubscriptionID: operationID(),
 		Administrator: operationID(), Fingerprint: operationID()}
@@ -365,7 +365,7 @@ func seedWindowsRecoveryDirectory(t *testing.T, ctx context.Context, r *Region, 
 		t.Fatal(err)
 	}
 	if _, err := r.PublishSubscription(ctx, tenant, identity.Subscription{TenantID: tenant.TenantID,
-		SubscriptionID: tenant.SubscriptionID, DisplayName: "Windows recovery fixture", Members: []string{tenant.Administrator}}); err != nil {
+		SubscriptionID: tenant.SubscriptionID, DisplayName: label, Members: []string{tenant.Administrator}}); err != nil {
 		t.Fatal(err)
 	}
 	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
@@ -381,6 +381,14 @@ func seedWindowsRecoveryDirectory(t *testing.T, ctx context.Context, r *Region, 
 		Location: r.name, ProvisioningState: "Succeeded", Properties: properties}); err != nil {
 		t.Fatal(err)
 	}
+	return tenant, subnet
+}
+
+func seedWindowsRecoveryDirectory(t *testing.T, ctx context.Context, r *Region, backup windowsRecoveryArchive) (identity.TenantReservation, directoryPlacement) {
+	t.Helper()
+	t.Helper()
+	tenant, subnet := seedDirectoryTenantNetwork(t, ctx, r, "Windows recovery fixture")
+	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
 	domain, err := r.RequestManagedDirectory(ctx, tenant, identity.DirectorySpec{DNSName: backup.Identity.DNSName,
 		NetBIOSName: backup.Identity.NetBIOSName, SubnetID: subnet})
 	if err != nil {
@@ -427,7 +435,7 @@ func seedWindowsRecoveryDirectory(t *testing.T, ctx context.Context, r *Region, 
 	return tenant, placed
 }
 
-func pollWindowsRecovery(t *testing.T, ctx context.Context, action string, done func() bool) {
+func pollDirectoryLab(t *testing.T, ctx context.Context, action string, done func() bool) {
 	t.Helper()
 	for {
 		if done() {

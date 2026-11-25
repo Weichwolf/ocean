@@ -18,7 +18,8 @@ cat > "$package_dir/ocean-agent.deb"
 if ! dpkg-query -W -f='${db:Status-Status}' podman 2>/dev/null | grep -qx installed; then
     sudo apt-get -qq update
 fi
-if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get -yqq --no-install-recommends --reinstall \
+if ! sudo env OCEAN_AGENT_DEFER_START="${OCEAN_AGENT_DEFER_START:-0}" DEBIAN_FRONTEND=noninteractive \
+    apt-get -yqq --no-install-recommends --reinstall \
     install "$package_dir/ocean-agent.deb" > "$package_dir/install.log" 2>&1; then
     tail -35 "$package_dir/install.log" >&2
     exit 1

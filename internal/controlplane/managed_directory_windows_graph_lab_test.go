@@ -33,7 +33,7 @@ type windowsGraphProof struct {
 	SignInError  int       `json:"signInError,omitempty"`
 }
 
-func verifyRegionalWindowsGraph(t *testing.T, f regionalGraphFixture, hosts windowsRecoveryHosts, run string,
+func verifyRegionalWindowsGraph(t *testing.T, f regionalGraphFixture, hosts directoryKVMHosts, run string,
 	backup windowsRecoveryArchive, writer identity.DirectoryControllerReadiness) {
 	t.Helper()
 	initial, rotated := "Win9-"+rand.Text(), "Win9-"+rand.Text()
@@ -121,12 +121,12 @@ nice -n 10 podman exec "$container" /bin/sh -ec '
 	probe := func(stage, password string, member bool, signInErrors ...int) {
 		t.Helper()
 		start := time.Now().UTC()
-		writeWindowsRecoveryResult(t, phasePath, map[string]any{
+		writeDirectoryLabResult(t, phasePath, map[string]any{
 			"runId": run, "stage": stage, "upn": upn, "credential": password, "groupSid": groupSID,
 			"controller": writer.DNSName, "address": writer.PrivateIPv4, "after": start,
 		})
 		t.Logf("Windows Graph probe stage %s ready. Submit a fresh Server Core probe.", stage)
-		pollWindowsRecovery(t, f.ctx, "Windows Graph result for "+stage, func() bool {
+		pollDirectoryLab(t, f.ctx, "Windows Graph result for "+stage, func() bool {
 			hosts.refresh(f.ctx, nil)
 			for _, line := range readWindowsProbeRecords[windowsGraphProof](t, hosts.state, "server-core", "OCEAN-REGIONAL-GRAPH ") {
 				if line.RunID != run || line.Stage != stage || !line.Time.After(start) {
@@ -183,7 +183,7 @@ nice -n 10 podman exec "$container" /bin/sh -ec '
 	}
 	// The Windows logon API can surface a generic account restriction.
 	probe("disabled", "rotated", false, 1327, 1331)
-	writeWindowsRecoveryResult(t, filepath.Join(hosts.state, "evidence", "regional-windows-graph.json"), map[string]any{
+	writeDirectoryLabResult(t, filepath.Join(hosts.state, "evidence", "regional-windows-graph.json"), map[string]any{
 		"runId": run, "user": user.ID, "group": group.ID, "userSid": accountSID, "groupSid": groupSID,
 		"disabledUserAccountControl": flags, "observations": observations,
 	})

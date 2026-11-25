@@ -287,6 +287,9 @@ The primary provisions the domain. The replica uses the bootstrap credential
 to join over Kerberos, then seeds SYSVOL with its machine account. It checks
 the seeded policy ACLs before listening. A persistent join checkpoint lets the
 replica retry the seed if the primary goes away during the initial copy.
+The replica uses the writer's private AD DNS during bootstrap. Once
+initialized, both controllers use their own resolver. Kerberos calls that
+target a specific controller use its assigned address directly.
 Samba DRS replicates directory records in both directions. Both controllers
 retain native change notifications and poll their peers every 15 seconds to
 catch up after a late join or a disconnection.
@@ -593,6 +596,36 @@ recovery on one lab host. `WORKPLACE-05` exercises the CLI contract and
 `WORKPLACE-06` exercises the regional transaction with signed fixture
 evidence and disposable etcd. The Windows and independent-host recovery
 gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+
+### Fresh directory with packaged agents
+
+`WORKPLACE-16` provisions a new Samba AD domain through the regional ARM
+API. It uses a disposable Debian KVM lab with two controller hosts and a
+separate Debian client. Start only the three guests in farm 1. Build the
+agent package and export the pinned local Samba image as an OCI archive.
+
+```sh
+make deb-agent
+bin/ocean-lab up -state "$OCEAN_DIRECTORY_LAB" -profile lab/profiles/domain-join.yaml \
+  -image "$DEBIAN_QCOW2" -only farm-1-node-01 -only farm-1-node-02 -only farm-1-node-03
+python3 -B lab/prepare_managed_directory.py --state "$OCEAN_DIRECTORY_LAB" \
+  --package "$AGENT_DEB" --samba-archive "$SAMBA_OCI_ARCHIVE"
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-16 \
+  OCEAN_E2E_PACKAGED_DIRECTORY_STATE="$OCEAN_DIRECTORY_LAB" \
+  OCEAN_E2E_PACKAGE="$AGENT_DEB" OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_URL" \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+The probe supplies a disposable HTTPS enrollment endpoint and test OAuth
+issuer. It starts the installed rootless node agent and system network
+service on both hosts. The stock CLI submits and replays the request and
+checks the scope of access. The Debian client uses the assigned private
+addresses to verify AD discovery, acquire a fresh Kerberos ticket from
+each controller, and read the original SYSVOL file through SMB. The probe
+powers off and restarts each controller separately. The report records the
+API degradation interval and confirms the surviving data path and the
+original placement on return. All three guests run on one KVM host.
 
 ### Regional recovery with existing Windows members
 

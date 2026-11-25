@@ -146,7 +146,10 @@ def provision(root, settings):
 def target_kerberos(directory, settings, address):
     realm = settings["domain"].upper()
     config = directory / "krb5.conf"
+    # These operations select a specific controller. The isolated runtime can
+    # reach its private address without access to the host's DNS resolver.
     config.write_text(f"[libdefaults]\n default_realm = {realm}\n rdns = false\n"
+                      " dns_lookup_kdc = false\n dns_uri_lookup = false\n"
                       f"[realms]\n {realm} = {{\n  kdc = {address}\n }}\n")
     cache = "FILE:" + str(directory / "ticket")
     os.environ.update(KRB5_CONFIG=str(config), KRB5CCNAME=cache)
@@ -413,6 +416,11 @@ def wait_for_address(address):
             except OSError:
                 time.sleep(0.25)
     raise RuntimeError("the assigned directory address did not become available")
+
+
+def use_directory_dns(address):
+    # Podman can inherit a resolver outside the private workload network.
+    Path("/etc/resolv.conf").write_text(f"nameserver {address}\noptions timeout:1 attempts:2\n")
 
 
 def local_domain_sid(config):
@@ -732,7 +740,9 @@ def serve(settings):
     with (STATE / "owner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         wait_for_address(settings["address"])
-        if not is_writer(settings):
+        replica = not is_writer(settings)
+        use_directory_dns(settings["primary"] if replica else settings["address"])
+        if replica:
             primary = f"\n{settings['primary']} {peer_name(settings)}.{settings['domain']}\n"
             hosts = Path("/etc/hosts")
             if primary.strip() not in hosts.read_text().splitlines():
@@ -748,6 +758,10 @@ def serve(settings):
         if promotion and (not is_writer(settings) or not expected_sid or not require_authorization):
             raise DirectoryIdentityError("writer promotion requires regional SID authorization")
         config = initialize(settings, expected_sid)
+        if replica:
+            # A recovered or restarted replica serves its local directory
+            # even when the original writer is offline.
+            use_directory_dns(settings["address"])
         if expected_sid or require_authorization:
             sid = local_domain_sid(config)
             if expected_sid and sid != expected_sid:

@@ -21,19 +21,19 @@ import (
 	"github.com/Weichwolf/ocean/internal/lab"
 )
 
-type windowsRecoveryHosts struct {
+type directoryKVMHosts struct {
 	root, state, directory string
 	names                  [2]string
 	t                      *testing.T
 }
 
-func (f windowsRecoveryHosts) ssh(ctx context.Context, host, command string, input io.Reader) ([]byte, error) {
+func (f directoryKVMHosts) ssh(ctx context.Context, host, command string, input io.Reader) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, filepath.Join(f.root, "bin/ocean-lab"), "ssh", "-state", f.state, host, "--", command)
 	cmd.Stdin = input
 	return cmd.CombinedOutput()
 }
 
-func (f windowsRecoveryHosts) run(ctx context.Context, host, command string, input io.Reader) {
+func (f directoryKVMHosts) run(ctx context.Context, host, command string, input io.Reader) {
 	f.t.Helper()
 	out, err := f.ssh(ctx, host, command, input)
 	if err != nil {
@@ -41,18 +41,18 @@ func (f windowsRecoveryHosts) run(ctx context.Context, host, command string, inp
 	}
 }
 
-func (f windowsRecoveryHosts) path(file string) string {
+func (f directoryKVMHosts) path(file string) string {
 	return "/home/ocean/" + f.directory + "/" + file
 }
 
-func (f *windowsRecoveryHosts) startAgents(ctx context.Context, region *Region, guests []lab.GuestStatus, origin, image string, ca []byte) {
+func (f *directoryKVMHosts) approve(ctx context.Context, region *Region, guests []lab.GuestStatus) [2]string {
 	f.t.Helper()
 	var inventory []enrollment.Approval
 	var tokens [2]string
 	for i, status := range guests {
 		host := status.Guest.Name
 		if host != fmt.Sprintf("farm-1-node-%02d", i+1) {
-			f.t.Fatal("the two isolated recovery hosts must be farm-1-node-01 and farm-1-node-02")
+			f.t.Fatal("the two isolated directory hosts must be farm-1-node-01 and farm-1-node-02")
 		}
 		var entropy [32]byte
 		if _, err := rand.Read(entropy[:]); err != nil {
@@ -70,11 +70,17 @@ func (f *windowsRecoveryHosts) startAgents(ctx context.Context, region *Region, 
 		}
 	}
 	if len(inventory) != 2 {
-		f.t.Fatal("both replacement guests require a management NIC")
+		f.t.Fatal("both directory guests require a management NIC")
 	}
 	if err := region.seedHostInventory(ctx, inventory); err != nil {
 		f.t.Fatal(err)
 	}
+	return tokens
+}
+
+func (f *directoryKVMHosts) startAgents(ctx context.Context, region *Region, guests []lab.GuestStatus, origin, image string, ca []byte) {
+	f.t.Helper()
+	tokens := f.approve(ctx, region, guests)
 	for i, host := range f.names {
 		f.run(ctx, host, "set -eu; umask 077; mkdir "+f.path("")+
 			"; ! podman ps --quiet --filter label=ocean.directory-controller | grep -q ."+
@@ -100,7 +106,7 @@ func (f *windowsRecoveryHosts) startAgents(ctx context.Context, region *Region, 
 	}
 }
 
-func (f windowsRecoveryHosts) refresh(ctx context.Context, addresses []string) {
+func (f directoryKVMHosts) refresh(ctx context.Context, addresses []string) {
 	f.t.Helper()
 	for i, host := range f.names {
 		script := "set -eu; kill -0 $(cat " + f.path("agent.pid") + ") 2>/dev/null || { tail -15 " +
@@ -122,7 +128,7 @@ sudo nsenter -t "$pid" -n ip address replace ` + addresses[i] + " dev work0"
 	}
 }
 
-func (f windowsRecoveryHosts) stageArchive(ctx context.Context, host, id, archive string) {
+func (f directoryKVMHosts) stageArchive(ctx context.Context, host, id, archive string) {
 	f.t.Helper()
 	data, err := os.Open(archive)
 	if err != nil {
@@ -134,12 +140,12 @@ func (f windowsRecoveryHosts) stageArchive(ctx context.Context, host, id, archiv
 	f.run(ctx, host, "set -eu; umask 077; mkdir -p "+directory+"; cat >"+target+".pending; mv "+target+".pending "+target, data)
 }
 
-func (f windowsRecoveryHosts) removeStagedArchive(ctx context.Context, host, id string) {
+func (f directoryKVMHosts) removeStagedArchive(ctx context.Context, host, id string) {
 	f.t.Helper()
 	f.run(ctx, host, "rm -f "+f.path("state/directory-recovery/"+id+".tar"), nil)
 }
 
-func (f windowsRecoveryHosts) shutdownAgents(ctx context.Context) {
+func (f directoryKVMHosts) shutdownAgents(ctx context.Context) {
 	for _, host := range f.names {
 		if host == "" {
 			continue

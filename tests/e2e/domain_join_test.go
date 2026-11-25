@@ -117,5 +117,24 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		BlockedReason: windowsRecovery.BlockedReason,
 		Evidence: []harness.EvidenceSource{{Name: "regional-windows-graph.json",
 			Path: filepath.Join(windowsState, "evidence", "regional-windows-graph.json")}}}
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery, windowsGraph)
+	packagedState := os.Getenv("OCEAN_E2E_PACKAGED_DIRECTORY_STATE")
+	packaged := harness.Step{Name: "packaged-directory-provisioning", Cases: []string{"WORKPLACE-16"}, Timeout: 7 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=7m", "-count=1", "-v", "-run",
+			"^TestPackagedDirectoryProvisioning$", "./internal/controlplane"},
+		BlockedReason: fencing.BlockedReason,
+		Evidence: []harness.EvidenceSource{{Name: "packaged-directory.json",
+			Path: filepath.Join(packagedState, "evidence", "packaged-directory.json")}}}
+	if packaged.BlockedReason == "" {
+		switch {
+		case options.sambaImage == "":
+			packaged.BlockedReason = "Provide OCEAN_E2E_SAMBA_IMAGE with a controller image ID loaded on both packaged hosts."
+		case packagedState == "":
+			packaged.BlockedReason = "Provide OCEAN_E2E_PACKAGED_DIRECTORY_STATE with the prepared three-guest directory lab."
+		default:
+			packaged.BlockedReason = cli.BlockedReason
+		}
+	}
+	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
+	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery, windowsGraph, packaged)
 }

@@ -35,14 +35,14 @@ type windowsRecoveryProof struct {
 	Kerberos   bool      `json:"kerberos,omitempty"`
 }
 
-func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab, hosts windowsRecoveryHosts,
-	run string, backup windowsRecoveryArchive, view windowsDirectoryView, status func() windowsDirectoryView) {
+func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab, hosts directoryKVMHosts,
+	run string, backup windowsRecoveryArchive, view directoryLabView, status func() directoryLabView) {
 	t.Helper()
 	var proof [2][3]windowsRecoveryProof
 	start := time.Now().UTC()
 	phase := func(stage string, controller identity.DirectoryControllerReadiness, after time.Time) {
 		t.Helper()
-		writeWindowsRecoveryResult(t, filepath.Join(hosts.state, "recovery-phase.json"), map[string]any{
+		writeDirectoryLabResult(t, filepath.Join(hosts.state, "recovery-phase.json"), map[string]any{
 			"recoveryId": run, "stage": stage, "controller": controller.DNSName, "address": controller.PrivateIPv4, "after": after,
 		})
 		t.Logf("Windows probe stage %s ready at %s. Submit records from both existing Windows guests.", stage, controller.DNSName)
@@ -57,7 +57,7 @@ func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab
 			line.Controller == controller.DNSName && line.DomainSID == backup.Identity.SID && line.Policy == backup.Policy
 	}
 	phase("pair", view.Controllers[0], start)
-	pollWindowsRecovery(t, ctx, "both guests to read the recovered directory and policy", func() bool {
+	pollDirectoryLab(t, ctx, "both guests to read the recovered directory and policy", func() bool {
 		hosts.refresh(ctx, nil)
 		for i, profile := range windowsRecoveryProfiles {
 			for _, line := range readWindowsProbeRecords[windowsRecoveryProof](t, hosts.state, profile, "OCEAN-REGIONAL-RECOVERY ") {
@@ -76,14 +76,14 @@ func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab
 		t.Fatalf("did not power off only the writer QEMU VM: %v", err)
 	}
 	stopped := time.Now().UTC()
-	pollWindowsRecovery(t, ctx, "the region to observe the loss of the writer", func() bool {
+	pollDirectoryLab(t, ctx, "the region to observe the loss of the writer", func() bool {
 		hosts.run(ctx, hosts.names[1], "touch /run/ocean-workload-network/.available", nil)
 		current := status()
 		return current.Availability == "Degraded" && len(current.Controllers) == 2 &&
 			!current.Controllers[0].Ready && current.Controllers[1].Ready
 	})
 	phase("survivor", view.Controllers[1], stopped)
-	pollWindowsRecovery(t, ctx, "both guests to verify machine trust, Kerberos sign-in and preserved policy on the survivor", func() bool {
+	pollDirectoryLab(t, ctx, "both guests to verify machine trust, Kerberos sign-in and preserved policy on the survivor", func() bool {
 		hosts.run(ctx, hosts.names[1], "touch /run/ocean-workload-network/.available", nil)
 		for i, profile := range windowsRecoveryProfiles {
 			for _, line := range readWindowsProbeRecords[windowsRecoveryProof](t, hosts.state, profile, "OCEAN-REGIONAL-RECOVERY ") {
@@ -108,14 +108,14 @@ func verifyRegionalWindowsClients(t *testing.T, ctx context.Context, vm *lab.Lab
 	if proof[0][0].Machine == proof[1][0].Machine {
 		t.Fatal("the Windows recovery scenario requires two distinct member machines")
 	}
-	writeWindowsRecoveryResult(t, filepath.Join(hosts.state, "evidence", "regional-windows-recovery.json"), map[string]any{
+	writeDirectoryLabResult(t, filepath.Join(hosts.state, "evidence", "regional-windows-recovery.json"), map[string]any{
 		"recoveryId": run, "directoryId": view.ID, "writerStoppedAt": stopped, "backupSha256": backup.Digest,
 		"controllers": view.Controllers, "profiles": windowsRecoveryProfiles, "observations": proof,
 	})
 	t.Log("Both existing Windows guests verified the recovered pair, then retained machine trust, group membership, fresh Kerberos and policy through the surviving KVM controller.")
 }
 
-func writeWindowsRecoveryResult(t *testing.T, path string, data any) {
+func writeDirectoryLabResult(t *testing.T, path string, data any) {
 	t.Helper()
 	bytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {

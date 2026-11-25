@@ -116,6 +116,14 @@ and account disable prevents a new logon. The [Windows Graph lab
 guide](../../lab/README.md#regional-graph-changes-on-windows) describes the
 guest probe and evidence.
 
+Select `WORKPLACE-16` to provision a fresh domain using the regional ARM
+and enrollment handlers. Two Debian KVM hosts start the installed agents,
+and the packaged network service attaches the private addresses and
+enforces the subnet policy. The pinned CLI checks admission, replay and
+availability. A third guest verifies real DNS, Kerberos and SMB service
+with either virtual host stopped. The [lab guide](../../lab/README.md#fresh-directory-with-packaged-agents)
+describes the package and image inputs.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures
