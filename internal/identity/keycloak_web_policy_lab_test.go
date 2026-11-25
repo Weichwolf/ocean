@@ -66,7 +66,7 @@ func (s *webPolicyLabStore) RunDirectoryGraph(ctx context.Context, tenant Tenant
 	return runSambaFederationGraph(ctx, s.controller, input.Operation, nil, input.Selector, "")
 }
 
-func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server, apps []Application) func(string, string, []string, string) []byte {
+func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server, apps []Application, kerberosKeytab string) func(string, string, []string, string) []byte {
 	t.Helper()
 	issuer := lab.admin.endpoints[0]
 	compat, err := NewCompatibility("https://authority.apps.ocean.test", issuer, lab.admin.client.Transport)
@@ -89,7 +89,7 @@ func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server
 	})
 	compat.onboarding = &onboarding{admin: lab.admin, store: store, config: OnboardingConfig{WebDirectories: map[string]WebDirectoryConfig{
 		lab.tenant.TenantID: {DirectoryID: lab.directory.ID, DomainSID: lab.directory.DomainSID, Connectors: lab.connectors,
-			ReaderSecretFile: filepath.Join(os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE"), "reader")},
+			ReaderSecretFile: filepath.Join(os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE"), "reader"), KerberosKeytab: kerberosKeytab},
 	}}}
 	if err := compat.EnableManagedDirectories(store); err != nil {
 		t.Fatal(err)

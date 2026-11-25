@@ -1086,6 +1086,34 @@ group revocation and group-name reuse. The case uses loopback ingress and a
 disposable application store. Native Windows and Debian Kerberos acceptance
 uses a separate domain-client fixture.
 
+### Enable web Kerberos for a managed tenant
+
+Set `kerberosKeytab` in the tenant's `identity.onboarding.webDirectories`
+entry to the same absolute path on every Keycloak replica. Keycloak needs
+read access to that private keytab. Export the current keys for the tenant
+domain's `HTTP/<public-oauth-host>@<AD-REALM>` principal. Use the named HTTPS
+host of `identity.provider` as `<public-oauth-host>`, without a port. Set the
+realm to the Samba DNS domain in uppercase. Use a dedicated Samba service
+account with AES tickets. Keep the LDAP reader account separate.
+
+Replay the existing web `az rest` policy after staging the keytab. Ocean
+enables Kerberos on the previously configured LDAP provider and confirms
+that SPNEGO is disabled on the standard browser binding.
+The web client first offers SPNEGO, and its interactive fallback uses the
+Samba password with TOTP. Configure browsers to send negotiation credentials
+to the public OAuth HTTPS origin. [Keycloak Kerberos configuration](https://www.keycloak.org/docs/26.8.2/server_admin/index.html#_kerberos)
+
+`WORKPLACE-21` uses the WORKPLACE-19 Samba and Keycloak fixture and the
+WORKPLACE-20 CLI activation path. Set `OCEAN_E2E_KERBEROS_BROWSER_STATE` to
+a private directory with `service.keytab`, `employee.ccache`, `krb5.conf`,
+and `tls.pem`. Use a Keycloak HTTPS certificate issued by the CA in
+`tls.pem`. The test runs Firefox ESR on Debian with a fresh profile, imports
+the fixture CAs through `certutil`, and verifies the signed OIDC response
+from a new browser session with a real Samba service ticket. Restrict the
+fixture KDC to the isolated lab, and keep the ticket cache and keytab private.
+The probe also checks the live UserInfo response for the token issued before
+the account is disabled and measures the denial of a new authorization code.
+
 ## ARM resource groups
 
 Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.

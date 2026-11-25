@@ -113,6 +113,20 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if webAdmission.BlockedReason == "" {
 		webAdmission.BlockedReason = cli.BlockedReason
 	}
+	kerberosBrowser := harness.Step{Name: "managed-kerberos-firefox", Cases: []string{"WORKPLACE-21"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakKerberosBrowserLab$", "./internal/identity"}, BlockedReason: webAdmission.BlockedReason}
+	kerberosState := os.Getenv("OCEAN_E2E_KERBEROS_BROWSER_STATE")
+	if kerberosBrowser.BlockedReason == "" && kerberosState == "" {
+		kerberosBrowser.BlockedReason = "Provide OCEAN_E2E_KERBEROS_BROWSER_STATE with a disposable Samba service keytab and user ticket cache."
+	}
+	for _, program := range []string{"firefox-esr", "certutil", "curl"} {
+		if _, err := exec.LookPath(program); err != nil && kerberosBrowser.BlockedReason == "" {
+			kerberosBrowser.BlockedReason = "Install " + program + " for the Kerberos browser test."
+		}
+	}
+	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "service.keytab"), "the disposable HTTP service keytab")
+	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "employee.ccache"), "the disposable Samba ticket cache")
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
@@ -165,5 +179,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
-		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission)
+		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser)
 }

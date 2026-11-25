@@ -32,7 +32,7 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	t.Cleanup(api.Close)
 	lab := keycloakSambaLab(t, CloudEndpoints{ResourceManager: "https://" + api.Listener.Addr().String()})
 	ctx, admin, tenant := lab.ctx, lab.admin, lab.tenant
-	if _, err := admin.ensureDirectoryFederation(ctx, tenant, lab.directory, lab.connectors, lab.value("reader")); err != nil {
+	if _, err := admin.ensureDirectoryFederation(ctx, tenant, lab.directory, lab.connectors, lab.value("reader"), directoryKerberos{}); err != nil {
 		t.Fatal(err)
 	}
 	principal := "employee@" + federationLabDomain
@@ -90,7 +90,7 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 		{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: "Samba browser A", WebRedirectURIs: []string{"https://a.apps.ocean.test/oidc"}},
 		{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: "Samba browser B", WebRedirectURIs: []string{"https://b.apps.ocean.test/oidc"}},
 	}
-	az := startWebPolicyLab(t, lab, api, apps)
+	az := startWebPolicyLab(t, lab, api, apps, "")
 	policyPath := func(tenantID, applicationID string) string {
 		return directoryPath(tenantID) + "/webApplications/" + applicationID
 	}
@@ -266,9 +266,10 @@ func fixtureOTP(seed []byte) string {
 }
 
 type browserIdentity struct {
-	Subject   string
-	SessionID string `json:"sid"`
-	ACR       string `json:"acr"`
+	Subject     string `json:"-"`
+	AccessToken string `json:"-"`
+	SessionID   string `json:"sid"`
+	ACR         string `json:"acr"`
 }
 
 func exchangeBrowserCode(t *testing.T, ctx context.Context, browser *http.Client, issuer string, keys oidc.KeySet,
@@ -287,10 +288,11 @@ func exchangeBrowserCode(t *testing.T, ctx context.Context, browser *http.Client
 		"code": {result.Query().Get("code")}, "code_verifier": {auth.verifier}}
 	issued := browserCall(t, ctx, browser, issuer+"/protocol/openid-connect/token", form)
 	var reply struct {
+		AccessToken  string `json:"access_token"`
 		IDToken      string `json:"id_token"`
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := json.Unmarshal(issued.body, &reply); err != nil || issued.status != http.StatusOK || reply.IDToken == "" || reply.RefreshToken != "" {
+	if err := json.Unmarshal(issued.body, &reply); err != nil || issued.status != http.StatusOK || reply.AccessToken == "" || reply.IDToken == "" || reply.RefreshToken != "" {
 		t.Fatalf("exchange browser authorization code: status %d, %v", issued.status, err)
 	}
 	verifier := oidc.NewVerifier(issuer, keys, &oidc.Config{ClientID: auth.app.ClientID, SupportedSigningAlgs: []string{oidc.RS256}})
@@ -303,5 +305,6 @@ func exchangeBrowserCode(t *testing.T, ctx context.Context, browser *http.Client
 		t.Fatalf("the browser session did not satisfy its required assurance: %v", err)
 	}
 	identity.Subject = token.Subject
+	identity.AccessToken = reply.AccessToken
 	return identity
 }

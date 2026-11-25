@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"path/filepath"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/Weichwolf/ocean/internal/enrollment"
 )
@@ -16,12 +21,42 @@ type WebDirectoryConfig struct {
 	DomainSID        string    `json:"domainSid"`
 	Connectors       [2]string `json:"connectors"`
 	ReaderSecretFile string    `json:"readerSecretFile"`
+	KerberosKeytab   string    `json:"kerberosKeytab,omitempty"`
 }
 
 func (d WebDirectoryConfig) valid() bool {
 	health := enrollment.DirectoryHealth{Ready: true, DomainSID: d.DomainSID}
 	return tenantID.MatchString(d.DirectoryID) && health.Valid() && d.Connectors[0] != d.Connectors[1] &&
-		validLDAPSConnector(d.Connectors[0]) && validLDAPSConnector(d.Connectors[1]) && d.ReaderSecretFile != ""
+		validLDAPSConnector(d.Connectors[0]) && validLDAPSConnector(d.Connectors[1]) && d.ReaderSecretFile != "" &&
+		(d.KerberosKeytab == "" || validKeytabPath(d.KerberosKeytab))
+}
+
+func validKeytabPath(path string) bool {
+	return path != "/" && filepath.IsAbs(path) && filepath.Clean(path) == path && !strings.ContainsFunc(path, unicode.IsControl)
+}
+
+func kerberosServiceHost(issuer string) string {
+	parsed, err := url.Parse(issuer)
+	if err != nil || !httpsOrigin(issuer) {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if _, err := netip.ParseAddr(host); err == nil || len(host) > 253 {
+		return ""
+	}
+	for _, label := range strings.Split(host, ".") {
+		if !directoryLabel.MatchString(label) {
+			return ""
+		}
+	}
+	return host
+}
+
+func (d WebDirectoryConfig) kerberos(issuer, directoryDNS string) directoryKerberos {
+	if d.KerberosKeytab == "" {
+		return directoryKerberos{}
+	}
+	return directoryKerberos{host: kerberosServiceHost(issuer), realm: strings.ToUpper(directoryDNS), keytab: d.KerberosKeytab}
 }
 
 type webApplicationPolicy struct {
@@ -123,7 +158,8 @@ func (c *Compatibility) manageWebApplication(ctx context.Context, w http.Respons
 		return
 	}
 	admin := c.onboarding.admin
-	if _, err := admin.ensureDirectoryFederation(ctx, tenant, *directory, configuration.Connectors, secret); err != nil {
+	kerberos := configuration.kerberos(c.provider, directory.Spec.DNSName)
+	if _, err := admin.ensureDirectoryFederation(ctx, tenant, *directory, configuration.Connectors, secret, kerberos); err != nil {
 		webPolicyUnavailable(w)
 		return
 	}

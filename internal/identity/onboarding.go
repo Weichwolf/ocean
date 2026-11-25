@@ -95,7 +95,8 @@ func (c *Compatibility) EnableOnboarding(cfg OnboardingConfig, store TenantStore
 		return errors.New("onboarding credentials must contain at least 32 bytes")
 	}
 	for tenant, directory := range cfg.WebDirectories {
-		if !tenantID.MatchString(tenant) || !directory.valid() {
+		if !tenantID.MatchString(tenant) || !directory.valid() ||
+			(directory.KerberosKeytab != "" && kerberosServiceHost(c.provider) == "") {
 			return errors.New("invalid pre-authorized web directory configuration")
 		}
 	}

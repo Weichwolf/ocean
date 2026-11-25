@@ -79,7 +79,7 @@ func TestKeycloakDirectoryFederationLab(t *testing.T) {
 	lab := keycloakSambaLab(t, CloudEndpoints{})
 	ctx, admin, tenant, directory, connectors, primary, value := lab.ctx, lab.admin, lab.tenant, lab.directory, lab.connectors, lab.primary, lab.value
 	bind := value("reader")
-	if _, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, "Invalid-"+newUUID()); err == nil {
+	if _, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, "Invalid-"+newUUID(), directoryKerberos{}); err == nil {
 		t.Fatal("prepared LDAP federation with an invalid reader credential")
 	}
 	var unbound keycloakComponent
@@ -87,11 +87,11 @@ func TestKeycloakDirectoryFederationLab(t *testing.T) {
 		nil, &unbound); err != nil || status != http.StatusNotFound {
 		t.Fatalf("a failed bind left an LDAP provider: status %d, %v", status, err)
 	}
-	federation, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, bind)
+	federation, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, bind, directoryKerberos{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replay, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, bind); err != nil || replay != federation {
+	if replay, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, bind, directoryKerberos{}); err != nil || replay != federation {
 		t.Fatalf("replay directory federation: %v", err)
 	}
 	actor := "employee@" + federationLabDomain
@@ -191,7 +191,7 @@ func TestKeycloakDirectoryFederationLab(t *testing.T) {
 		if _, err := sambaFederationPodman(ctx, "stop", "--time", "5", primary); err != nil {
 			t.Fatal(err)
 		}
-		if replay, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, bind); err != nil || replay != federation {
+		if replay, err := admin.ensureDirectoryFederation(ctx, tenant, directory, connectors, bind, directoryKerberos{}); err != nil || replay != federation {
 			t.Fatalf("replay with one controller offline: %v", err)
 		}
 		started := time.Now()

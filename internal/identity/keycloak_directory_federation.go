@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -35,10 +36,16 @@ type keycloakDirectoryFederation struct {
 	GroupPath   string
 }
 
+type directoryKerberos struct {
+	host   string
+	realm  string
+	keytab string
+}
+
 // ensureDirectoryFederation uses the two trusted connector addresses for an
 // established tenant directory. The bind account is outside the workforce OU.
 func (k keycloakAdmin) ensureDirectoryFederation(ctx context.Context, tenant TenantReservation, directory ManagedDirectory,
-	connectors [2]string, bindSecret string) (keycloakDirectoryFederation, error) {
+	connectors [2]string, bindSecret string, kerberos directoryKerberos) (keycloakDirectoryFederation, error) {
 	var federation keycloakDirectoryFederation
 	if !directory.Valid(tenant) || directory.ProvisionedAt.IsZero() || connectors[0] == connectors[1] ||
 		!validLDAPSConnector(connectors[0]) || !validLDAPSConnector(connectors[1]) || len(bindSecret) < 24 {
@@ -49,6 +56,9 @@ func (k keycloakAdmin) ensureDirectoryFederation(ctx context.Context, tenant Ten
 		return federation, err
 	}
 	dns := directory.Spec.DNSName
+	if kerberos.keytab != "" && (kerberos.host == "" || kerberos.realm != strings.ToUpper(dns) || !validKeytabPath(kerberos.keytab)) {
+		return federation, errors.New("Kerberos requires the tenant realm, a named HTTPS issuer, and an absolute keytab path")
+	}
 	baseDN := "DC=" + strings.ReplaceAll(dns, ".", ",DC=")
 	provider := keycloakComponent{ID: directory.ID, Name: "Ocean Samba AD " + directory.ID, ParentID: realmID,
 		ProviderType: keycloakUserStorageType, ProviderID: "ldap", Config: componentConfig(map[string]string{
@@ -65,7 +75,7 @@ func (k keycloakAdmin) ensureDirectoryFederation(ctx context.Context, tenant Ten
 			"customUserSearchFilter": "(&(objectCategory=person)(!(isCriticalSystemObject=TRUE))(!(adminCount=1))(userPrincipalName=*@" + dns + "))",
 			"trustEmail":             "false", "allowKerberosAuthentication": "false", "useKerberosForPasswordAuthentication": "false",
 		})}
-	if err := k.ensureDirectoryComponent(ctx, tenant.TenantID, provider); err != nil {
+	if err := k.ensureDirectoryProvider(ctx, tenant.TenantID, provider, kerberos); err != nil {
 		return federation, err
 	}
 	if err := k.checkDirectoryAccountMapper(ctx, tenant.TenantID, provider.ID); err != nil {
@@ -92,6 +102,86 @@ func (k keycloakAdmin) ensureDirectoryFederation(ctx context.Context, tenant Ten
 		return federation, err
 	}
 	return keycloakDirectoryFederation{ProviderID: provider.ID, GroupMapper: groupMapper.ID, GroupPath: "/" + groupName}, nil
+}
+
+func (k keycloakAdmin) ensureDirectoryProvider(ctx context.Context, tenant string, baseline keycloakComponent, kerberos directoryKerberos) error {
+	if kerberos.keytab == "" {
+		return k.ensureDirectoryComponent(ctx, tenant, baseline)
+	}
+	wanted := baseline
+	wanted.Config = maps.Clone(baseline.Config)
+	wanted.Config["allowKerberosAuthentication"] = []string{"true"}
+	wanted.Config["kerberosRealm"] = []string{kerberos.realm}
+	wanted.Config["serverPrincipal"] = []string{"HTTP/" + kerberos.host + "@" + kerberos.realm}
+	wanted.Config["keyTab"] = []string{kerberos.keytab}
+	wanted.Config["krbPrincipalAttribute"] = []string{"userPrincipalName"}
+	path := "/components/" + wanted.ID
+	var actual keycloakComponent
+	status, err := k.directoryRequest(ctx, tenant, http.MethodGet, path, nil, &actual)
+	switch {
+	case err != nil:
+		return err
+	case status == http.StatusNotFound:
+		if err := k.ensureDirectoryComponent(ctx, tenant, wanted); err != nil {
+			return err
+		}
+	case status != http.StatusOK:
+		return errors.New("unable to read the managed LDAP provider")
+	case actual.checkDirectoryComponent(wanted) == nil:
+		// The exact accepted configuration is already installed.
+	case actual.checkDirectoryComponent(baseline) == nil:
+		if err := k.verifyDirectoryBinds(ctx, tenant, wanted.Config); err != nil {
+			return err
+		}
+		_, _ = k.directoryRequest(ctx, tenant, http.MethodPut, path, wanted, nil)
+		status, err = k.directoryRequest(ctx, tenant, http.MethodGet, path, nil, &actual)
+		if err != nil || status != http.StatusOK || actual.checkDirectoryComponent(wanted) != nil {
+			return errors.New("unable to confirm Kerberos on the existing LDAP provider")
+		}
+	default:
+		return errors.New("the existing LDAP provider has a different directory or Kerberos configuration")
+	}
+	return k.restoreDefaultBrowserKerberos(ctx, tenant)
+}
+
+// Keycloak enables disabled Kerberos executions realm-wide when a federation
+// provider enables Kerberos. Keep the Ocean web flow as the opt-in binding.
+func (k keycloakAdmin) restoreDefaultBrowserKerberos(ctx context.Context, tenant string) error {
+	var realm struct {
+		BrowserFlow string `json:"browserFlow"`
+	}
+	status, err := k.directoryRequest(ctx, tenant, http.MethodGet, "", nil, &realm)
+	if err != nil || status != http.StatusOK || realm.BrowserFlow == "" {
+		return errors.New("unable to confirm the default Keycloak browser binding")
+	}
+	path := keycloakAuthenticationPath + "/flows/" + url.PathEscape(realm.BrowserFlow) + "/executions"
+	var executions []struct {
+		ID          string `json:"id"`
+		Provider    string `json:"providerId"`
+		Requirement string `json:"requirement"`
+		Priority    int    `json:"priority"`
+	}
+	status, err = k.directoryRequest(ctx, tenant, http.MethodGet, path, nil, &executions)
+	if err != nil || status != http.StatusOK {
+		return errors.New("unable to inspect the default Keycloak browser flow")
+	}
+	for _, execution := range executions {
+		if execution.Provider != "auth-spnego" || execution.Requirement == "DISABLED" {
+			continue
+		}
+		if !tenantID.MatchString(execution.ID) || execution.Requirement != "ALTERNATIVE" {
+			return errors.New("unexpected Kerberos execution in the default browser flow")
+		}
+		_, _ = k.directoryRequest(ctx, tenant, http.MethodPut, path, map[string]any{
+			"id": execution.ID, "requirement": "DISABLED", "priority": execution.Priority,
+		}, nil)
+		var confirmed keycloakBrowserExecution
+		status, err := k.directoryRequest(ctx, tenant, http.MethodGet, keycloakAuthenticationPath+"/executions/"+execution.ID, nil, &confirmed)
+		if err != nil || status != http.StatusOK || confirmed.ID != execution.ID || confirmed.Requirement != "DISABLED" {
+			return errors.New("unable to restore the default Keycloak browser flow")
+		}
+	}
+	return nil
 }
 
 func directoryGroupMapperConfig(baseDN, groupName, additionalFilter string) map[string][]string {
@@ -163,8 +253,15 @@ func (k keycloakAdmin) ensureDirectoryComponent(ctx context.Context, tenant stri
 		_, _ = k.directoryRequest(ctx, tenant, http.MethodPost, "/components", wanted, nil)
 		status, err = k.directoryRequest(ctx, tenant, http.MethodGet, path, nil, &actual)
 	}
-	if err != nil || status != http.StatusOK || actual.ID != wanted.ID || actual.Name != wanted.Name ||
-		actual.ParentID != wanted.ParentID || actual.ProviderType != wanted.ProviderType || actual.ProviderID != wanted.ProviderID {
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("unable to confirm Keycloak component %q", wanted.Name)
+	}
+	return actual.checkDirectoryComponent(wanted)
+}
+
+func (actual keycloakComponent) checkDirectoryComponent(wanted keycloakComponent) error {
+	if actual.ID != wanted.ID || actual.Name != wanted.Name || actual.ParentID != wanted.ParentID ||
+		actual.ProviderType != wanted.ProviderType || actual.ProviderID != wanted.ProviderID {
 		return fmt.Errorf("unable to confirm Keycloak component %q", wanted.Name)
 	}
 	for key, value := range wanted.Config {
