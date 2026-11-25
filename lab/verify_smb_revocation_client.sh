@@ -62,6 +62,9 @@ try:
             written = os.pwrite(handle.fileno(), marker, 0)
             os.fsync(handle.fileno())
         except OSError as error:
+            if error.errno in (errno.EAGAIN, errno.EINTR):
+                time.sleep(0.2)
+                continue
             if error.errno not in denials:
                 raise
             outcome = errno.errorcode[error.errno]
@@ -74,7 +77,7 @@ finally:
     try:
         handle.close()
     except OSError as error:
-        if not outcome or error.errno not in denials:
+        if not outcome or error.errno not in (*denials, errno.EAGAIN, errno.EINTR):
             raise
         outcome += "/" + errno.errorcode[error.errno]
 if not outcome:

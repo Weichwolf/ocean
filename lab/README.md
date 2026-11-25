@@ -223,6 +223,8 @@ Include `prjquota` among the mount options, set the member share's
 `rbd-volume-id`. Install `quota` on the member and `cifs-utils` and
 `keyutils` on the client. The test needs the disposable SSH user's
 default file credential cache to be empty.
+Remount the standalone fixture before rerunning `WORKPLACE-25` or
+`WORKPLACE-26` after the hard power-off in `WORKPLACE-29`.
 
 The member assigns project ID 1 to the new share directory and enables
 inheritance so every file contributes to the same hard block quota. Keep
