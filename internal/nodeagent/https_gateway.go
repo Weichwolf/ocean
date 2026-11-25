@@ -90,12 +90,13 @@ func readGatewaySlots[T any](path string) (map[string]T, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Sys().(*syscall.Stat_t).Uid != 0 || info.Mode().Perm()&0022 != 0 || info.Size() > maxBytes {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || !info.Mode().IsRegular() || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 || info.Size() > maxBytes {
 		return nil, errors.New("gateway slots require a small, root-owned configuration file")
 	}
 	content := &io.LimitedReader{R: file, N: maxBytes + 1}
@@ -204,7 +205,7 @@ func fetchGatewayAssignments[T any](ctx context.Context, client *joinClient, kin
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s assignment lookup returned HTTP %d", kind, response.StatusCode)
 	}
@@ -232,7 +233,7 @@ func (client *joinClient) reportGatewayStatus(ctx context.Context, kind, slot st
 	if err != nil {
 		return err
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("%s gateway status returned HTTP %d", kind, response.StatusCode)
 	}

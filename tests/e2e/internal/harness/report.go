@@ -143,7 +143,7 @@ func saveReport(path string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	_, writeError := file.Write(content)
 	if err := errors.Join(writeError, file.Sync(), file.Close()); err != nil {
 		return err

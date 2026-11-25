@@ -43,12 +43,13 @@ func (lab *Lab) seed(ctx context.Context, guest Guest, seed *bootstrapSeed) erro
 			"name": "ocean", "shell": "/bin/bash", "sudo": "ALL=(ALL) NOPASSWD:ALL",
 			"ssh_authorized_keys": []string{strings.TrimSpace(string(publicKey))},
 		}},
-		"write_files": []any{map[string]any{"path": "/etc/hosts", "content": hosts}},
 	}
+	writeFiles := []any{map[string]any{"path": "/etc/hosts", "content": hosts}}
 	if seed != nil {
-		userData["write_files"] = append(userData["write_files"].([]any), seed.files...)
+		writeFiles = append(writeFiles, seed.files...)
 		userData["runcmd"] = [][]string{{"/bin/sh", "/root/ocean-bootstrap/provision.sh"}}
 	}
+	userData["write_files"] = writeFiles
 	files := []struct {
 		name, prefix string
 		data         any
@@ -67,7 +68,7 @@ func (lab *Lab) seed(ctx context.Context, guest Guest, seed *bootstrapSeed) erro
 		}
 	}
 	staged := filepath.Join(directory, "seed.partial")
-	defer os.Remove(staged)
+	defer func() { _ = os.Remove(staged) }()
 	if seed == nil {
 		if err := command(ctx, "cloud-localds", "--network-config", filepath.Join(directory, "network-config"),
 			staged, filepath.Join(directory, "user-data"), filepath.Join(directory, "meta-data")); err != nil {
@@ -87,7 +88,7 @@ func buildEnrollmentISO(ctx context.Context, directory, output string, packageDa
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(contents)
+	defer func() { _ = os.RemoveAll(contents) }()
 	for _, name := range []string{"user-data", "meta-data", "network-config"} {
 		if err := os.Link(filepath.Join(directory, name), filepath.Join(contents, name)); err != nil {
 			return err

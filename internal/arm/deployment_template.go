@@ -304,7 +304,10 @@ func (t NetworkDeployment) Plan(group string, snapshot map[string]InventoryResou
 			return NetworkDeploymentPlan{}, err
 		}
 		working[parent.Key()] = next
-		resourceID := after["id"].(string)
+		resourceID, ok := after["id"].(string)
+		if !ok || resourceID == "" {
+			return NetworkDeploymentPlan{}, fmt.Errorf("missing resource ID for %s %q", item.Type, item.Name)
+		}
 		references = append(references, network.ResourceReference{ID: resourceID})
 		change := deploymentChange{ResourceID: resourceID, Before: before, After: after, ChangeType: "Modify"}
 		if before == nil {

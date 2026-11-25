@@ -165,6 +165,11 @@ func (a *Authority) enroll(w http.ResponseWriter, r *http.Request) {
 		reject(w, http.StatusBadRequest, "InvalidHostKeyProof")
 		return
 	}
+	publicKey, ok := csr.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		reject(w, http.StatusBadRequest, "InvalidHostKeyProof")
+		return
+	}
 	keyHash := sha256.Sum256(csr.RawSubjectPublicKeyInfo)
 	keyID := hex.EncodeToString(keyHash[:])
 	if current != nil {
@@ -176,7 +181,7 @@ func (a *Authority) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	cert, err := a.issue(hostID, csr.PublicKey.(ed25519.PublicKey), now)
+	cert, err := a.issue(hostID, publicKey, now)
 	if err != nil {
 		reject(w, http.StatusServiceUnavailable, "EnrollmentUnavailable")
 		return

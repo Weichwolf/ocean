@@ -48,7 +48,8 @@ func Open(path string) (*Lab, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() || info.Mode().Perm()&0o077 != 0 || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || stat.Uid != uint32(os.Getuid()) {
 		return nil, errors.New("the lab state directory must be private and owned by the current user")
 	}
 	return &Lab{root: root}, nil
@@ -60,8 +61,7 @@ func (lab *Lab) lock() (*os.File, error) {
 		return nil, err
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("lock lab state: %w", err)
+		return nil, fmt.Errorf("lock lab state: %w", errors.Join(err, file.Close()))
 	}
 	return file, nil
 }
@@ -86,7 +86,7 @@ func (lab *Lab) save(current state) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temporary.Name())
+	defer func() { _ = os.Remove(temporary.Name()) }()
 	encoder := json.NewEncoder(temporary)
 	encoder.SetIndent("", "  ")
 	err = encoder.Encode(current)

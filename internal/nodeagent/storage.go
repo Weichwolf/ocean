@@ -87,7 +87,7 @@ func (j *joinClient) shareJobs(ctx context.Context) ([]storage.Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("share job request returned HTTP %d", response.StatusCode)
 	}
@@ -115,7 +115,7 @@ func (j *joinClient) completeShareJob(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("share job completion returned HTTP %d", response.StatusCode)
 	}

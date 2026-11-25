@@ -141,7 +141,7 @@ func readWindowsProbeRecords[T any](t *testing.T, state, profile, prefix string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer data.Close()
+	defer func() { _ = data.Close() }()
 	scan := bufio.NewScanner(data)
 	var observations []T
 	for scan.Scan() {

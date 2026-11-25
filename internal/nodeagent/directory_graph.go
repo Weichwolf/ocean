@@ -23,7 +23,7 @@ func (j *joinClient) runDirectoryGraphTask(ctx context.Context, name string, ass
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	switch response.StatusCode {
 	case http.StatusNoContent:
 		return nil
@@ -64,7 +64,7 @@ func (j *joinClient) runDirectoryGraphTask(ctx context.Context, name string, ass
 	if err != nil {
 		return err
 	}
-	defer ack.Body.Close()
+	defer func() { _ = ack.Body.Close() }()
 	if ack.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("directory Graph acknowledgement returned HTTP %d", ack.StatusCode)
 	}

@@ -43,7 +43,7 @@ func Load[T any](path string, defaults T) (T, error) {
 	if err != nil {
 		return defaults, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	settings := &defaults
 	decoder := json.NewDecoder(file)

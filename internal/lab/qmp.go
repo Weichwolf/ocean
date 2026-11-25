@@ -14,7 +14,7 @@ func qmp(path, name, command string) error {
 	if err != nil {
 		return err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	if err := connection.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return err
 	}

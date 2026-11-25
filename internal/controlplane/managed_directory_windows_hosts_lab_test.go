@@ -134,7 +134,7 @@ func (f directoryKVMHosts) stageArchive(ctx context.Context, host, id, archive s
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	defer data.Close()
+	defer func() { _ = data.Close() }()
 	directory := f.path("state/directory-recovery")
 	target := directory + "/" + id + ".tar"
 	f.run(ctx, host, "set -eu; umask 077; mkdir -p "+directory+"; cat >"+target+".pending; mv "+target+".pending "+target, data)

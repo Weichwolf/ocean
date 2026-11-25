@@ -42,7 +42,7 @@ func (j *joinClient) heartbeat(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusNoContent {
 		if response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity {
 			j.lastAdvertisement.Store(nil)

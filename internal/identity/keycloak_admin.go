@@ -141,7 +141,7 @@ func (k keycloakAdmin) request(ctx context.Context, method, endpoint, token, med
 	if err != nil {
 		return 0, err
 	}
-	defer reply.Body.Close()
+	defer func() { _ = reply.Body.Close() }()
 	if reply.StatusCode < 200 || reply.StatusCode >= 300 || output == nil {
 		_, _ = io.Copy(io.Discard, io.LimitReader(reply.Body, 64<<10))
 		return reply.StatusCode, nil

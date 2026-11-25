@@ -214,7 +214,7 @@ func (j *joinClient) enroll(ctx context.Context, key ed25519.PrivateKey) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("host enrollment returned HTTP %d", response.StatusCode)
 	}
@@ -235,7 +235,7 @@ func (j *joinClient) confirm(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("host identity check returned HTTP %d", response.StatusCode)
 	}
@@ -248,7 +248,7 @@ func privateData(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 4096 {
 		return nil, errors.New("enrollment secrets must be small, private files")
@@ -296,7 +296,7 @@ func publishFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	_, writeErr := file.Write(data)
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
 		return err
@@ -308,7 +308,7 @@ func publishFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	return directory.Sync()
 }
 

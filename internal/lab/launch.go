@@ -31,7 +31,7 @@ func (lab *Lab) UpSelected(ctx context.Context, plan Plan, image string, reserve
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 
 	current, err := lab.load()
 	if err != nil {
@@ -127,7 +127,7 @@ func (lab *Lab) UpSelected(ctx context.Context, plan Plan, image string, reserve
 	if err != nil {
 		return fmt.Errorf("open /dev/kvm: %w", err)
 	}
-	kvm.Close()
+	_ = kvm.Close()
 	if err := lab.ensureSSHKey(ctx); err != nil {
 		return err
 	}
@@ -197,7 +197,7 @@ func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string, s
 	overlay := filepath.Join(directory, "disk.qcow2")
 	if _, err := os.Stat(overlay); errors.Is(err, os.ErrNotExist) {
 		partial := filepath.Join(directory, "disk.partial")
-		defer os.Remove(partial)
+		defer func() { _ = os.Remove(partial) }()
 		if err := command(ctx, "qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", image, partial); err != nil {
 			return err
 		}
@@ -302,7 +302,7 @@ func (lab *Lab) Stop(name string) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	current, err := lab.load()
 	if err != nil {
 		return err
@@ -336,7 +336,7 @@ func (lab *Lab) shutdown(ctx context.Context, graceful bool) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	current, err := lab.load()
 	if err != nil {
 		return err
@@ -423,7 +423,7 @@ func imageDigest(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	digest := sha256.New()
 	if _, err := io.Copy(digest, file); err != nil {
 		return "", err
@@ -436,7 +436,7 @@ func hostMemoryMiB() (uint, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -456,8 +456,11 @@ func loopbackPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, errors.Join(errors.New("expected a TCP listener address"), listener.Close())
+	}
+	return address.Port, listener.Close()
 }
 
 func escapeQEMU(path string) string {
@@ -488,7 +491,7 @@ func createDataDisk(ctx context.Context, path string, size uint) error {
 		return err
 	}
 	partial := path + ".partial"
-	defer os.Remove(partial)
+	defer func() { _ = os.Remove(partial) }()
 	if err := command(ctx, "qemu-img", "create", "-f", "qcow2", partial, strconv.FormatUint(uint64(size), 10)+"M"); err != nil {
 		return err
 	}

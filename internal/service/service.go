@@ -28,7 +28,7 @@ type Hooks struct {
 }
 
 // Main parses service options and serves until the process is stopped.
-func Main(component string, load func(string) (config.Server, Hooks, error)) int {
+func Main(component string, load func(string) (config.Server, Hooks, error)) (exitCode int) {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	configPath := flags.String("config", "", "path to a JSON configuration file")
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -50,7 +50,12 @@ func Main(component string, load func(string) (config.Server, Hooks, error)) int
 		return 1
 	}
 	if hooks.Close != nil {
-		defer hooks.Close()
+		defer func() {
+			if err := hooks.Close(); err != nil {
+				logger.Error("Service cleanup failed", "error", err)
+				exitCode = 1
+			}
+		}()
 	}
 	level.Set(settings.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -108,7 +113,7 @@ func serve(ctx context.Context, settings config.Server, hooks Hooks, logger *slo
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	logger.Info("Service listening", "address", listener.Addr().String(), "tls", settings.TLS != nil)
 	if hooks.Reconcile != nil {
 		reconciler, cancel := context.WithCancel(ctx)

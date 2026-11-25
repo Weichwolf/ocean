@@ -28,7 +28,7 @@ func readExchangeSecret(directory, tenant string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return "", err

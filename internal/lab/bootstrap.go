@@ -48,7 +48,7 @@ func loadBootstrapSeed(manifestPath string, guests map[string]Guest) (*bootstrap
 	if err != nil {
 		return nil, err
 	}
-	defer token.Close()
+	defer func() { _ = token.Close() }()
 	info, err := token.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		return nil, errors.New("the enrollment token must be a private regular file")
@@ -73,7 +73,7 @@ func loadBootstrapSeed(manifestPath string, guests map[string]Guest) (*bootstrap
 	if err != nil {
 		return nil, err
 	}
-	defer packageFile.Close()
+	defer func() { _ = packageFile.Close() }()
 	packageData, err := io.ReadAll(io.LimitReader(packageFile, 32<<20))
 	if err != nil {
 		return nil, err

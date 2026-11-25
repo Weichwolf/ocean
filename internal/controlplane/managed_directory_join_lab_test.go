@@ -66,7 +66,7 @@ func testRegionalDirectory(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	r := &Region{client: client, name: "farm-1", cell: "cell-1", root: "/ocean/tests/directory-join/" + operationID(),
 		directoryCapacity: enrollment.Capacity{CPUMillis: 400, MemoryMiB: 384}}
 	defer func() {
@@ -239,12 +239,16 @@ func testRegionalDirectory(t *testing.T, mode string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		_, _ = io.Copy(io.Discard, response.Body)
 		return response.StatusCode
 	}
 	mtls := func(cert tls.Certificate) *http.Client {
-		transport := api.Client().Transport.(*http.Transport).Clone()
+		baseTransport, ok := api.Client().Transport.(*http.Transport)
+		if !ok {
+			t.Fatal("directory API test client requires a TLS transport")
+		}
+		transport := baseTransport.Clone()
 		transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
 		t.Cleanup(transport.CloseIdleConnections)
 		return &http.Client{Transport: transport, Timeout: 5 * time.Second}

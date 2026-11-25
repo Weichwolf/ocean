@@ -40,7 +40,7 @@ func verifyRegionalWindowsGraph(t *testing.T, f regionalGraphFixture, hosts dire
 	for name, secret := range map[string]string{"initial": initial, "rotated": rotated} {
 		path := filepath.Join(hosts.state, "graph-fixture-"+name+".secret")
 		writeWindowsRecoverySecret(t, path, []byte(secret))
-		defer os.Remove(path)
+		defer func() { _ = os.Remove(path) }()
 	}
 
 	runCLI := f.loginCLI(t, initial, rotated)
@@ -117,7 +117,7 @@ nice -n 10 podman exec "$container" /bin/sh -ec '
 
 	var observations []windowsGraphProof
 	phasePath := filepath.Join(hosts.state, "graph-phase.json")
-	defer os.Remove(phasePath)
+	defer func() { _ = os.Remove(phasePath) }()
 	probe := func(stage, password string, member bool, signInErrors ...int) {
 		t.Helper()
 		start := time.Now().UTC()
