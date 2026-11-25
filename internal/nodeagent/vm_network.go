@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -59,13 +60,15 @@ func (w vmWorker) prepareVMNetwork(ctx context.Context, task workload.VMTask) er
 		// The next reserved address serves DHCP locally. The subnet gateway
 		// remains a remote next hop on the private fabric.
 		{"-n", ns, "addr", "add", netip.PrefixFrom(policy.DHCPServer, subnet.Bits()).String(), "dev", vmTap, "noprefixroute"},
-		{"-n", ns, "addr", "add", address.String() + "/32", "dev", containerFabricLink, "noprefixroute"},
-		{"-n", ns, "route", "delete", "local", address.String() + "/32", "dev", containerFabricLink, "table", "local"},
 		{"-n", ns, "link", "set", "dev", vmTap, "up"},
 		{"-n", ns, "link", "set", "dev", containerFabricLink, "up"},
 		{"netns", "exec", ns, "/usr/sbin/sysctl", "-q", "-w", "net.ipv4.ip_forward=1", "net.ipv4.conf.all.arp_ignore=1",
 			"net.ipv4.conf.fabric0.proxy_arp=1", "net.ipv4.conf." + vmTap + ".proxy_arp=1", "net.ipv4.conf.all.send_redirects=0",
 			"net.ipv4.conf.fabric0.send_redirects=0", "net.ipv4.conf." + vmTap + ".send_redirects=0"},
+		// Use the guest address for fabric ARP only after bringing up the
+		// interface. Link-up would otherwise re-create the kernel local route.
+		{"-n", ns, "addr", "add", address.String() + "/32", "dev", containerFabricLink, "noprefixroute"},
+		{"-n", ns, "route", "delete", "local", address.String() + "/32", "dev", containerFabricLink, "table", "local"},
 		{"-n", ns, "route", "replace", subnet.String(), "dev", containerFabricLink},
 		{"-n", ns, "route", "replace", address.String() + "/32", "dev", vmTap},
 		{"-n", ns, "route", "replace", "default", "via", gateway.String(), "dev", containerFabricLink, "onlink"},
@@ -123,6 +126,26 @@ func removeVMNetwork(ctx context.Context, namespace string) error {
 		}
 		if err := stopVMDHCP(pid, namespaceInfo); err != nil {
 			return err
+		}
+	}
+	// Release the stable fabric MAC before dropping the namespace name.
+	// A terminating DHCP process may still hold the namespace open.
+	data, err = exec.CommandContext(ctx, "/usr/bin/ip", "-n", namespace, "-j", "link", "show").Output()
+	if err != nil {
+		return fmt.Errorf("list VM interfaces: %w", err)
+	}
+	var links []struct {
+		Name string `json:"ifname"`
+	}
+	if err := json.Unmarshal(data, &links); err != nil {
+		return err
+	}
+	for _, link := range links {
+		if link.Name == containerFabricLink {
+			if err := callIP(ctx, "-n", namespace, "link", "delete", "dev", containerFabricLink); err != nil {
+				return err
+			}
+			break
 		}
 	}
 	return callIP(ctx, "netns", "delete", namespace)

@@ -46,6 +46,11 @@ func TestVMNetworkOnDebianWorker(t *testing.T) {
 	if err := w.prepareVMNetwork(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	route, err := exec.CommandContext(ctx, "/usr/bin/ip", "-n", ns, "route", "get", task.Network.Address.Addr().String(),
+		"from", "10.232.1.165", "iif", containerFabricLink).CombinedOutput()
+	if err != nil || !strings.Contains(string(route), "dev "+vmTap+" ") || strings.HasPrefix(string(route), "local ") {
+		t.Fatalf("private fabric packets must be routed to the guest TAP: %v: %s", err, route)
+	}
 	rules, err := exec.CommandContext(ctx, "/usr/bin/ip", "netns", "exec", ns, "/usr/sbin/nft", "list", "ruleset").CombinedOutput()
 	if err != nil || !strings.Contains(string(rules), "udp sport 68 udp dport 67") || !strings.Contains(string(rules), "protected_networks") {
 		t.Fatalf("the private VM policy or its local DHCP exception is missing: %v: %s", err, rules)
