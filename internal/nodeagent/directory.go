@@ -315,7 +315,14 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 	directory := a.Directory
 	status, present, err := inspectContainer(ctx, name, localPodman)
 	if err != nil {
-		return err
+		// After unclean shutdown, Podman may still list a stopped container
+		// whose writable layer cannot be inspected. Remove only its stopped
+		// runtime record without forcing a stop or removing the named volume.
+		// The network service can then re-advertise capacity after its probe
+		// stops encountering the damaged record.
+		if removeErr := podmanAction(ctx, "rm", "--ignore", name); removeErr != nil {
+			return errors.Join(err, removeErr)
+		}
 	}
 	if status.Running {
 		if directory.PromoteFrom == "" {

@@ -290,6 +290,9 @@ replica retry the seed if the primary goes away during the initial copy.
 The replica uses the writer's private AD DNS during bootstrap. Once
 initialized, both controllers use their own resolver. Kerberos calls that
 target a specific controller use its assigned address directly.
+Each initialization checkpoint flushes the staged database and key files to
+the controller volume. The node agent can recreate an uninspectable stopped
+container from that volume after an unclean shutdown.
 Samba DRS replicates directory records in both directions. Both controllers
 retain native change notifications and poll their peers every 15 seconds to
 catch up after a late join or a disconnection.
