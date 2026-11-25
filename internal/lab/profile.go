@@ -12,13 +12,15 @@ import (
 
 // Resources are the allocations requested from the local hypervisor.
 type Resources struct {
-	MemoryMiB uint `json:"memoryMiB" yaml:"memoryMiB"`
-	VCPUs     uint `json:"vcpus" yaml:"vcpus"`
+	MemoryMiB   uint `json:"memoryMiB" yaml:"memoryMiB"`
+	VCPUs       uint `json:"vcpus" yaml:"vcpus"`
+	DataDiskMiB uint `json:"dataDiskMiB,omitempty" yaml:"dataDiskMiB"`
 }
 
 type overrides struct {
-	MemoryMiB *uint `yaml:"memoryMiB"`
-	VCPUs     *uint `yaml:"vcpus"`
+	MemoryMiB   *uint `yaml:"memoryMiB"`
+	VCPUs       *uint `yaml:"vcpus"`
+	DataDiskMiB *uint `yaml:"dataDiskMiB"`
 }
 
 type profile struct {
@@ -122,6 +124,12 @@ func (settings profile) plan() (Plan, error) {
 			}
 			if override.VCPUs != nil {
 				guest.Resources.VCPUs = *override.VCPUs
+			}
+			if override.DataDiskMiB != nil {
+				guest.Resources.DataDiskMiB = *override.DataDiskMiB
+			}
+			if disk := guest.Resources.DataDiskMiB; disk != 0 && (disk < 1024 || disk > 65536) {
+				return Plan{}, fmt.Errorf("%s data disk must be between 1024 and 65536 MiB", guest.Name)
 			}
 			if guest.Resources.MemoryMiB == 0 || guest.Resources.VCPUs == 0 {
 				return Plan{}, fmt.Errorf("%s RAM and vCPUs must be positive", guest.Name)

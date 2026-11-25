@@ -28,6 +28,7 @@ const (
 type containerRecord struct {
 	Address     arm.ResourceAddress `json:"address"`
 	Reservation Reservation         `json:"reservation"`
+	Volume      *volumeBinding      `json:"volume,omitempty"`
 	PublicIP    netip.Addr          `json:"publicIp,omitzero"`
 	Port        int                 `json:"port"`
 	Config      []byte              `json:"config"`
@@ -89,6 +90,12 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 	}
 	request := PlacementRequest{ID: fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:48], Cell: r.cell, Role: "compute", NeedsContainerNetwork: true,
 		Resources: enrollment.Capacity{CPUMillis: cpu, MemoryMiB: memory}}
+	if len(wanted.Properties.Volumes) != 0 {
+		if r.storage == nil {
+			return arm.InventoryResource{}, nil, false, arm.ErrStorageAccess
+		}
+		request.NeedsStorage = true
+	}
 	if len(wanted.Properties.SubnetIDs) == 1 {
 		request.SubnetID = wanted.Properties.SubnetIDs[0].ID
 	}
@@ -144,6 +151,14 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 			if err != nil {
 				return nil, nil, err
 			}
+			checks, writes = append(checks, conditions...), append(writes, updates...)
+		}
+		if request.NeedsStorage {
+			volume, conditions, updates, err := r.claimVolume(ctx, scope, record, *wanted.Properties.Volumes[0].AzureFile)
+			if err != nil {
+				return nil, nil, err
+			}
+			record.Volume = &volume
 			checks, writes = append(checks, conditions...), append(writes, updates...)
 		}
 		projection = projectContainer(wanted, record, now, now, arm.OperationInProgress)
@@ -209,7 +224,13 @@ func projectContainer(input workload.ContainerGroup, record containerRecord, cre
 	if state == "" {
 		state = "Pending"
 	}
-	data, _ := json.Marshal(map[string]any{"osType": p.OSType, "restartPolicy": p.RestartPolicy, "sku": p.SKU, "priority": p.Priority,
+	volumes := make([]workload.Volume, 0, len(p.Volumes))
+	for _, volume := range p.Volumes {
+		public := *volume.AzureFile
+		public.StorageAccountKey = ""
+		volumes = append(volumes, workload.Volume{Name: volume.Name, AzureFile: &public})
+	}
+	data, _ := json.Marshal(map[string]any{"volumes": volumes, "osType": p.OSType, "restartPolicy": p.RestartPolicy, "sku": p.SKU, "priority": p.Priority,
 		"provisioningState": status, "instanceView": map[string]string{"state": state},
 		"ipAddress": map[string]any{"type": p.IPAddress.Type, "ip": record.endpoint().String(), "ports": p.IPAddress.Ports},
 		"subnetIds": p.SubnetIDs, "containers": []any{map[string]any{"name": container.Name, "properties": struct {
@@ -241,17 +262,17 @@ func (r *Region) readContainer(ctx context.Context, scope arm.SubscriptionScope,
 	if err != nil {
 		return inventory, record, nil, 0, err
 	}
-	op, err := r.containerOperationAt(ctx, scope, record.Operation, read.Header.Revision)
+	op, err := r.operationAt(ctx, scope, record.Operation, read.Header.Revision)
 	return inventory, record, op, item.ModRevision, err
 }
 
-func (r *Region) containerOperationAt(ctx context.Context, scope arm.SubscriptionScope, operation string, revision int64) (*arm.Operation, error) {
+func (r *Region) operationAt(ctx context.Context, scope arm.SubscriptionScope, operation string, revision int64) (*arm.Operation, error) {
 	ops, err := r.client.Get(ctx, r.operationKey(scope, operation), clientv3.WithRev(revision))
 	if err != nil {
 		return nil, err
 	}
 	if len(ops.Kvs) != 1 {
-		return nil, errors.New("workload operation is missing")
+		return nil, errors.New("operation record is missing")
 	}
 	return decodeOperation(ops.Kvs[0].Value, operation)
 }

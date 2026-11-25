@@ -404,3 +404,26 @@ python3 lab/verify_container_groups.py --state "$LAB_STATE" --observer farm-1-no
 ```
 
 The observer uses an isolated network namespace in a separate KVM guest. The test checks HTTP and socket closure, rootless Podman, the guest process priority and cgroup limits, endpoint reuse, quota release, and redacted inventory, logs, and audit data. Its evidence is written to `evidence/container-groups.json` in the lab state directory.
+
+### Replicated Azure Files mounts
+
+Use `storage-ha` for the storage tests. It extends the six-node development farm with three Debian guests that each have 4 GiB of RAM, two vCPUs, and an 8 GiB data disk. The storage script selects only the dedicated `virtio-ocean-storage` devices. Ceph Reef runs one monitor and one OSD per storage guest. The `ocean` pool uses three copies, a minimum of two for I/O, and the host-level CRUSH rule.
+
+The pinned Azure CLI account and file share commands are listed in the ARM contract matrix. A file share becomes available after the worker creates its RBD image, initializes the LUKS2 encryption header, and formats ext4. A single Azure Files volume can be mounted at `/data` in a Linux container group. The account credential authorizes the mount request within the subscription. The regional key envelope protects the separate per-volume encryption key, which is delivered over mTLS to the assigned storage worker. Podman receives the mounted directory and runs at nice +10.
+
+The region records one durable writer generation per volume. The worker confirms an unmounted generation before ordinary deletion releases its capacity. During a management partition the current writer can continue using Ceph. A replacement receives authorization after the configured fencing authority signs an attestation for the original host, volume, and generation and the region confirms that its heartbeat lease expired. The lab fencer waits for the exact QEMU process to exit before signing. Recovery deploys a replacement container on the surviving worker. Keep the fencing private key in the environment that controls guest power.
+
+```sh
+make deb-agent
+bin/ocean-lab up -state "$LAB_STATE" -profile lab/profiles/storage-ha.yaml
+python3 lab/storage.py --state "$LAB_STATE"
+python3 lab/verify_storage_backend.py --state "$LAB_STATE"
+python3 lab/prepare_storage_provider.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev9_amd64.deb
+python3 lab/verify_storage_mounts.py --state "$LAB_STATE"
+python3 lab/verify_storage_mounts.py --state "$LAB_STATE" --fence
+python3 lab/verify_storage_mounts.py --state "$LAB_STATE" --observer farm-1-node-03 \
+  --restore-from-backups /path/to/etcd-v3.6.17-linux-amd64.tar.gz
+```
+
+The recovery profile quiesces the writer and releases its RBD map. It saves metadata with `etcdctl snapshot save` and exports the encrypted RBD checkpoint to a separate backup file. It starts a fresh etcd instance and ARM API in a dedicated test guest. The unchanged CLI verifies the share ID, quota, tenant scope, and account credential against the recovered metadata. With the separately held regional wrapping key, `ocean-recover` writes the authorized volume key to a new owner-only file. The recovery guest imports the encrypted image and verifies the workload's checksum. The evidence records artifact hashes and rejects recovery with a different wrapping key or a different tenant identity.

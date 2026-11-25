@@ -33,6 +33,7 @@ type PlacementRequest struct {
 	Resources             enrollment.Capacity `json:"resources"`
 	SubnetID              string              `json:"subnetId,omitempty"`
 	NeedsContainerNetwork bool                `json:"needsContainerNetwork,omitempty"`
+	NeedsStorage          bool                `json:"needsStorage,omitempty"`
 }
 
 type Reservation struct {
@@ -323,7 +324,7 @@ func (r *Region) chooseHost(ctx context.Context, wanted PlacementRequest, pools 
 			return placementHost{}, errors.New("invalid available host record")
 		}
 		if host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) ||
-			wanted.NeedsContainerNetwork && !host.ContainerNetwork {
+			wanted.NeedsContainerNetwork && !host.ContainerNetwork || wanted.NeedsStorage && (r.storage == nil || !slices.Contains(r.storage.workers, host.HostID)) {
 			continue
 		}
 		drainKey := r.hostKey("drain", host.HostID)

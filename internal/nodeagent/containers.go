@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
 )
 
@@ -32,7 +33,7 @@ func validContainerTask(task workload.Task) bool {
 			return false
 		}
 	}
-	return task.Address.Is4() && task.Port >= 1 && task.Port <= 65535 &&
+	return (task.VolumeID == "" || storage.ValidID(task.VolumeID)) && task.Address.Is4() && task.Port >= 1 && task.Port <= 65535 &&
 		(task.State == workload.Running || task.State == workload.Stopped || task.State == workload.Removed)
 }
 
@@ -208,7 +209,8 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 				return report, err
 			}
 		}
-		if _, err := os.Stat(filepath.Join(workloadRuntimeDirectory, name+".network")); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(workloadRuntimeDirectory, name+".network")); errors.Is(err, os.ErrNotExist) &&
+			(task.VolumeID == "" || !writerMounted(task.VolumeID)) {
 			report.State = workload.Removed
 			_ = os.Remove(filepath.Join(j.config.StateDirectory, name+".restart"))
 		}
@@ -216,6 +218,9 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 	}
 	if task.Container == nil {
 		return report, errors.New("workload configuration is missing")
+	}
+	if task.VolumeID != "" && task.State == workload.Running && !mountReady(task.VolumeID, task.Generation) {
+		return report, nil
 	}
 	if task.State == workload.Stopped {
 		if present && status.Running {
@@ -291,7 +296,11 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 	size := strconv.FormatInt(memory, 10) + "m"
 	args := []string{"run", "--detach", "--pull=missing", "--name", name, "--network=none", "--cpus", strconv.FormatFloat(float64(cpu)/1000, 'f', 3, 64),
 		"--memory", size, "--memory-swap", size, "--restart", policy, "--pids-limit=128", "--security-opt=no-new-privileges",
-		"--cap-drop=ALL", "--cap-add=CHOWN", "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=NET_BIND_SERVICE", "--log-driver=k8s-file", "--log-opt=max-size=256kb", "--env-file", file.Name(), "--", c.Image}
+		"--cap-drop=ALL", "--cap-add=CHOWN", "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=NET_BIND_SERVICE", "--log-driver=k8s-file", "--log-opt=max-size=256kb", "--env-file", file.Name()}
+	if task.VolumeID != "" {
+		args = append(args, "--mount", "type=bind,source="+filepath.Join(workloadMountRoot, task.VolumeID)+",target=/data")
+	}
+	args = append(args, "--", c.Image)
 	args = append(args, c.Command...)
 	return podmanAction(ctx, args...)
 }

@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "firewall", "firewall, https, wireguard, or containers")
+	mode := flag.String("mode", "firewall", "firewall, https, wireguard, containers, or storage")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -21,6 +21,8 @@ func main() {
 	switch *mode {
 	case "firewall":
 		err = nodeagent.RunNetworkPolicies(ctx, config+"config.json", config+"network.json", slog.Default())
+	case "storage":
+		err = nodeagent.RunStorage(ctx, config+"storage.json", config+"config.json", slog.Default())
 	case "containers":
 		err = nodeagent.RunContainerNetwork(ctx, config+"workload-network.json", config+"config.json", slog.Default())
 	case "https":

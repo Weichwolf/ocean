@@ -28,6 +28,7 @@ type Task struct {
 	Restart       bool                  `json:"restart,omitempty"`
 	Address       netip.Addr            `json:"address"`
 	Policy        *network.SubnetPolicy `json:"policy,omitempty"`
+	VolumeID      string                `json:"volumeId,omitempty"`
 	Port          int                   `json:"port"`
 	RestartPolicy string                `json:"restartPolicy,omitempty"`
 	Container     *ContainerProperties  `json:"container,omitempty"`

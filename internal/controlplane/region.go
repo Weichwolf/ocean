@@ -37,6 +37,7 @@ type regionConfig struct {
 	ApplicationGateways *applicationGatewayConfig `json:"applicationGateways"`
 	WireGuard           *wireGuardConfig          `json:"wireGuard"`
 	Workloads           *workloadConfig           `json:"workloads"`
+	Storage             *storageConfig            `json:"storage"`
 }
 
 type etcdConfig struct {
@@ -60,7 +61,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
 		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
 	}
-	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil) && cfg.HostEnrollment == nil {
+	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil || cfg.Region.Storage != nil) && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("gateway and workload execution require enrolled hosts")
 	}
 	var hooks service.Hooks
@@ -116,6 +117,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				if region.workloads != nil {
 					resources.Containers = region
 				}
+				if region.storage != nil {
+					resources.Storage = region
+				}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}
 		}
@@ -140,6 +144,7 @@ type Region struct {
 	gatewayControl *gatewayControl
 	wireGuard      *wireGuardConfig
 	workloads      *workloadControl
+	storage        *storageControl
 	cell           string
 }
 
@@ -163,6 +168,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
+	storage, err := openStorageControl(cfg.Storage)
+	if err != nil {
+		return nil, err
+	}
 	connection, err := cfg.Etcd.clientConfig()
 	if err != nil {
 		return nil, err
@@ -174,7 +183,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
 	return &Region{client: client, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
-		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, cell: cfg.InitialCell}, nil
+		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell}, nil
 }
 
 func initialRecords(root, name, cell string) ([2]string, [2]string) {
@@ -213,7 +222,13 @@ func (region *Region) bootstrap(ctx context.Context) error {
 	if err := region.bootstrapWireGuard(ctx); err != nil {
 		return err
 	}
-	return region.bootstrapWorkloads(ctx)
+	if err := region.bootstrapWorkloads(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapStorage(ctx); err != nil {
+		return err
+	}
+	return region.bootstrapFencing(ctx)
 }
 
 func (region *Region) ready(ctx context.Context) error {

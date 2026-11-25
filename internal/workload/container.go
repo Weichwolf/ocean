@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/Weichwolf/ocean/internal/storage"
 )
 
 const (
@@ -35,6 +37,7 @@ type ContainerGroupProperties struct {
 	SubnetIDs     []Subnet    `json:"subnetIds,omitempty"`
 	SKU           string      `json:"sku,omitempty"`
 	Priority      string      `json:"priority,omitempty"`
+	Volumes       []Volume    `json:"volumes,omitempty"`
 }
 
 type Container struct {
@@ -48,7 +51,40 @@ type ContainerProperties struct {
 	Ports                []Port               `json:"ports,omitempty"`
 	EnvironmentVariables []Variable           `json:"environmentVariables,omitempty"`
 	Resources            ResourceRequirements `json:"resources"`
+	VolumeMounts         []VolumeMount        `json:"volumeMounts,omitempty"`
 	ConfigMap            *EmptyConfigMap      `json:"configMap,omitempty"`
+}
+
+type Volume struct {
+	Name      string           `json:"name"`
+	AzureFile *AzureFileVolume `json:"azureFile"`
+}
+
+type AzureFileVolume struct {
+	ShareName          string `json:"shareName"`
+	StorageAccountName string `json:"storageAccountName"`
+	StorageAccountKey  string `json:"storageAccountKey,omitempty"`
+	ReadOnly           bool   `json:"readOnly,omitempty"`
+}
+
+type VolumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+}
+
+func validMount(volumes []Volume, mounts []VolumeMount) bool {
+	if len(volumes) == 0 && len(mounts) == 0 {
+		return true
+	}
+	if len(volumes) != 1 || len(mounts) != 1 {
+		return false
+	}
+	volume, mount := volumes[0], mounts[0]
+	share := volume.AzureFile
+	return ValidName(volume.Name) && volume.Name == mount.Name && mount.MountPath == "/data" && !mount.ReadOnly &&
+		share != nil && !share.ReadOnly && storage.ValidAccount(share.StorageAccountName) && storage.ValidShare(share.ShareName) &&
+		len(share.StorageAccountKey) == 88
 }
 
 type EmptyConfigMap struct {
@@ -109,7 +145,8 @@ func (g *ContainerGroup) Validate(name string) error {
 	}
 	c := &p.Containers[0].Properties
 	if len(c.Image) > 384 || !publicImage.MatchString(c.Image) || strings.Contains(c.Image, "//") || len(c.Command) > 32 ||
-		len(c.EnvironmentVariables) > 32 || c.ConfigMap != nil && len(c.ConfigMap.KeyValuePairs) != 0 {
+		len(c.EnvironmentVariables) > 32 || c.ConfigMap != nil && len(c.ConfigMap.KeyValuePairs) != 0 ||
+		!validMount(p.Volumes, c.VolumeMounts) {
 		return ErrInvalidContainer
 	}
 	if _, _, ok := c.Resources.Requests.Limits(); !ok {
