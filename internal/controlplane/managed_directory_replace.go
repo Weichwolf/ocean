@@ -71,7 +71,7 @@ func (r *Region) placeDirectoryReplicaReplacement(ctx context.Context, tenantID,
 	if target.host.HostID == primary.HostID || target.host.HostID == old.HostID {
 		return errors.New("the replacement host must be distinct from both original placements")
 	}
-	oldUsage, err := r.counter(ctx, r.hostKey("placement-usage", old.HostID))
+	oldUsage, err := r.counter(ctx, r.hostKey("placement-usage", old.HostID), clientv3.WithRev(revision))
 	if err != nil {
 		return err
 	}

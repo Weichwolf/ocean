@@ -65,9 +65,9 @@ func addCapacity(a, b enrollment.Capacity) enrollment.Capacity {
 	return enrollment.Capacity{CPUMillis: a.CPUMillis + b.CPUMillis, MemoryMiB: a.MemoryMiB + b.MemoryMiB}
 }
 
-func (r *Region) counter(ctx context.Context, key string) (capacityCounter, error) {
+func (r *Region) counter(ctx context.Context, key string, options ...clientv3.OpOption) (capacityCounter, error) {
 	counter := capacityCounter{key: key}
-	result, err := r.client.Get(ctx, key)
+	result, err := r.client.Get(ctx, key, options...)
 	if err != nil || len(result.Kvs) == 0 {
 		return counter, err
 	}

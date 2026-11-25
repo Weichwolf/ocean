@@ -254,7 +254,7 @@ func (r *Region) allocateDirectoryRecovery(ctx context.Context, directory identi
 	}
 	for i, old := range placement.Controllers {
 		target := targets[i]
-		remaining, err := r.counter(ctx, r.hostKey("placement-usage", old.HostID))
+		remaining, err := r.counter(ctx, r.hostKey("placement-usage", old.HostID), clientv3.WithRev(rev))
 		if err != nil {
 			return nil, nil, err
 		}
