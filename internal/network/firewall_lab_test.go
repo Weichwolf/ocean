@@ -5,6 +5,7 @@ package network
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -129,8 +130,11 @@ func TestRoutedPodmanFirewall(t *testing.T) {
 			if err != nil || string(out) != "ocean-firewall\n" {
 				t.Fatalf("ingress %s:%s should reach the fixture: %v: %s", host, port, err, out)
 			}
-		} else if failure, ok := err.(*exec.ExitError); !ok || failure.ExitCode() != 28 {
-			t.Fatalf("ingress %s:%s should time out: %v: %s", host, port, err, out)
+		} else {
+			var failure *exec.ExitError
+			if !errors.As(err, &failure) || failure.ExitCode() != 28 {
+				t.Fatalf("ingress %s:%s should time out: %v: %s", host, port, err, out)
+			}
 		}
 	}
 	egress := func(host, port string, allowed bool, options ...string) {
@@ -143,7 +147,8 @@ func TestRoutedPodmanFirewall(t *testing.T) {
 			t.Fatalf("egress %s:%s should receive an HTTP response: %v: %s", host, port, err, out)
 		}
 		if !allowed {
-			if failure, ok := err.(*exec.ExitError); !ok || failure.ExitCode() != 28 {
+			var failure *exec.ExitError
+			if !errors.As(err, &failure) || failure.ExitCode() != 28 {
 				t.Fatalf("egress %s:%s should time out: %v: %s", host, port, err, out)
 			}
 		}

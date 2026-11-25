@@ -69,7 +69,7 @@ func LoadPlan(path string) (Plan, error) {
 	if err := decoder.Decode(&settings); err != nil {
 		return Plan{}, fmt.Errorf("read profile: %w", err)
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return Plan{}, errors.New("profile must contain one YAML document")
 	}
 	return settings.plan()

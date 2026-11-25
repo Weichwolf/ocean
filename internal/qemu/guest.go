@@ -187,7 +187,10 @@ func (g Guest) waitForStart(ctx context.Context, exited <-chan error) error {
 	for {
 		select {
 		case err := <-exited:
-			return fmt.Errorf("KVM guest exited before startup completed: %v", err)
+			if err == nil {
+				return errors.New("KVM guest exited before startup completed")
+			}
+			return fmt.Errorf("KVM guest exited before startup completed: %w", err)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
