@@ -272,6 +272,13 @@ separate Ceph guests use 24 GiB dedicated data disks. Both disk capacities
 are sparse allocations on the development host. To conserve memory, start
 only the required compute and storage hosts with `ocean-lab up -only`.
 
+For a private-network regression check, compile `./internal/nodeagent` with
+`go test -tags=e2e -c`. On a disposable Debian worker with `curl` and the
+private `work0` fabric, run `TestVMNetworkOnDebianWorker` under root with
+`OCEAN_E2E_VM_TAP=1`. The test verifies routing to the TAP, observes a denied
+TCP connection in the ingress drop counter, and releases the fabric MAC on
+cleanup.
+
 The packaged lifecycle probe uses a disposable `vm-ha` lab with compute host
 `farm-1-node-05`, the replicated Ceph pool, and an isolated loopback etcd
 endpoint. Stage the private image files as `root:root` with mode `0600` on
