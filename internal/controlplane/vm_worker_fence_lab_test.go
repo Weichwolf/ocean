@@ -33,11 +33,10 @@ const vmLabSpare = "farm-1-node-06"
 
 type packagedVMFence struct {
 	planned lab.Plan
-	fencer  ed25519.PublicKey
 	auth    []byte
 }
 
-func loadPackagedVMFence(t *testing.T, state string) *packagedVMFence {
+func loadPackagedVMFence(t *testing.T) *packagedVMFence {
 	t.Helper()
 	authPath := os.Getenv("OCEAN_E2E_VM_SMB_AUTH")
 	if authPath == "" {
@@ -56,6 +55,11 @@ func loadPackagedVMFence(t *testing.T, state string) *packagedVMFence {
 	if err != nil {
 		t.Fatalf("load the original VM lab profile: %v", err)
 	}
+	return &packagedVMFence{planned: plan, auth: auth}
+}
+
+func packagedVMFencerKey(t *testing.T, state string) ed25519.PublicKey {
+	t.Helper()
 	cert, err := os.ReadFile(filepath.Join(state, "storage-pki", "lab-fencer.pub"))
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +73,7 @@ func loadPackagedVMFence(t *testing.T, state string) *packagedVMFence {
 	if err != nil || !ok {
 		t.Fatal("the lab fencer requires an Ed25519 public key")
 	}
-	return &packagedVMFence{planned: plan, fencer: fencer, auth: auth}
+	return fencer
 }
 
 type windowsVMCheckpoint struct {

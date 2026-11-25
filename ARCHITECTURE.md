@@ -104,8 +104,9 @@ and [capacity reservations](lab/README.md#leased-host-capacity-and-reservations)
 
 ### Optional tenant VMs
 
-The VM profile admits prepared Windows Server 2025 Core images on
-qualified Debian KVM workers. Its ARM contract covers image registration,
+The VM profile admits prepared Debian and Windows Server 2025 Core images on
+qualified Debian KVM workers. The subscription catalog binds the OS type to
+the image and UEFI digests. Its ARM contract covers image registration,
 private NIC allocation, VM and disk reads, VM start, graceful power-off and
 deletion. A single transaction reserves CPU, RAM and the persistent OS disk
 when the VM is created. The reservations stay charged while it is stopped.

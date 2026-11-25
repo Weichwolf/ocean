@@ -147,6 +147,19 @@ VM-01	vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {vmId}?api-ver
 VM-01	vm-private-nic-delete	2.93.0	none	2024-05-01	rest --method delete --url {nicId}?api-version=2024-05-01 -o json
 VM-01	vm-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId}?api-version=2024-07-01 -o json
 VM-02	vm-replacement-power-state	2.93.0	none	2024-03-01	rest --method get --url {vmId}/instanceView?api-version=2024-03-01 -o json
+VM-03	linux-image-put	2.93.0	none	2024-07-01	rest --method put --url {imageId}?api-version=2024-07-01 --body @{linuxImageBody} -o json
+VM-03	linux-image-get	2.93.0	none	2024-07-01	rest --method get --url {imageId}?api-version=2024-07-01 -o json
+VM-03	linux-private-nic-put	2.93.0	none	2024-05-01	rest --method put --url {nicId}?api-version=2024-05-01 --body @{nicBody} -o json
+VM-03	linux-private-nic-get	2.93.0	none	2024-05-01	rest --method get --url {nicId}?api-version=2024-05-01 -o json
+VM-03	linux-os-disk-get	2.93.0	none	2024-03-02	rest --method get --url {diskId}?api-version=2024-03-02 -o json
+VM-03	linux-vm-put-replay	2.93.0	none	2024-03-01	rest --method put --url {vmId}?api-version=2024-03-01 --body @{smallDebianVmBody} -o json
+VM-03	linux-vm-get	2.93.0	none	2024-03-01	rest --method get --url {vmId}?api-version=2024-03-01 -o json
+VM-03	linux-vm-power-state	2.93.0	none	2024-03-01	rest --method get --url {vmId}/instanceView?api-version=2024-03-01 -o json
+VM-03	linux-vm-power-off	2.93.0	none	2024-03-01	rest --method post --url {vmId}/powerOff?api-version=2024-03-01 -o json
+VM-03	linux-vm-start	2.93.0	none	2024-03-01	rest --method post --url {vmId}/start?api-version=2024-03-01 -o json
+VM-03	linux-vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {vmId}?api-version=2024-03-01 -o json
+VM-03	linux-private-nic-delete	2.93.0	none	2024-05-01	rest --method delete --url {nicId}?api-version=2024-05-01 -o none
+VM-03	linux-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId}?api-version=2024-07-01 -o json
 WORKPLACE-17	web-app-register	2.93.0	none	v1.0	ad app create --display-name {name} --sign-in-audience AzureADMyOrg --web-redirect-uris {callback} -o json
 WORKPLACE-17	web-app-show	2.93.0	none	v1.0	ad app show --id {appId} -o json
 WORKPLACE-20	web-admin-login	2.93.0	none	v2.0+2022-12-01	login --tenant {tenant} --use-device-code -o none

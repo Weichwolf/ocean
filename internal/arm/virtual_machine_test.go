@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Weichwolf/ocean/internal/identity"
+	"github.com/Weichwolf/ocean/internal/workload"
 )
 
 type vmRouteStore struct {
@@ -91,5 +92,31 @@ func TestVirtualMachineARMProfile(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVMImageDiskProfile(t *testing.T) {
+	image := VMImageRequest{Location: "lab"}
+	image.Properties.HyperVGeneration = "V2"
+	disk := &image.Properties.StorageProfile.OSDisk
+	disk.OSState, disk.BlobURI = "Specialized", "https://images.ocean.test/boot.raw"
+	for _, tc := range []struct {
+		osType string
+		size   int64
+		valid  bool
+	}{
+		{workload.VMLinux, 0, true},
+		{workload.VMLinux, 7, false},
+		{workload.VMLinux, 8, true},
+		{workload.VMLinux, 129, false},
+		{workload.VMWindows, 0, true},
+		{workload.VMWindows, 8, false},
+		{workload.VMWindows, 32, true},
+		{"Other", 32, false},
+	} {
+		disk.OSType, disk.DiskSizeGB = tc.osType, tc.size
+		if image.valid("lab") != tc.valid {
+			t.Errorf("image OS %q with %d GiB did not match expected validity %t", tc.osType, tc.size, tc.valid)
+		}
 	}
 }

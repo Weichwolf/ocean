@@ -29,7 +29,7 @@ func (r *Region) PutVMImage(ctx context.Context, scope arm.SubscriptionScope, ac
 		return arm.InventoryResource{}, false, arm.ErrVMImageUnavailable
 	}
 	image, ok := r.vms.images[vmCatalogKey{scope, disk.BlobURI}]
-	if !ok || disk.DiskSizeGB != 0 && disk.DiskSizeGB != image.SizeGiB {
+	if !ok || disk.OSType != vmOperatingSystem(image.OSType) || disk.DiskSizeGB != 0 && disk.DiskSizeGB != image.SizeGiB {
 		return arm.InventoryResource{}, false, arm.ErrVMImageUnavailable
 	}
 	input.Properties.StorageProfile.OSDisk.DiskSizeGB = image.SizeGiB

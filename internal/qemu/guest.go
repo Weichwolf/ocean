@@ -31,7 +31,7 @@ func MAC(id string) string {
 	return net.HardwareAddr{(sum[0] & 0xfc) | 2, sum[1], sum[2], sum[3], sum[4], sum[5]}.String()
 }
 
-// Guest is a Server Core runtime on an enrolled Debian KVM worker. The caller
+// Guest is a virtual machine runtime on an enrolled Debian KVM worker. The caller
 // owns the writer grant for Disk and FirmwareVars and prepares Tap before Start.
 // The runtime directory must be private to the local worker account.
 type Guest struct {

@@ -47,7 +47,7 @@ func validSHA256(digest string) bool {
 }
 
 func (d VMDisk) Valid() bool {
-	return vmDiskID(d.ID) && ValidID(d.ID) && len(d.ID) > 3 && d.SizeGiB >= 32 && d.SizeGiB <= 128 &&
+	return vmDiskID(d.ID) && ValidID(d.ID) && len(d.ID) > 3 && d.SizeGiB >= 8 && d.SizeGiB <= 128 &&
 		validSHA256(d.ImageSHA256) && validSHA256(d.FirmwareSHA256)
 }
 

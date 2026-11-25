@@ -43,6 +43,7 @@ type vmRecord struct {
 	Fenced      bool                      `json:"fenced,omitempty"`
 	Operation   string                    `json:"operation"`
 	Creation    string                    `json:"creation"`
+	OSType      string                    `json:"osType,omitempty"`
 }
 
 func (r *Region) vmPrefix(scope arm.SubscriptionScope, group string) string {
@@ -103,6 +104,7 @@ func decodeVM(value []byte, address arm.ResourceAddress) (vmRecord, error) {
 	var record vmRecord
 	if json.Unmarshal(value, &record) != nil || record.Address.Key() != address.Key() || !record.Address.Valid() ||
 		!identifier.MatchString(record.MachineID) || record.Disk.ID != "vm-"+record.MachineID || !record.Disk.Valid() ||
+		!workload.ValidVMImageDiskSize(vmOperatingSystem(record.OSType), record.Disk.SizeGiB) ||
 		!record.Image.Valid() || !record.DiskAddress.Valid() || !record.NIC.Valid() ||
 		!identifier.MatchString(record.Operation) || !identifier.MatchString(record.Creation) || !record.Reservation.NeedsVMRuntime {
 		return vmRecord{}, errors.New("invalid VM resource record")
@@ -116,7 +118,7 @@ func projectVM(scope arm.SubscriptionScope, record vmRecord, status string, born
 		"vmId": record.MachineID, "provisioningState": status, "hardwareProfile": request.Properties.HardwareProfile,
 		"storageProfile": map[string]any{
 			"imageReference": map[string]string{"id": record.Image.ID(scope)},
-			"osDisk": map[string]any{"name": request.Properties.StorageProfile.OSDisk.Name, "osType": "Windows", "createOption": "FromImage",
+			"osDisk": map[string]any{"name": request.Properties.StorageProfile.OSDisk.Name, "osType": vmOperatingSystem(record.OSType), "createOption": "FromImage",
 				"deleteOption": "Delete", "diskSizeGB": record.Disk.SizeGiB,
 				"managedDisk": map[string]string{"id": record.DiskAddress.ID(scope), "storageAccountType": "Standard_LRS"}},
 		},
@@ -130,7 +132,7 @@ func projectVM(scope arm.SubscriptionScope, record vmRecord, status string, born
 }
 
 func projectVMDisk(scope arm.SubscriptionScope, record vmRecord, status string, born, now time.Time) arm.InventoryResource {
-	properties, _ := json.Marshal(map[string]any{"diskSizeGB": record.Disk.SizeGiB, "osType": "Windows", "hyperVGeneration": "V2",
+	properties, _ := json.Marshal(map[string]any{"diskSizeGB": record.Disk.SizeGiB, "osType": vmOperatingSystem(record.OSType), "hyperVGeneration": "V2",
 		"provisioningState": status, "diskState": "Attached", "creationData": map[string]any{"createOption": "FromImage",
 			"imageReference": map[string]string{"id": record.Image.ID(scope)}}})
 	return arm.InventoryResource{Address: record.DiskAddress, APIVersion: arm.VMDiskAPIVersion, Location: record.Request.Location,
@@ -154,7 +156,7 @@ func (r *Region) CreateVirtualMachine(ctx context.Context, scope arm.Subscriptio
 		Resources: enrollment.Capacity{CPUMillis: int64(size.VCPUs) * 1000, MemoryMiB: int64(size.MemoryMiB)}}
 	var submitted string
 	_, err := r.reservePlacement(ctx, scope, request, func(ctx context.Context, reservation Reservation) ([]clientv3.Cmp, []clientv3.Op, error) {
-		return r.prepareVMCreate(ctx, scope, actor, address, wanted, reservation, &submitted)
+		return r.prepareVMCreate(ctx, scope, actor, address, wanted, size, reservation, &submitted)
 	})
 	switch {
 	case errors.Is(err, ErrQuotaExceeded):
@@ -175,7 +177,7 @@ func (r *Region) CreateVirtualMachine(ctx context.Context, scope arm.Subscriptio
 }
 
 func (r *Region) prepareVMCreate(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress, wanted arm.VirtualMachineRequest,
-	reservation Reservation, submitted *string) ([]clientv3.Cmp, []clientv3.Op, error) {
+	size workload.VMSize, reservation Reservation, submitted *string) ([]clientv3.Cmp, []clientv3.Op, error) {
 	imageRef, imageOK := arm.NetworkResourceAddress(scope, wanted.Properties.StorageProfile.ImageReference.ID, arm.VMImageType)
 	nicRef, nicOK := arm.NetworkResourceAddress(scope, wanted.Properties.NetworkProfile.NetworkInterfaces[0].ID, arm.VMNetworkInterfaceType)
 	if !imageOK || !nicOK || !strings.EqualFold(address.Group, imageRef.Group) || !strings.EqualFold(address.Group, nicRef.Group) {
@@ -226,9 +228,13 @@ func (r *Region) prepareVMCreate(ctx context.Context, scope arm.SubscriptionScop
 	if err := json.Unmarshal(image.Properties, &imageProperties.Properties); err != nil {
 		return nil, nil, err
 	}
-	catalog, allowed := r.vms.images[vmCatalogKey{scope, imageProperties.Properties.StorageProfile.OSDisk.BlobURI}]
-	if !allowed || catalog.SizeGiB != imageProperties.Properties.StorageProfile.OSDisk.DiskSizeGB {
+	imageDisk := imageProperties.Properties.StorageProfile.OSDisk
+	catalog, allowed := r.vms.images[vmCatalogKey{scope, imageDisk.BlobURI}]
+	if !allowed || catalog.SizeGiB != imageDisk.DiskSizeGB || vmOperatingSystem(catalog.OSType) != imageDisk.OSType {
 		return nil, nil, arm.ErrVMImageUnavailable
+	}
+	if size.RequiredOS != "" && size.RequiredOS != imageDisk.OSType {
+		return nil, nil, arm.ErrVMSizeUnsupported
 	}
 	diskUsageGuard, diskUsageUpdate, err := r.changeVMDiskUsage(ctx, scope, catalog.SizeGiB)
 	if err != nil {
@@ -239,7 +245,7 @@ func (r *Region) prepareVMCreate(ctx context.Context, scope arm.SubscriptionScop
 	op := arm.Operation{ID: operationID(), Kind: createVM, Group: group.Name, Actor: actor, Status: arm.OperationInProgress, StartedAt: now}
 	machine := operationID()
 	record := vmRecord{Address: address, MachineID: machine, Request: wanted, Reservation: reservation, Desired: workload.Running,
-		Image: image.Address, NIC: nic.Address, DiskAddress: diskAddress, Disk: catalog.disk("vm-" + machine), Operation: op.ID, Creation: op.ID}
+		Image: image.Address, NIC: nic.Address, DiskAddress: diskAddress, Disk: catalog.disk("vm-" + machine), Operation: op.ID, Creation: op.ID, OSType: catalog.OSType}
 	secret := make([]byte, storage.KeySize)
 	rand.Read(secret)
 	record.Envelope = r.storage.sealer.Seal(nil, nil, secret, r.vmKeyLabel(scope, record))

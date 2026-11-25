@@ -329,6 +329,25 @@ mutation for the old handle and a new connection using only the cached
 ticket to lose access. An unaffected reader must still read the
 checkpoint and receive a denial on writes.
 
+Select `WORKPLACE-32` to exercise the desktop credential path in the
+disposable Samba and SMB lab. The controller creates a temporary service
+account with protocol transition and one CIFS delegation target. It obtains
+a service-only cache through MIT Kerberos S4U and rejects a request for the
+controller's LDAP service. The Debian fixture runs as the mapped AD user,
+writes and reads back a file over encrypted SMB, and verifies the personal
+identity in Samba's file audit. The probe measures the service ticket lifetime
+with a maximum of five minutes. The temporary broker account, keytab and
+caches are removed after the run. This is a credential probe for the
+desktop workflow. Browser admission, RDP session authentication and active
+session revocation are separate acceptance requirements.
+[MIT Kerberos kvno](https://web.mit.edu/Kerberos/www/krb5-1.21/doc/user/user_commands/kvno.html)
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-32 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" \
+  go test -mod=readonly -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Windows and Debian SMB access
 
 For `WORKPLACE-28`, start the joined Server Core fixture on the same
@@ -677,11 +696,45 @@ OCEAN_E2E_PROFILE=vm-worker \
     -run '^TestAcceptance$' ./tests/e2e
 ```
 
+### Small Debian desktop VM
+
+For `VM-03`, prepare a disposable Debian 13 UEFI cloud image on an 8 GiB
+raw disk with its own OVMF variables file. Boot it with a temporary NoCloud
+seed that sets the fixture's SSH public key, then run
+`lab/prepare_debian_desktop.sh` as root. Power the guest off before hashing
+the raw disk and OVMF variables. Stage the two files on the primary compute
+worker under their SHA-256 names with mode `0600`. Use the pinned host key
+for `10.232.1.20` in the fixture's known-hosts file. Use this snapshot in
+the isolated lab with a single provisioned guest.
+
+The worker must run the current Debian package. The isolated Ceph pool must
+be available and the private client on `farm-1-node-07` needs SSH TCP
+forwarding and `nc`. The case uses stock Azure CLI 2.93.0 and a test ARM
+identity to register the Linux image, allocate a private NIC, and create and
+operate a `Standard_B1s` VM. It checks that XRDP accepts a private TCP
+connection and recovers an acknowledged home directory file after a power
+cycle. The case exercises the VM data path and the RDP listener.
+
+```sh
+OCEAN_E2E_PROFILE=vm-worker-linux \
+  OCEAN_E2E_VM_LINUX_STATE="$LAB_STATE" \
+  OCEAN_E2E_VM_LINUX_DISK_PIN="$DEBIAN_DISK_SHA256" \
+  OCEAN_E2E_VM_LINUX_VARS_PIN="$DEBIAN_VARS_SHA256" \
+  OCEAN_E2E_VM_LINUX_SSH_KEY="$DEBIAN_FIXTURE_SSH_KEY" \
+  OCEAN_E2E_VM_LINUX_KNOWN_HOSTS="$DEBIAN_FIXTURE_KNOWN_HOSTS" \
+  OCEAN_E2E_VM_ETCD="$DISPOSABLE_ETCD_ENDPOINT" OCEAN_E2E_VM_AZ="$(command -v az)" \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=20m -v \
+    -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Regional VM store probe
 
 The optional `region.virtualMachines` configuration registers the catalog
 for the regional ARM routes. Each `images` entry specifies `tenantId`,
 `subscriptionId`, `blobUri`, `sizeGiB`, `imageSha256` and `firmwareSha256`.
+Set `osType` to `Linux` for a qualified Linux image. Existing catalog entries
+without `osType` default to Windows. A registered image must use the OS in its
+catalog entry. The minimum disk is 8 GiB for Linux and 32 GiB for Windows.
 The HTTPS URI identifies an operator-prepared image in that subscription.
 Catalog lookups use the URI as an identifier. Workers use the paired digests
 to verify the files staged by the operator. The optional `diskQuotaGiB`
