@@ -109,6 +109,8 @@ func parseRoute(segments []string) armRoute {
 					return armRoute{collection: "desktopAuthorization", group: group, name: segments[7]}
 				case "launch":
 					return armRoute{collection: "desktopLaunch", group: group, name: segments[7]}
+				case "renew":
+					return armRoute{collection: "desktopRenew", group: group, name: segments[7]}
 				}
 			}
 			if len(segments) == 8 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) {
@@ -230,8 +232,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			fallback.ServeHTTP(w, r)
 			return
 		}
-		if route.collection == "desktopAuthorization" || route.collection == "desktopLaunch" {
-			s.authorizePersonalDesktop(w, r, segments[1], route.group, route.name, route.collection == "desktopLaunch")
+		if route.collection == "desktopAuthorization" || route.collection == "desktopLaunch" || route.collection == "desktopRenew" {
+			s.authorizePersonalDesktop(w, r, segments[1], route.group, route.name, route.collection)
 			return
 		}
 		timeout := 5 * time.Second

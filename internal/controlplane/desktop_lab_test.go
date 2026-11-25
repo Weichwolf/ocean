@@ -125,7 +125,21 @@ func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.
 		}
 	}
 	check("desktop-a", browserUser, assigned, nil)
-	f.verifyDesktopLaunch(t, r, scope, vmA, assigned, browserUser, gateways, nonGateway)
+	scopedUser := browserUser
+	scopedUser.AppGroupIDs = []string{securityGroup.ID}
+	check("desktop-a", scopedUser, assigned, arm.ErrDesktopDenied)
+	f.observe()
+	az(false, "ad", "group", "member", "add", "--group", securityGroup.ID, "--member-id", user.ID, "-o", "none")
+	f.verifyDesktopLaunch(t, r, scope, vmA, assigned, scopedUser, gateways, nonGateway)
+	f.observe()
+	az(false, "ad", "group", "member", "remove", "--group", securityGroup.ID, "--member-id", user.ID, "-o", "none")
+	f.observe()
+	started := time.Now()
+	if _, err := r.RenewPersonalDesktop(f.ctx, scopedUser, arm.ResourceAddress{Group: group, Path: arm.DesktopType + "/desktop-a"},
+		gateways[1].host, gateways[1].certificate); !errors.Is(err, arm.ErrDesktopDenied) {
+		t.Fatalf("the desktop application group withdrawal left a direct assignment authorized: %v", err)
+	}
+	t.Logf("the first renewal after removing the desktop application group denied access in %s", time.Since(started).Round(time.Millisecond))
 	if _, err := r.client.Delete(f.ctx, hostKey); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +250,8 @@ func (f regionalGraphFixture) verifyDesktopLaunch(t *testing.T, r *Region, scope
 	}
 	address := arm.ResourceAddress{Group: vm.Group, Path: arm.DesktopType + "/desktop-a"}
 	endpoint := f.api.URL + address.ID(scope) + "/launch?api-version=" + arm.DesktopAPIVersion
-	bearer := "Bearer fixture-browser:" + user.UserID
+	renew := strings.Replace(endpoint, "/launch?", "/renew?", 1)
+	bearer := "Bearer fixture-browser:" + user.UserID + ":" + user.AppGroupIDs[0]
 	request := func(client *http.Client, url, auth string, expected int, code string) arm.DesktopLaunch {
 		t.Helper()
 		f.observe()
@@ -288,7 +303,14 @@ func (f regionalGraphFixture) verifyDesktopLaunch(t *testing.T, r *Region, scope
 			t.Fatalf("guest rejected the regional credential: %v", err)
 		}
 	}
-	assertCredential(request(first.client, endpoint, bearer, http.StatusOK, ""))
+	launched := request(first.client, endpoint, bearer, http.StatusOK, "")
+	assertCredential(launched)
+	renewed := request(first.client, renew, bearer, http.StatusOK, "")
+	prior := launched.DesktopSession
+	prior.ExpiresAt = renewed.ExpiresAt
+	if renewed.Credential != "" || renewed.DesktopSession != prior || !time.Now().Before(renewed.ExpiresAt) {
+		t.Fatal("desktop renewal did not preserve the session binding")
+	}
 	nic.VMID = operationID()
 	storeNIC()
 	request(first.client, endpoint, bearer, http.StatusServiceUnavailable, "DesktopUnavailable")
@@ -310,6 +332,7 @@ func (f regionalGraphFixture) verifyDesktopLaunch(t *testing.T, r *Region, scope
 		t.Fatal(err)
 	}
 	request(first.client, endpoint, bearer, http.StatusForbidden, "DesktopGatewayDenied")
+	request(first.client, renew, bearer, http.StatusForbidden, "DesktopGatewayDenied")
 	switched := time.Now()
 	assertCredential(request(second.client, endpoint, bearer, http.StatusOK, ""))
 	t.Logf("a second enrolled gateway obtained a guest-verifiable credential in %s after revoking the first gateway",
@@ -350,6 +373,7 @@ func seedDesktopLabVM(t *testing.T, f regionalGraphFixture, r *Region, scope arm
 	record.Request.Location = r.name
 	record.Reservation.NeedsVMRuntime = true
 	record.Reservation.HostID, record.Reservation.Cell = desktopLabHost, r.cell
+	record.Reservation.Generation = operationID()
 	record.Disk = storage.VMDisk{ID: "vm-" + record.MachineID, SizeGiB: 32, ImageSHA256: strings.Repeat("a", 64), FirmwareSHA256: strings.Repeat("b", 64)}
 	if _, err := r.client.Txn(f.ctx).Then(putJSON(r.vmKey(scope, address), record), putJSON(r.operationKey(scope, op.ID), op),
 		putJSON(r.inventoryPrefix(scope)+address.Key(), projectVM(scope, record, vmSucceeded, now, now))).Commit(); err != nil {

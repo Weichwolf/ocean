@@ -165,7 +165,8 @@ func (c *Compatibility) manageWebApplication(ctx context.Context, w http.Respons
 		webPolicyUnavailable(w)
 		return
 	}
-	providerID, err := admin.publishDirectoryWebApplication(ctx, tenant, *directory, *app, request.GroupIDs)
+	providerID, err := admin.publishDirectoryWebApplication(ctx, tenant, *directory, *app, request.GroupIDs,
+		configuration.DesktopApplicationID == app.ID)
 	if err != nil {
 		webPolicyUnavailable(w)
 		return

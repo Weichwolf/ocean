@@ -79,11 +79,7 @@ func (r *Region) bootstrapDesktopLaunch(ctx context.Context) error {
 }
 
 func (r *Region) LaunchPersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, gateway string, certificate []byte) (arm.DesktopLaunch, error) {
-	guards, err := r.desktopGatewayGuards(ctx, gateway, certificate)
-	if err != nil {
-		return arm.DesktopLaunch{}, err
-	}
-	access, err := r.resolvePersonalDesktop(ctx, principal, address, guards)
+	access, err := r.resolveGatewayDesktop(ctx, principal, address, gateway, certificate, true)
 	if err != nil {
 		return arm.DesktopLaunch{}, err
 	}
@@ -92,8 +88,19 @@ func (r *Region) LaunchPersonalDesktop(ctx context.Context, principal identity.D
 	if err != nil {
 		return arm.DesktopLaunch{}, arm.ErrDesktopDenied
 	}
-	access.Credential = password
-	return access, nil
+	return arm.DesktopLaunch{DesktopSession: access, Credential: password}, nil
+}
+
+func (r *Region) RenewPersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, gateway string, certificate []byte) (arm.DesktopSession, error) {
+	return r.resolveGatewayDesktop(ctx, principal, address, gateway, certificate, false)
+}
+
+func (r *Region) resolveGatewayDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, gateway string, certificate []byte, launch bool) (arm.DesktopSession, error) {
+	guards, err := r.desktopGatewayGuards(ctx, gateway, certificate)
+	if err != nil {
+		return arm.DesktopSession{}, err
+	}
+	return r.resolvePersonalDesktop(ctx, principal, address, guards, launch)
 }
 
 func (r *Region) desktopGatewayGuards(ctx context.Context, gateway string, certificate []byte) ([]clientv3.Cmp, error) {

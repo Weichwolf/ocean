@@ -45,13 +45,33 @@ def desktop_user(database, task):
     view = user_view(database, user)
     if not view["accountEnabled"]:
         raise GraphFailure(404)
-    if "groupId" in task:
+    if "groupId" in task or task["operation"] == "userDesktopSessionCheck":
         scope = ldb.Dn(database, GROUP_OU + "," + database.domain_dn())
-        group = group_by_selector(database, scope, task["groupId"])
-        expression = f"(memberOf={ldb.binary_encode(str(group.dn))})"
-        if not database.search(base=user.dn, scope=ldb.SCOPE_BASE, expression=expression, attrs=[]):
+        if "groupId" in task:
+            group = group_by_selector(database, scope, task["groupId"])
+            expression = f"(memberOf={ldb.binary_encode(str(group.dn))})"
+            if not database.search(base=user.dn, scope=ldb.SCOPE_BASE, expression=expression, attrs=[]):
+                raise GraphFailure(404)
+        if task["operation"] == "userDesktopSessionCheck" and not has_application_grant(database, scope, user, task.get("applicationGroupIds")):
             raise GraphFailure(404)
     return {"status": 200, "user": view}
+
+
+def has_application_grant(database, scope, user, group_ids):
+    if not isinstance(group_ids, list) or not 1 <= len(group_ids) <= 32 or any(
+            not isinstance(group_id, str) or not REQUEST_ID.fullmatch(group_id) for group_id in group_ids):
+        raise GraphFailure(400)
+    for group_id in group_ids:
+        try:
+            group = group_by_selector(database, scope, group_id)
+        except GraphFailure as error:
+            if error.status != 404:
+                raise
+            continue
+        expression = f"(memberOf={ldb.binary_encode(str(group.dn))})"
+        if database.search(base=user.dn, scope=ldb.SCOPE_BASE, expression=expression, attrs=[]):
+            return True
+    return False
 
 
 def create(database, scope, fields):

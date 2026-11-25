@@ -708,7 +708,11 @@ status using the native object ID. The launch probe uses two client certificates
 over real mTLS and a fixture browser principal. It rejects a missing, unlisted
 or replaced certificate, an ARM bearer, a foreign subscription and an invalid
 NIC binding. After revoking the first gateway it verifies that the other can
-obtain a credential the guest verifier accepts. The companion case `VM-03`
+obtain a credential the guest verifier accepts. It checks that renewal requires
+the same enrolled gateway identity and returns the session binding without an
+RDP credential. Removing the user from the application's AD group denies
+renewal even when the desktop was assigned directly to that user. Use a Samba
+worker image with the desktop session authorization operation. The companion case `VM-03`
 boots the small Debian VM and verifies profile persistence.
 
 ```sh
@@ -732,6 +736,61 @@ The no-store response contains the authorized user, a 15-second maximum
 single-use RDP credential and the NIC and subnet of the destination. The
 gateway must establish the connection in that tenant subnet and keep the
 credential within the gateway-to-guest connection.
+
+### HTTPS desktop gateway
+
+Run `ocean-desktop-gateway -config gateway.json` on an enrolled gateway.
+Deploy two instances with independent host identities behind the redundant
+HTTPS frontend. Configure the same public origin, OIDC client and desktop
+routes on both. Each route maps an allowlisted browser slug to one assignment
+and to the guest's expected subnet and SHA-256 XRDP certificate fingerprint.
+Run Apache Guacamole 1.6.0 `guacd` locally with access to the private subnet
+and expose it only on loopback. The reference linux/amd64 image is
+`docker.io/guacamole/guacd@sha256:f39258e35244b6bf79bc6ac4e60eee176aea6f6a5adb13e8c3090e48df8ae515`.
+
+Register `https://desktop.example.test/oauth/callback` in the dedicated
+desktop application and set that application's object ID as
+`desktopApplicationId` in the tenant's regional identity configuration.
+Apply the existing web application policy to enable sign-in and the desktop
+refresh profile. The gateway uses the application's client ID in its own
+settings. Obtain `guacamole-common-js/all.min.js` from the verified
+[Apache Guacamole 1.6.0 release WAR](https://guacamole.apache.org/releases/1.6.0/).
+
+```json
+{
+  "listenAddress": "0.0.0.0:8443",
+  "tls": {
+    "certificateFile": "/etc/ocean-desktop/tls.pem",
+    "keyFile": "/etc/ocean-desktop/tls.key"
+  },
+  "publicOrigin": "https://desktop.example.test",
+  "hostConfigFile": "/etc/ocean-agent/config.json",
+  "identity": {
+    "issuer": "https://identity.example.test/realms/84b678b0-0a39-47d3-a355-ff4d84de4a83",
+    "caFile": "/etc/ocean-desktop/identity-ca.pem",
+    "clientId": "49ed3571-cafa-493d-9001-7fb492b8be44"
+  },
+  "guacamoleScriptFile": "/usr/local/share/ocean-desktop/guacamole.min.js",
+  "guacamoleScriptSha256": "cc89f710ecc544477dbe6bfea453fab752dafa1b1ab9770f523676e7b744b44a",
+  "maximumConcurrent": 32,
+  "desktops": {
+    "personal": {
+      "desktopId": "/subscriptions/310dee94-5876-489a-a5a9-4e25515f30e6/resourceGroups/workplace/providers/Ocean.Desktop/personalDesktops/personal",
+      "subnetId": "/subscriptions/310dee94-5876-489a-a5a9-4e25515f30e6/resourceGroups/workplace/providers/Microsoft.Network/virtualNetworks/office/subnets/desktop",
+      "fingerprint": "12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34",
+      "guacd": "127.0.0.1:4822"
+    }
+  }
+}
+```
+
+Open `https://desktop.example.test/d/personal`. Provision the fingerprint
+from the intended guest certificate over an authenticated channel. The
+gateway uses TLS on the public listener and for the private XRDP connection.
+The browser tunnel closes within the current authorization window of at most
+15 seconds. An active tunnel is local to its gateway. After a disconnect,
+the viewer reloads once and can also reconnect on request. A replacement
+gateway establishes a new tunnel using the user's existing IdP session.
 
 ### Small Debian desktop VM
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type DesktopPrincipal struct {
 	Tenant      TenantReservation
 	DirectoryID string
 	UserID      string
+	AppGroupIDs []string
 	ExpiresAt   time.Time
 }
 
@@ -31,7 +33,8 @@ func (c *Compatibility) AuthenticateDesktop(ctx context.Context, request *http.R
 	}
 	app, err := lookupGraphApplication(ctx, c.onboarding.store, tenant, "id", cfg.DesktopApplicationID)
 	if errors.Is(err, errDirectoryNotFound) ||
-		err == nil && (app == nil || app.WebPolicy == nil || app.WebPolicy.NativeID == "" || app.WebPolicy.DirectoryID != cfg.DirectoryID) {
+		err == nil && (app == nil || app.WebPolicy == nil || app.WebPolicy.NativeID == "" || app.WebPolicy.DirectoryID != cfg.DirectoryID ||
+			!validWebGroupIDs(app.WebPolicy.GroupIDs)) {
 		return empty, ErrInvalidDesktopToken
 	}
 	if err != nil {
@@ -67,5 +70,6 @@ func (c *Compatibility) AuthenticateDesktop(ctx context.Context, request *http.R
 	if len(native) != 1 || !tenantID.MatchString(native[0]) {
 		return empty, ErrInvalidDesktopToken
 	}
-	return DesktopPrincipal{Tenant: *reservation, DirectoryID: cfg.DirectoryID, UserID: native[0], ExpiresAt: token.Expiry}, nil
+	return DesktopPrincipal{Tenant: *reservation, DirectoryID: cfg.DirectoryID, UserID: native[0],
+		AppGroupIDs: slices.Clone(app.WebPolicy.GroupIDs), ExpiresAt: token.Expiry}, nil
 }

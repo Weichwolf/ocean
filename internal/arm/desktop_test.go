@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestDesktopAuthorizationUsesBrowserIdentity(t *testing.T) {
 			}
 			if tc.status == http.StatusOK {
 				want := ResourceAddress{Group: "workplace", Path: DesktopType + "/personal"}
-				if store.subject != browser || store.address != want {
+				if !reflect.DeepEqual(store.subject, browser) || store.address != want {
 					t.Fatalf("unexpected desktop authorization input: %+v, %+v", store.subject, store.address)
 				}
 			} else if store.address != (ResourceAddress{}) {

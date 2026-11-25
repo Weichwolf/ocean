@@ -18,6 +18,7 @@ const (
 	DirectoryUserList          = "userList"
 	DirectoryUserUpdate        = "userUpdate"
 	DirectoryUserDesktopCheck  = "userDesktopCheck"
+	DirectoryUserSessionCheck  = "userDesktopSessionCheck"
 	DirectoryGroupCreate       = "groupCreate"
 	DirectoryGroupGet          = "groupGet"
 	DirectoryGroupList         = "groupList"
@@ -41,6 +42,7 @@ type DirectoryGraphInput struct {
 	Selector  string               `json:"selector,omitempty"`
 	Member    string               `json:"member,omitempty"`
 	GroupID   string               `json:"groupId,omitempty"`
+	AppGroups []string             `json:"applicationGroupIds,omitempty"`
 	Fields    json.RawMessage      `json:"fields,omitempty"`
 	Query     *DirectoryGraphQuery `json:"query,omitempty"`
 }
@@ -55,7 +57,8 @@ func (i DirectoryGraphInput) Valid() bool {
 	if i.Member != "" && i.Operation != DirectoryGroupMemberAdd && i.Operation != DirectoryGroupMemberRemove {
 		return false
 	}
-	if i.GroupID != "" && i.Operation != DirectoryUserDesktopCheck {
+	if i.GroupID != "" && i.Operation != DirectoryUserDesktopCheck && i.Operation != DirectoryUserSessionCheck ||
+		len(i.AppGroups) != 0 && i.Operation != DirectoryUserSessionCheck {
 		return false
 	}
 	switch i.Operation {
@@ -67,6 +70,16 @@ func (i DirectoryGraphInput) Valid() bool {
 		return selector && noFields && i.Query == nil
 	case DirectoryUserDesktopCheck:
 		return group && noFields && q == nil && (i.GroupID == "" || ValidDirectoryJoinID(i.GroupID))
+	case DirectoryUserSessionCheck:
+		if !group || !noFields || q != nil || i.GroupID != "" && !ValidDirectoryJoinID(i.GroupID) || len(i.AppGroups) == 0 || len(i.AppGroups) > 32 {
+			return false
+		}
+		for n, id := range i.AppGroups {
+			if !ValidDirectoryJoinID(id) || n > 0 && i.AppGroups[n-1] >= id {
+				return false
+			}
+		}
+		return true
 	case DirectoryUserList:
 		return i.Selector == "" && noFields && paged && q.GroupName == "" && q.GroupAlias == "" &&
 			len(q.UPN) <= 128 && len(q.DisplayPrefix) <= 120 && (q.UPN == "" || q.DisplayPrefix == "" && q.Offset == 0)
@@ -172,7 +185,8 @@ func (r DirectoryGraphResult) Valid(operation string) bool {
 	case http.StatusOK:
 		return (operation == DirectoryUserList || operation == DirectoryGroupMembers) && collection && len(r.Groups) == 0 ||
 			operation == DirectoryGroupList && collection && len(r.Users) == 0 ||
-			(operation == DirectoryUserGet || operation == DirectoryUserDesktopCheck) && onlyUser || operation == DirectoryGroupGet && onlyGroup
+			(operation == DirectoryUserGet || operation == DirectoryUserDesktopCheck || operation == DirectoryUserSessionCheck) && onlyUser ||
+			operation == DirectoryGroupGet && onlyGroup
 	}
 	return false
 }

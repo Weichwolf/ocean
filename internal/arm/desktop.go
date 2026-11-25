@@ -52,20 +52,28 @@ type DesktopAdmission struct {
 
 type DesktopLaunchStore interface {
 	LaunchPersonalDesktop(context.Context, identity.DesktopPrincipal, ResourceAddress, string, []byte) (DesktopLaunch, error)
+	RenewPersonalDesktop(context.Context, identity.DesktopPrincipal, ResourceAddress, string, []byte) (DesktopSession, error)
+}
+
+// DesktopSession describes the route and placement a gateway may continue to use.
+type DesktopSession struct {
+	DesktopAdmission
+	User             string     `json:"user"`
+	PrivateIP        netip.Addr `json:"privateIp"`
+	NetworkInterface string     `json:"networkInterfaceId"`
+	SubnetID         string     `json:"subnetId"`
+	Generation       string     `json:"generation"`
 }
 
 // DesktopLaunch is sent only to an authorized gateway over mutual TLS.
 type DesktopLaunch struct {
-	DesktopAdmission
-	User             string     `json:"user"`
-	Credential       string     `json:"credential"`
-	PrivateIP        netip.Addr `json:"privateIp"`
-	NetworkInterface string     `json:"networkInterfaceId"`
-	SubnetID         string     `json:"subnetId"`
+	DesktopSession
+	Credential string `json:"credential"`
 }
 
-func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request, subscription, group, name string, launch bool) {
-	if s.Desktops == nil || s.AuthenticateDesktop == nil || launch && s.DesktopLaunch == nil {
+func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request, subscription, group, name, action string) {
+	gatewayAction := action != "desktopAuthorization"
+	if s.Desktops == nil || s.AuthenticateDesktop == nil || gatewayAction && s.DesktopLaunch == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -85,7 +93,7 @@ func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	var peer *x509.Certificate
-	if launch {
+	if gatewayAction {
 		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
 			writeError(w, http.StatusForbidden, "DesktopGatewayDenied", ErrDesktopGateway.Error())
 			return
@@ -113,11 +121,17 @@ func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	address := ResourceAddress{Group: group, Path: DesktopType + "/" + name}
-	if launch {
+	if gatewayAction {
 		if peer.NotAfter.Before(principal.ExpiresAt) {
 			principal.ExpiresAt = peer.NotAfter
 		}
-		result, err := s.DesktopLaunch.LaunchPersonalDesktop(ctx, principal, address, peer.Subject.CommonName, peer.Raw)
+		var result any
+		var err error
+		if action == "desktopLaunch" {
+			result, err = s.DesktopLaunch.LaunchPersonalDesktop(ctx, principal, address, peer.Subject.CommonName, peer.Raw)
+		} else {
+			result, err = s.DesktopLaunch.RenewPersonalDesktop(ctx, principal, address, peer.Subject.CommonName, peer.Raw)
+		}
 		if err != nil {
 			desktopError(w, err)
 			return

@@ -203,11 +203,12 @@ func testRegionalDirectory(t *testing.T, mode string) {
 		handler = (arm.Server{Origin: api.URL, Location: r.name, Authenticate: compat.AuthenticateARM, Inventory: r,
 			Roles: r, VirtualMachines: r, Desktops: r, DesktopLaunch: r,
 			AuthenticateDesktop: func(_ context.Context, req *http.Request) (identity.DesktopPrincipal, error) {
-				user, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer fixture-browser:")
-				if !ok || !enrollment.ValidDirectoryJoinID(user) {
+				value, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer fixture-browser:")
+				user, group, found := strings.Cut(value, ":")
+				if !ok || !enrollment.ValidDirectoryJoinID(user) || !found || !enrollment.ValidDirectoryJoinID(group) {
 					return identity.DesktopPrincipal{}, identity.ErrInvalidDesktopToken
 				}
-				return identity.DesktopPrincipal{Tenant: tenant, DirectoryID: domain.ID, UserID: user,
+				return identity.DesktopPrincipal{Tenant: tenant, DirectoryID: domain.ID, UserID: user, AppGroupIDs: []string{group},
 					ExpiresAt: time.Now().Add(time.Minute)}, nil
 			},
 		}).Handler(handler)

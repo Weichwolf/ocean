@@ -29,7 +29,7 @@ type keycloakWebRole struct {
 // publishDirectoryWebApplication reconciles a single immutable group policy.
 // It attaches the admission execution before enabling the native client.
 func (k keycloakAdmin) publishDirectoryWebApplication(ctx context.Context, tenant TenantReservation, directory ManagedDirectory,
-	app Application, groupIDs []string) (string, error) {
+	app Application, groupIDs []string, desktop bool) (string, error) {
 	if !directory.Valid(tenant) || directory.ProvisionedAt.IsZero() || !app.Valid(tenant.TenantID) ||
 		len(app.WebRedirectURIs) == 0 || app.PrincipalID != "" || len(app.Credentials) != 0 {
 		return "", errors.New("an established directory and dedicated web registration are required")
@@ -85,7 +85,7 @@ func (k keycloakAdmin) publishDirectoryWebApplication(ctx context.Context, tenan
 	if err := k.ensureApplicationAdmission(ctx, app, profile.Admission, scope.Name, role.Name); err != nil {
 		return "", err
 	}
-	return k.reconcileWebClient(ctx, app, profile.BrowserID, scope)
+	return k.reconcileWebClient(ctx, app, profile.BrowserID, scope, desktop)
 }
 
 func directoryObjectGUIDFilter(groupIDs []string) (string, error) {

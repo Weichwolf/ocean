@@ -21,7 +21,7 @@ def run(database, domain, stream):
         with transaction(database):
             if int(time.time()) >= task["expiresAt"]:
                 raise GraphFailure(409)
-            if task["operation"] == "userDesktopCheck":
+            if task["operation"] in ("userDesktopCheck", "userDesktopSessionCheck"):
                 return desktop_user(database, task)
             if task["operation"].startswith("group"):
                 return group_operation(database, task)
