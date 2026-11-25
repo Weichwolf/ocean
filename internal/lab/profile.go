@@ -14,12 +14,14 @@ import (
 type Resources struct {
 	MemoryMiB   uint `json:"memoryMiB" yaml:"memoryMiB"`
 	VCPUs       uint `json:"vcpus" yaml:"vcpus"`
+	RootDiskMiB uint `json:"rootDiskMiB,omitempty" yaml:"rootDiskMiB"`
 	DataDiskMiB uint `json:"dataDiskMiB,omitempty" yaml:"dataDiskMiB"`
 }
 
 type overrides struct {
 	MemoryMiB   *uint `yaml:"memoryMiB"`
 	VCPUs       *uint `yaml:"vcpus"`
+	RootDiskMiB *uint `yaml:"rootDiskMiB"`
 	DataDiskMiB *uint `yaml:"dataDiskMiB"`
 }
 
@@ -127,6 +129,12 @@ func (settings profile) plan() (Plan, error) {
 			}
 			if override.DataDiskMiB != nil {
 				guest.Resources.DataDiskMiB = *override.DataDiskMiB
+			}
+			if override.RootDiskMiB != nil {
+				guest.Resources.RootDiskMiB = *override.RootDiskMiB
+			}
+			if disk := guest.Resources.RootDiskMiB; disk != 0 && (disk < 4096 || disk > 131072) {
+				return Plan{}, fmt.Errorf("%s root disk must be between 4096 and 131072 MiB", guest.Name)
 			}
 			if disk := guest.Resources.DataDiskMiB; disk != 0 && (disk < 1024 || disk > 65536) {
 				return Plan{}, fmt.Errorf("%s data disk must be between 1024 and 65536 MiB", guest.Name)

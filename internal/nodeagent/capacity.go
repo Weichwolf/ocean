@@ -32,6 +32,9 @@ func (j *joinClient) heartbeat(ctx context.Context) error {
 		report.ContainerNetwork = time.Since(status.ModTime()) < policyLease
 	}
 	report.DirectoryRuntime = report.ContainerNetwork && j.directoryRuntimeAvailable(ctx)
+	if status, err := os.Stat(vmReady); err == nil {
+		report.VMRuntime = report.KVM && status.Mode().IsRegular() && time.Since(status.ModTime()) < policyLease
+	}
 	body, _ := json.Marshal(report)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, j.url()+"/heartbeat", bytes.NewReader(body))
 	if err != nil {

@@ -201,6 +201,11 @@ func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string, s
 		if err := command(ctx, "qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", image, partial); err != nil {
 			return err
 		}
+		if guest.Resources.RootDiskMiB != 0 {
+			if err := command(ctx, "qemu-img", "resize", "-f", "qcow2", partial, strconv.FormatUint(uint64(guest.Resources.RootDiskMiB), 10)+"M"); err != nil {
+				return err
+			}
+		}
 		if err := os.Rename(partial, overlay); err != nil {
 			return err
 		}

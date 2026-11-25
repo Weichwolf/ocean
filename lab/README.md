@@ -237,6 +237,59 @@ state's `evidence` directory. It exercises the backing files directly. The
 VM-provider acceptance exercises Windows writes and confirms the fence before
 placing a failed worker's VM on another host.
 
+### Debian KVM worker service
+
+Install the agent package on the selected compute hosts and install
+`qemu-system-x86`, `qemu-utils`, `ovmf`, `ceph-common`, `cryptsetup-bin`,
+`dnsmasq-base`, `iputils-arping` and `e2fsprogs`. Give the host enrollment
+account `ocean-agent` and the dedicated hypervisor account `ocean-vm` access
+to `/dev/kvm`, then restart the enrollment account's user manager so it receives
+its current supplementary groups. Approve each compute host with
+`requireKVM: true` and configure it as a regional storage worker.
+
+In addition to the enrollment configuration, set up
+`/etc/ocean-agent/storage.json` with the worker's RBD client and mount root,
+and `/etc/ocean-agent/workload-network.json` with its private fabric and
+protected prefixes. In `/etc/ocean-agent/vm.json`, set `imageDirectory` to the
+worker's private root-owned catalog directory. Its raw disk and OVMF variable
+files are named by their pinned SHA-256 digests, followed by `.raw` and `.fd`,
+respectively. `firmwareCode` defaults to the Debian 4 MiB OVMF image. Optional
+`dnsServers` provides IPv4 guest DNS values. Enable `ocean-vm-agent.service`
+after configuring these files and enrolling the host.
+
+The worker opens the assigned encrypted disk, installs a leased private
+firewall and starts QEMU as `ocean-vm` at niceness 10. One DHCP allocation on
+the private TAP matches the assigned guest MAC and IP. The running receipt
+requires a QEMU running state and a reply from that private MAC. A power-off
+receipt follows QEMU exit and local disk detach. VM deletion checks the
+current assignment again before removing the backing image. Missing task
+authorization withdraws the local instance and preserves its backing image.
+[dnsmasq configuration](https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html)
+
+The `vm-ha` lab profile gives each Nested KVM compute host three vCPUs, 6 GiB
+of RAM and a 32 GiB root disk to hold a private prepared image. The three
+separate Ceph guests use 24 GiB dedicated data disks. Both disk capacities
+are sparse allocations on the development host. To conserve memory, start
+only the required compute and storage hosts with `ocean-lab up -only`.
+
+The packaged lifecycle probe uses a disposable `vm-ha` lab with compute host
+`farm-1-node-05`, the replicated Ceph pool, and an isolated loopback etcd
+endpoint. Stage the private image files as `root:root` with mode `0600` on
+that host. Configure the worker storage and workload fabric before the test.
+The test enrolls the real worker and uses its host certificate for assignment
+and status traffic. The pinned Azure CLI uses a test bearer identity for the
+ARM operations. Use a Server Core fixture configured for `10.232.1.20`.
+
+```sh
+OCEAN_E2E_VM_WORKER_STATE="$LAB_STATE" \
+  OCEAN_E2E_VM_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
+  OCEAN_E2E_VM_DISK_PIN="$WINDOWS_DISK_SHA256" \
+  OCEAN_E2E_VM_VARS_PIN="$WINDOWS_VARS_SHA256" \
+  OCEAN_E2E_VM_AZ="$(command -v az)" \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=12m -v \
+    -run '^TestPackagedVMWorker$' ./internal/controlplane
+```
+
 ### Regional VM store probe
 
 The optional `region.virtualMachines` configuration registers the catalog

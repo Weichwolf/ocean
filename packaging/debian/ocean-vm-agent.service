@@ -1,0 +1,17 @@
+[Unit]
+Description=ocean KVM compute worker
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ocean-agent/vm.json
+ConditionPathExists=/etc/ocean-agent/storage.json
+ConditionPathExists=/etc/ocean-agent/workload-network.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode vm
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=100s
+
+[Install]
+WantedBy=multi-user.target
