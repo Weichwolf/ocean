@@ -22,13 +22,14 @@ cleanup() {
     p volume rm "$volume" "$replica" >/dev/null || true
     p network rm "$net" >/dev/null || true
     p secret rm "$secret" >/dev/null || true
-    rm -f "$probe/employee.secret"
+    rm -f "$probe/employee.secret" "$probe/administrator.secret"
     rmdir "$probe"
 }
 trap cleanup EXIT
 p network create --internal --disable-dns --subnet 10.254.247.0/24 "$net" >/dev/null
 p volume create "$volume" >/dev/null
-printf 'Ocn9-%s\n' "$(openssl rand -hex 20)" | p secret create "$secret" - >/dev/null
+printf 'Ocn9-%s\n' "$(openssl rand -hex 20)" >"$probe/administrator.secret"
+p secret create "$secret" "$probe/administrator.secret" >/dev/null
 printf 'Tst9-%s\n' "$(openssl rand -hex 20)" >"$probe/employee.secret"
 start() {
     local container=$1 address=$2 controller=$3 id=$4
@@ -41,6 +42,7 @@ start() {
        --mount "type=volume,source=$container,target=/var/lib/ocean-ad" \
        --env OCEAN_AD_DNS_NAME=ad.runtime.test --env OCEAN_AD_NETBIOS_NAME=OCEANRUN \
        --env "OCEAN_AD_CONTROLLER=$controller" --env "OCEAN_AD_DIRECTORY_ID=$id" \
+       --env "OCEAN_AD_REPLICA=$replica_addr" \
        --env "OCEAN_AD_ADDRESS=$address" "$@" "$image" >/dev/null
 }
 wait_dns() {
@@ -96,7 +98,85 @@ proof() {
             exit 1
         fi
         grep -F NT_STATUS_ACCESS_DENIED "$cache/denied"
+        if [ "${3:-}" = guarded ]; then
+            if smbclient "//$host/sysvol" --use-kerberos=required \
+                --use-krb5-ccache="$KRB5CCNAME" -c "get ${path%/*}/ocean-guarded.txt $cache/guarded" \
+                >"$cache/guard" 2>&1; then
+                printf "Unprivileged employee could read guarded policy content\n" >&2
+                exit 1
+            fi
+            grep -F NT_STATUS_ACCESS_DENIED "$cache/guard"
+            if [ "$2" = 1 ]; then
+                if smbclient "//$host/ocean-policy$" --use-kerberos=required --client-protection=encrypt \
+                    --use-krb5-ccache="$KRB5CCNAME" -c "get sysvol.tar.gz $cache/export" >"$cache/exported" 2>&1; then
+                    printf "Unprivileged employee could read the replication archive\n" >&2
+                    exit 1
+                fi
+                grep -F NT_STATUS_ACCESS_DENIED "$cache/exported"
+            fi
+        fi
     ' -- "$@" <"$probe/employee.secret"
+}
+administrator_policy() {
+    p run --rm -i --network "$net" --entrypoint /bin/sh "$image" -c '
+        set -eu
+        umask 077
+        address=$1
+        host="dc0$2.ad.runtime.test"
+        action=$3
+        employee_sid=$4
+        cache=$(mktemp -d)
+        printf "%s\n" "[libdefaults]" "default_realm = AD.RUNTIME.TEST" "rdns = false" \
+            "[realms]" "AD.RUNTIME.TEST = {" "kdc = $address" "}" >"$cache/krb5.conf"
+        printf "nameserver %s\noptions timeout:1 attempts:2\n" "$address" > /etc/resolv.conf
+        export KRB5_CONFIG="$cache/krb5.conf" KRB5CCNAME="FILE:$cache/ticket"
+        timeout 10 kinit Administrator@AD.RUNTIME.TEST >&2
+        gpo="{31B2F340-016D-11D2-945F-00C04FB984F9}"
+        guarded="ad.runtime.test/Policies/$gpo/ocean-guarded.txt"
+        smb="//${host}/sysvol"
+        if [ "$action" = update ]; then
+            printf "[General]\r\nVersion=1\r\n" > "$cache/gpt.ini"
+            printf "Protected fixture policy data\n" > "$cache/guarded.txt"
+            smbclient "$smb" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
+                -c "put $cache/gpt.ini ${guarded%/*}/GPT.INI; put $cache/guarded.txt $guarded"
+            smbcacls "$smb" "$guarded" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
+                --add "ACL:$employee_sid:DENIED/0x0/READ"
+        elif [ "$action" = read-only ]; then
+            printf "[General]\r\nVersion=1\r\n" > "$cache/gpt.ini"
+            if smbclient "$smb" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
+                -c "put $cache/gpt.ini ${guarded%/*}/GPT.INI" >"$cache/write" 2>&1; then
+                printf "The replica permitted a policy write\n" >&2
+                exit 1
+            fi
+            grep -E "NT_STATUS_(ACCESS_DENIED|MEDIA_WRITE_PROTECTED)" "$cache/write"
+        else
+            smbcacls "$smb" "$guarded" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
+                --query-security-info=7 --numeric --sddl
+        fi
+    ' -- "$@" "$employee_sid" <"$probe/administrator.secret"
+}
+gpo_version() {
+    p exec -i "$1" /usr/bin/python3 - "${2:-}" <<'PY'
+from pathlib import Path
+import sys
+import ldb
+from samba.auth import system_session
+from samba.param import LoadParm
+from samba.samdb import SamDB
+
+config = next(Path("/var/lib/ocean-ad").glob("controller-*/etc/smb.conf"))
+lp = LoadParm()
+lp.load(str(config))
+database = SamDB(lp=lp, session_info=system_session())
+gpo = "CN={31B2F340-016D-11D2-945F-00C04FB984F9},CN=Policies,CN=System," + str(database.domain_dn())
+if sys.argv[1]:
+    change = ldb.Message()
+    change.dn = ldb.Dn(database, gpo)
+    change["versionNumber"] = ldb.MessageElement(sys.argv[1], ldb.FLAG_MOD_REPLACE, "versionNumber")
+    database.modify(change)
+entry, = database.search(base=gpo, scope=ldb.SCOPE_BASE, attrs=["versionNumber"])
+print(entry["versionNumber"][0].decode())
+PY
 }
 directory_tool() {
     local controller=$1
@@ -173,15 +253,43 @@ wait_membership "$replica" LabPrimaryGroup employee "$SECONDS"
 directory_tool "$replica" group add LabReplicaGroup
 directory_tool "$replica" group addmembers LabReplicaGroup employee
 wait_membership "$name" LabReplicaGroup employee "$SECONDS"
+administrator_policy "$addr" 1 update
+test "$(gpo_version "$name" 1)" = 1
+policy_started=$SECONDS
+expected_acl=$(administrator_policy "$addr" 1 read)
+grep -Fq "$employee_sid" <<<"$expected_acl"
+changed=$(proof "$addr" 1 guarded)
+if same_policy "$before" "$changed"; then
+    printf 'The fixture GPO did not change on the primary.\n' >&2
+    exit 1
+fi
+while (( SECONDS - policy_started < 65 )); do
+    if [[ "$(gpo_version "$replica")" == 1 ]] &&
+       updated=$(proof "$replica_addr" 2 guarded 2>/dev/null) && same_policy "$changed" "$updated" &&
+       replicated_acl=$(administrator_policy "$replica_addr" 2 read 2>/dev/null) &&
+       [[ "$replicated_acl" == "$expected_acl" ]]; then
+        break
+    fi
+    sleep 2
+done
+if (( SECONDS - policy_started >= 65 )); then
+    p logs "$replica" 2>&1 | tail -28 >&2
+    printf 'Updated GPO and its custom ACL did not converge in 65 seconds.\n' >&2
+    exit 1
+fi
+printf 'Updated GPO bytes and custom ACL replicated in %d seconds.\n' "$(( SECONDS - policy_started ))"
 p stop --time 15 "$name" >/dev/null
 p rm "$replica" --force >/dev/null
 start "$replica" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr"
 wait_dns "$replica" "$replica_addr" 2
 wait_health "$replica" "$domain_sid"
 test "$original" = "$(account "$replica")"
-replicated=$(proof "$replica_addr" 2)
+replicated=$(proof "$replica_addr" 2 guarded)
 printf '%s\n' "$replicated"
-same_policy "$before" "$replicated"
+same_policy "$changed" "$replicated"
+test "$expected_acl" = "$(administrator_policy "$replica_addr" 2 read)"
+test "$(gpo_version "$replica")" = 1
+administrator_policy "$replica_addr" 2 read-only
 printf 'The replica reopened without the bootstrap secret and served Kerberos and SYSVOL with the primary stopped.\n'
 directory_tool "$replica" group removemembers LabPrimaryGroup employee
 recovery_started=$SECONDS
@@ -190,8 +298,8 @@ wait_dns "$name" "$addr" 1
 wait_membership "$name" LabPrimaryGroup "" "$recovery_started"
 p stop --time 15 "$replica" >/dev/null
 wait_health "$name" "$domain_sid"
-after=$(proof "$addr" 1)
-same_policy "$before" "$after"
+after=$(proof "$addr" 1 guarded)
+same_policy "$changed" "$after"
 printf 'The primary served Kerberos and SYSVOL with the replica stopped.\n'
 p stop --time 15 "$name" >/dev/null
 p rm "$name" >/dev/null

@@ -232,6 +232,8 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 		"--env", "OCEAN_AD_CONTROLLER=" + index}
 	if directory.ControllerIndex == 2 {
 		args = append(args, "--env", "OCEAN_AD_PRIMARY="+directory.ControllerIPv4[0].String())
+	} else if directory.ControllerIPv4[1].Is4() {
+		args = append(args, "--env", "OCEAN_AD_REPLICA="+directory.ControllerIPv4[1].String())
 	}
 	return podmanAction(ctx, append(args, "--", j.config.DirectoryImage)...)
 }

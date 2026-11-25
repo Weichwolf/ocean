@@ -1,6 +1,7 @@
 """Build and run a Samba AD controller in a private Podman volume."""
 
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -16,6 +17,8 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
+
+import sysvol as policy
 
 STATE = Path("/var/lib/ocean-ad")
 ADMIN_SECRET = Path("/run/secrets/ocean-directory-bootstrap")
@@ -144,15 +147,23 @@ def clear_staged_sysvol(path):
     path.rmdir()
 
 
-def unpack_sysvol(archive, sysvol):
+def unpack_sysvol(archive, sysvol, sid):
     with tarfile.open(archive) as policies:
         entries = {}
         for item in policies:
             path = PurePosixPath(item.name)
-            if (path.is_absolute() or ".." in path.parts or not path.parts or path in entries
+            if (path.is_absolute() or ".." in path.parts or not path.parts or path in entries or "\\" in item.name
                     or not (item.isreg() or item.isdir())):
                 raise RuntimeError("invalid entry in replicated SYSVOL")
             entries[path] = item
+        domain = entries.pop(PurePosixPath(policy.DOMAIN_METADATA), None)
+        root_acl = entries.pop(PurePosixPath(policy.ROOT_METADATA), None)
+        if (domain is None or not domain.isreg() or domain.size > 64 or root_acl is None
+                or not root_acl.isreg() or not root_acl.size):
+            raise RuntimeError("SYSVOL snapshot is missing its domain or root ACL")
+        with policies.extractfile(domain) as value:
+            if value.read().decode("ascii") != str(sid):
+                raise RuntimeError("SYSVOL snapshot belongs to a different domain")
         acls = {}
         for path, item in sorted(entries.items(), key=lambda entry: len(entry[0].parts)):
             if path.name.endswith(".NTACL"):
@@ -166,14 +177,18 @@ def unpack_sysvol(archive, sysvol):
             else:
                 with policies.extractfile(item) as data, target.open("xb") as file:
                     shutil.copyfileobj(data, file)
+                    file.flush()
+                    os.fsync(file.fileno())
             with policies.extractfile(acl) as descriptor:
                 acls[target] = descriptor.read().decode("utf-8").strip()
         if not acls:
             raise RuntimeError("the primary returned an empty SYSVOL")
+        with policies.extractfile(root_acl) as descriptor:
+            acls[sysvol] = descriptor.read().decode("utf-8")
         return acls
 
 
-def install_sysvol_acls(lp, local, sid, sysvol, acls, root_acl):
+def install_sysvol_acls(lp, local, sid, acls):
     from samba import auth
     from samba.dcerpc import security
     from samba.ntacls import setntacl
@@ -192,21 +207,12 @@ def install_sysvol_acls(lp, local, sid, sysvol, acls, root_acl):
              auth.AUTH_SESSION_INFO_SIMPLE_PRIVILEGES)
     session = auth.user_session(local, lp_ctx=lp, dn=f"<SID={admin_sid}>", session_info_flags=flags)
     auth.session_info_set_unix(session, lp_ctx=lp, user_name="Administrator", uid=uid, gid=gid)
-    acls[sysvol] = root_acl
     for path, descriptor in sorted(acls.items(), key=lambda entry: len(entry[0].parts), reverse=True):
         setntacl(lp, str(path), descriptor, sid, session, use_ntvfs=False,
                  skip_invalid_chown=True, passdb=mapping, service="sysvol")
 
 
 def seed_replica(root, settings):
-    from samba.auth import system_session
-    from samba.credentials import Credentials, MUST_USE_KERBEROS
-    from samba.dcerpc import security
-    from samba.netcmd.domain.backup import backup_online, smb_sysvol_conn
-    from samba.ntacls import SMBHelper
-    from samba.param import LoadParm
-    from samba.samdb import SamDB
-
     config = root / "etc/smb.conf"
     sysvol = root / "policy/sysvol"
     sysvol.parent.mkdir(exist_ok=True)
@@ -214,28 +220,69 @@ def seed_replica(root, settings):
     if sysvol.exists():
         clear_staged_sysvol(sysvol)
     sysvol.mkdir(mode=0o700)
-    config.write_text(config.read_text().replace(str(root / "sysvol"), str(sysvol)))
+    policy.replace_config(config, config.read_text().replace(str(root / "sysvol"), str(sysvol)))
+    with tempfile.TemporaryDirectory() as private:
+        restore_sysvol(config, sysvol, download_policy(config, settings, Path(private)))
+
+
+def restore_sysvol(config, sysvol, archive):
+    from samba.auth import system_session
+    from samba.dcerpc.security import dom_sid
+    from samba.param import LoadParm
+    from samba.samdb import SamDB
+
     lp = LoadParm()
     lp.load(str(config))
     local = SamDB(lp=lp, session_info=system_session())
-    sid = security.dom_sid(local.get_domain_sid())
-    with tempfile.TemporaryDirectory() as private:
-        archive = Path(private) / "sysvol.tar.gz"
-        cache = primary_ticket(Path(private), settings)
-        credentials = Credentials()
-        credentials.guess(lp)
-        credentials.set_kerberos_state(MUST_USE_KERBEROS)
-        credentials.set_named_ccache(cache)
-        connection = smb_sysvol_conn("dc01." + settings["domain"], lp, credentials)
-        root_acl = SMBHelper(connection, sid).get_acl("", as_sddl=True)
-        backup_online(connection, str(archive), sid)
-        acls = unpack_sysvol(archive, sysvol)
-        # Materialize Samba's POSIX inheritance from the replicated directory
-        # before restoring the SMB security descriptors, including custom ACLs.
-        subprocess.run(["/usr/bin/samba-tool", "ntacl", "sysvolreset", "-s", str(config)],
-                       check=True, timeout=30)
-        install_sysvol_acls(lp, local, sid, sysvol, acls, root_acl)
+    sid = dom_sid(local.get_domain_sid())
+    acls = unpack_sysvol(archive, sysvol, sid)
+    policy.verify_gpo_versions(sysvol, lp.get("realm").lower(), local)
+    # Materialize Samba's POSIX inheritance from the replicated directory
+    # before restoring the SMB security descriptors, including custom ACLs.
+    subprocess.run(["/usr/bin/samba-tool", "ntacl", "sysvolreset", "-s", str(config)], check=True, timeout=30)
+    # Samba's sysvolcheck expects inherited GPO ACLs on every file.
+    # Check that baseline, then verify the source ACLs after applying them.
     subprocess.run(["/usr/bin/samba-tool", "ntacl", "sysvolcheck", "-s", str(config)], check=True, timeout=30)
+    install_sysvol_acls(lp, local, sid, acls)
+    policy.verify_acls(config, sid, acls)
+
+
+def download_policy(config, settings, directory):
+    archive = directory / policy.ARCHIVE
+    target_kerberos(directory, settings, settings["primary"])
+    subprocess.run([
+        "/usr/bin/smbclient", f"//dc01.{settings['domain']}/{policy.SHARE}", "-s", str(config),
+        "-P", "--use-kerberos=required", "--client-protection=encrypt",
+        "-c", f"get {policy.ARCHIVE} {archive}",
+    ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+    return archive
+
+
+def refresh_policy(config, settings, previous):
+    from samba.param import LoadParm
+
+    with tempfile.TemporaryDirectory() as directory:
+        archive = download_policy(config, settings, Path(directory))
+        with archive.open("rb") as data:
+            digest = hashlib.file_digest(data, "sha256").digest()
+        if digest == previous:
+            return digest
+
+        lp = LoadParm()
+        lp.load(str(config))
+        live = Path(lp.get("path", "sysvol"))
+        stage = live.parent / ".refresh" / "sysvol"
+        stage.parent.mkdir(exist_ok=True)
+        stage.parent.chmod(0o711)
+        if stage.exists():
+            clear_staged_sysvol(stage)
+        stage.mkdir(mode=0o700)
+        stage_config = Path(directory) / "smb.conf"
+        stage_config.write_text(policy.set_share_read_only(config.read_text().replace(str(live), str(stage)), False))
+        restore_sysvol(stage_config, stage, archive)
+        policy.exchange(live, stage)
+        print("SYSVOL policy snapshot installed.", flush=True)
+        return digest
 
 
 def read_checkpoint(checkpoint, settings):
@@ -366,6 +413,20 @@ def serve(settings):
                 with hosts.open("a") as stream:
                     stream.write(primary)
         config = initialize(settings)
+        maintain_policy = True
+        if settings.get("controller") == 2:
+            content = config.read_text()
+            configured = policy.set_share_read_only(content, True)
+            if content != configured:
+                policy.replace_config(config, configured)
+        else:
+            replica = os.environ.get("OCEAN_AD_REPLICA")
+            if replica:
+                address = ipaddress.IPv4Address(replica)
+                if address.is_loopback or address.is_multicast or address.is_unspecified or replica == settings["address"]:
+                    raise ValueError("invalid replica policy address")
+            policy.configure_export(config, settings, replica)
+            maintain_policy = bool(replica)
         # Samba performs authenticated dynamic registration against its own
         # DNS server. The container never uses a host or public resolver.
         Path("/etc/resolv.conf").write_text("nameserver " + settings["address"] + "\n")
@@ -378,6 +439,10 @@ def serve(settings):
             "--option=dreplsrv:periodic_startup_interval=5",
             "--option=dreplsrv:periodic_interval=15",
         ], stdin=subprocess.DEVNULL, env=runtime)
+        policy_worker = None
+        if maintain_policy:
+            policy_worker = subprocess.Popen([sys.executable, str(SCRIPT), "sync-policy", str(config)],
+                                             stdin=subprocess.DEVNULL)
         stopping = False
 
         def stop(_signum, _frame):
@@ -387,8 +452,31 @@ def serve(settings):
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        status = process.wait()
+        try:
+            status = process.wait()
+        finally:
+            if policy_worker is not None:
+                policy_worker.terminate()
+                policy_worker.wait()
         return 0 if stopping else status
+
+
+def sync_policy(config, settings):
+    import ldb
+    from samba import NTSTATUSError
+    from samba.ntacls import XattrBackendError
+
+    digest = None
+    while True:
+        try:
+            if settings.get("controller") == 2:
+                digest = refresh_policy(config, settings, digest)
+            else:
+                policy.publish(config)
+        except (OSError, RuntimeError, ValueError, NTSTATUSError, XattrBackendError, ldb.LdbError,
+                subprocess.SubprocessError, tarfile.TarError, KeyError) as error:
+            print(f"SYSVOL synchronization will retry ({type(error).__name__}).", file=sys.stderr)
+        time.sleep(10)
 
 
 def stop_before_service(_signum, _frame):
@@ -404,6 +492,8 @@ if __name__ == "__main__":
             join_replica(Path(sys.argv[2]), settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "seed" and settings.get("controller") == 2:
             seed_replica(Path(sys.argv[2]), settings)
+        elif len(sys.argv) == 3 and sys.argv[1] == "sync-policy":
+            sync_policy(Path(sys.argv[2]), settings)
         elif len(sys.argv) == 2 and sys.argv[1] == "health":
             health(settings)
         elif len(sys.argv) == 1:

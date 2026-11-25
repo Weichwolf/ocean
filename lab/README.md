@@ -276,13 +276,23 @@ with the workload key. The agent passes it to Podman through stdin and mounts
 it read-only with mode 0400. Each controller uses its own generation-specific
 persistent volume on restart.
 
-The primary provisions the domain. The replica joins over Kerberos and seeds
-SYSVOL over signed SMB, including the remote security descriptors. It checks
+The primary provisions the domain. The replica uses the bootstrap credential
+to join over Kerberos, then seeds SYSVOL with its machine account. It checks
 the seeded policy ACLs before listening. A persistent join checkpoint lets the
 replica retry the seed if the primary goes away during the initial copy.
 Samba DRS replicates directory records in both directions. Both controllers
 retain native change notifications and poll their peers every 15 seconds to
 catch up after a late join or a disconnection.
+
+The primary is the write endpoint for Group Policy and NETLOGON files. Every
+ten seconds it captures SYSVOL with its security descriptors and exposes the
+finished snapshot through an encrypted SMB share. The source permits the
+replica's machine account from its assigned private address. The replica
+uses its own Kerberos credential and verifies the domain SID and ACLs in a
+staged copy. It waits for the corresponding Group Policy directory objects
+and versions to arrive through DRS before atomically switching the local
+SYSVOL directory. The replica serves SYSVOL and NETLOGON read-only and
+continues serving its last verified policy snapshot during a source outage.
 
 ```sh
 nice -n 10 podman build -t localhost/ocean-directory:lab packaging/samba
@@ -298,14 +308,17 @@ uses AD DNS for Kerberos and SMB discovery. The probe reopens both volumes
 without bootstrap credentials and requires new group memberships to converge
 in either direction within 45 seconds. It revokes a membership while the
 primary is stopped and requires the restarted primary to observe the change
-within 45 seconds. The harness stores the Markdown report, TSV, and client
-logs under `artifacts/e2e`.
+within 45 seconds. It also updates an existing Group Policy version through
+SMB and the directory, checks the new bytes and a customized per-file deny
+ACE on the replica within 65 seconds, and repeats the checks after the
+primary stops and the replica restarts. The harness stores the Markdown
+report, TSV, and client logs under `artifacts/e2e`.
 
 The same profile runs the `az rest` request and status commands with Azure
 CLI 2.93.0 against a loopback HTTPS contract fixture and a signed fixture
 token. The runtime and CLI probes are independently selectable with
 `OCEAN_E2E_CASES=WORKPLACE-04` or `OCEAN_E2E_CASES=WORKPLACE-05`.
-Ongoing SYSVOL synchronization, controller replacement, and separate-host
+Controller replacement, independent backup recovery, and separate-host
 and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ## Tenant directory users

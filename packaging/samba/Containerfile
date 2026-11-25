@@ -3,5 +3,5 @@ RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
         samba-ad-dc samba-ad-provision krb5-user bind9-dnsutils smbclient \
     && rm -rf /var/lib/apt/lists/*
-COPY controller.py /usr/local/lib/ocean-directory/controller.py
+COPY controller.py sysvol.py /usr/local/lib/ocean-directory/
 ENTRYPOINT ["/usr/bin/python3", "/usr/local/lib/ocean-directory/controller.py"]
