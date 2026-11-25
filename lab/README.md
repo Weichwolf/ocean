@@ -1078,13 +1078,16 @@ access-token lifetime. Validate the issuer, client audience, nonce and
 expiry when consuming tokens. The LDAP group filter uses native object
 GUIDs, so a recreated group with the same name requires its own policy grant.
 
-`WORKPLACE-20` uses the WORKPLACE-19 fixtures and stock Azure CLI 2.93.0. It
-publishes two policies through `az rest` with a signed Keycloak ARM credential,
-then drives the browser password and OTP path through LDAP with two distinct
-groups. It checks shared SSO, invalid redirect and PKCE rejection, selective
-group revocation and group-name reuse. The case uses loopback ingress and a
-disposable application store. Native Windows and Debian Kerberos acceptance
-uses a separate domain-client fixture.
+`WORKPLACE-20` uses the WORKPLACE-19 fixtures, Python 3, stock Azure CLI
+2.93.0, Chromium, Node.js, `certutil` and the CA from `SSL_CERT_FILE`. It
+starts with an empty CLI cache and completes a device login. It registers
+both apps with `az ad app create` and publishes their policies with `az rest`.
+A clean Chromium profile without a domain ticket signs in with password and
+OTP, then follows the second app's callback from the same browser session.
+The verifier checks the signed audiences, exact callbacks, PKCE, denial of
+an out-of-scope LDAP user, selective revocation and group-name reuse. The
+case uses loopback ingress and disposable application storage. The probe
+imports the lab CAs into Chromium's disposable profile. [Chromium Linux certificate management](https://chromium.googlesource.com/chromium/src/%2Bshow/f6f63071cc0aaf9a4865b31d0fccd5bca5e0cb89/docs/linux/cert_management.md)
 
 ### Enable web Kerberos for a managed tenant
 

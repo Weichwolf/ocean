@@ -113,9 +113,16 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if webAdmission.BlockedReason == "" {
 		webAdmission.BlockedReason = cli.BlockedReason
 	}
+	webPolicyPrerequisites := webAdmission.BlockedReason
+	for _, program := range []string{"python3", "chromium", "node", "certutil"} {
+		if _, err := exec.LookPath(program); err != nil && webAdmission.BlockedReason == "" {
+			webAdmission.BlockedReason = "Install " + program + " for the integrated CLI and MFA browser probe."
+		}
+	}
+	webAdmission = requireFile(webAdmission, os.Getenv("SSL_CERT_FILE"), "the Keycloak lab CA in SSL_CERT_FILE")
 	kerberosBrowser := harness.Step{Name: "managed-kerberos-firefox", Cases: []string{"WORKPLACE-21"}, Timeout: 3 * time.Minute,
 		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
-			"-run", "^TestKeycloakKerberosBrowserLab$", "./internal/identity"}, BlockedReason: webAdmission.BlockedReason}
+			"-run", "^TestKeycloakKerberosBrowserLab$", "./internal/identity"}, BlockedReason: webPolicyPrerequisites}
 	kerberosState := os.Getenv("OCEAN_E2E_KERBEROS_BROWSER_STATE")
 	if kerberosBrowser.BlockedReason == "" && kerberosState == "" {
 		kerberosBrowser.BlockedReason = "Provide OCEAN_E2E_KERBEROS_BROWSER_STATE with a disposable Samba service keytab and user ticket cache."
@@ -129,7 +136,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "employee.ccache"), "the disposable Samba ticket cache")
 	webCLIRegression := harness.Step{Name: "managed-web-cli-regression", Cases: []string{"WORKPLACE-22"}, Timeout: 5 * time.Minute,
 		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
-			"-run", "^TestKeycloakWebCLIRegressionLab$", "./internal/identity"}, BlockedReason: webAdmission.BlockedReason}
+			"-run", "^TestKeycloakWebCLIRegressionLab$", "./internal/identity"}, BlockedReason: webPolicyPrerequisites}
 	if _, err := exec.LookPath("python3"); err != nil && webCLIRegression.BlockedReason == "" {
 		webCLIRegression.BlockedReason = "Install Python 3 for the fresh Azure CLI sign-in probe."
 	}

@@ -3,6 +3,7 @@
 package identity
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -60,6 +61,19 @@ func (s *webPolicyLabStore) FindApplication(_ context.Context, tenant, field, va
 	return nil, 0, nil
 }
 
+func (s *webPolicyLabStore) ListApplications(_ context.Context, tenant, after string, limit int) ([]Application, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var apps []Application
+	for _, record := range s.apps {
+		if record.app.TenantID == tenant && record.app.ID > after {
+			apps = append(apps, record.app)
+		}
+	}
+	slices.SortFunc(apps, func(left, right Application) int { return cmp.Compare(left.ID, right.ID) })
+	return apps[:min(len(apps), limit)], nil
+}
+
 func (s *webPolicyLabStore) SaveApplication(_ context.Context, app Application, rev int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,10 +94,10 @@ func (s *webPolicyLabStore) RunDirectoryGraph(ctx context.Context, tenant Tenant
 	return runSambaFederationGraph(ctx, s.controller, input.Operation, nil, input.Selector, "")
 }
 
-func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server, apps []Application, kerberosKeytab string) func(string, string, []string, string) []byte {
+func webPolicyLabCompatibility(t *testing.T, lab sambaDirectoryLab, authority string, apps []Application, kerberosKeytab string) *Compatibility {
 	t.Helper()
 	issuer := lab.admin.endpoints[0]
-	compat, err := NewCompatibility("https://authority.apps.ocean.test", issuer, lab.admin.client.Transport)
+	compat, err := NewCompatibility(authority, issuer, lab.admin.client.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +122,12 @@ func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server
 	if err := compat.EnableManagedDirectories(store); err != nil {
 		t.Fatal(err)
 	}
+	return compat
+}
+
+func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server, apps []Application, kerberosKeytab string) func(string, string, []string, string) []byte {
+	t.Helper()
+	compat := webPolicyLabCompatibility(t, lab, "https://authority.apps.ocean.test", apps, kerberosKeytab)
 	api.Config.Handler = compat.Handler()
 	api.StartTLS()
 	az, err := exec.LookPath("az")
@@ -147,6 +167,63 @@ func startWebPolicyLab(t *testing.T, lab sambaDirectoryLab, api *httptest.Server
 		output, err := command.CombinedOutput()
 		if wantError == "" && err != nil || wantError != "" && (err == nil || !strings.Contains(string(output), wantError)) {
 			t.Fatalf("az rest %s web policy: %v\n%s", method, err, output)
+		}
+		return output
+	}
+}
+
+func startAuthenticatedWebPolicyLab(t *testing.T, lab sambaDirectoryLab, arm, graph, authority *httptest.Server, exchange string) func(string, ...string) []byte {
+	t.Helper()
+	compat := webPolicyLabCompatibility(t, lab, "https://"+authority.Listener.Addr().String(), nil, "")
+	compat.exchangeSecret = func(tenant string) (string, error) {
+		if tenant != lab.tenant.TenantID {
+			return "", os.ErrNotExist
+		}
+		return exchange, nil
+	}
+	handler := compat.Handler()
+	for _, server := range []*httptest.Server{arm, graph, authority} {
+		server.Config.Handler = handler
+		server.StartTLS()
+	}
+	private := t.TempDir()
+	ca := filepath.Join(private, "trust.pem")
+	providerCA, err := os.ReadFile(os.Getenv("SSL_CERT_FILE"))
+	if err != nil {
+		t.Fatalf("read the Keycloak lab CA from SSL_CERT_FILE: %v", err)
+	}
+	certs := append(append(providerCA, '\n'), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: arm.Certificate().Raw})...)
+	if err := os.WriteFile(ca, certs, 0600); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := json.Marshal(map[string]string{
+		"arm": arm.URL, "graph": graph.URL, "authority": authority.URL, "provider": lab.admin.endpoints[0], "ca": ca,
+		"tenant": lab.tenant.TenantID, "subscription": lab.tenant.SubscriptionID, "expectedSubject": lab.tenant.Administrator,
+		"user": lab.firstAdmin.AdministratorUPN, "password": lab.firstAdmin.AdministratorPassword,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(private, "settings.secret")
+	if err := os.WriteFile(settingsPath, settings, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	env := append(os.Environ(), "AZURE_CONFIG_DIR="+cache, "REQUESTS_CA_BUNDLE="+ca,
+		"AZURE_CORE_INSTANCE_DISCOVERY=false", "AZURE_CORE_COLLECT_TELEMETRY=false", "AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no")
+	prepare := exec.CommandContext(lab.ctx, "python3", filepath.Join("..", "..", "tests", "e2e", "identity_cli.py"),
+		"--settings", settingsPath, "--device-cache", cache)
+	prepare.Env = env
+	if output, err := prepare.CombinedOutput(); err != nil {
+		t.Fatalf("authenticate the fresh Azure CLI cache: %v\n%s", err, output)
+	}
+	return func(wantError string, args ...string) []byte {
+		t.Helper()
+		command := exec.CommandContext(lab.ctx, "az", args...)
+		command.Env = env
+		output, err := command.CombinedOutput()
+		if wantError == "" && err != nil || wantError != "" && (err == nil || !strings.Contains(string(output), wantError)) {
+			t.Fatalf("az %s: %v\n%s", strings.Join(args[:2], " "), err, output)
 		}
 		return output
 	}

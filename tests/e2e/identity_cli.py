@@ -96,6 +96,11 @@ class AzureCLI:
             raise RuntimeError(f"unexpected response for az {args[0]} {args[1]} (exit {result.returncode})")
         return result.stdout
 
+    def check_version(self):
+        version = json.loads(self.run("version", "-o", "json"))
+        if version["azure-cli"] != "2.93.0" or version["extensions"]:
+            raise RuntimeError("expected Azure CLI 2.93.0 with no installed extensions")
+
     def login_service_principal(self, client, secret, reject=False):
         extra = [] if self.config.get("subscription") else ["--allow-no-subscriptions", "--skip-subscription-discovery"]
         # Azure CLI requires the joined form when a generated secret starts with '-'.
@@ -196,9 +201,7 @@ class AzureCLI:
 def check(config):
     with tempfile.TemporaryDirectory(prefix="ocean-user-") as cache:
         cli = AzureCLI(config, cache)
-        version = json.loads(cli.run("version", "-o", "json"))
-        if version["azure-cli"] != "2.93.0" or version["extensions"]:
-            raise RuntimeError("expected Azure CLI 2.93.0 with no installed extensions")
+        cli.check_version()
         cli.login_device()
         cli.check_subscription()
         user = cli.resource_subject()
@@ -218,9 +221,7 @@ def check_web_regression(config):
     with (tempfile.TemporaryDirectory(prefix="ocean-web-cli-user-") as user_cache,
           tempfile.TemporaryDirectory(prefix="ocean-web-cli-sp-") as app_cache):
         administrator = AzureCLI(config, user_cache)
-        version = json.loads(administrator.run("version", "-o", "json"))
-        if version["azure-cli"] != "2.93.0" or version["extensions"]:
-            raise RuntimeError("expected Azure CLI 2.93.0 with no installed extensions")
+        administrator.check_version()
         administrator.login_device()
         administrator.check_subscription()
         user = administrator.resource_subject()
@@ -247,10 +248,20 @@ def check_web_regression(config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
-    parser.add_argument("--web-regression", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--web-regression", action="store_true")
+    mode.add_argument("--device-cache", type=Path, help="authenticate a fresh cache for subsequent stock CLI commands")
     args = parser.parse_args()
+    config = json.loads(args.settings.read_text())
+    if args.device_cache is not None:
+        cli = AzureCLI(config, args.device_cache)
+        cli.check_version()
+        cli.login_device()
+        if cli.resource_subject() != config["expectedSubject"]:
+            raise RuntimeError("the new CLI cache does not hold the expected administrator subject")
+        return
     probe = check_web_regression if args.web_regression else check
-    print(json.dumps(probe(json.loads(args.settings.read_text())), sort_keys=True))
+    print(json.dumps(probe(config), sort_keys=True))
 
 
 if __name__ == "__main__":

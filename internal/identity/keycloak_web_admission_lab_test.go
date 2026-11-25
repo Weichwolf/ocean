@@ -3,23 +3,24 @@
 package identity
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"html"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,9 +29,14 @@ import (
 )
 
 func TestKeycloakWebAdmissionLab(t *testing.T) {
-	api := httptest.NewUnstartedServer(nil)
-	t.Cleanup(api.Close)
-	lab := keycloakSambaLab(t, CloudEndpoints{ResourceManager: "https://" + api.Listener.Addr().String()})
+	api, graph, authority := httptest.NewUnstartedServer(nil), httptest.NewUnstartedServer(nil), httptest.NewUnstartedServer(nil)
+	for _, server := range []*httptest.Server{api, graph, authority} {
+		t.Cleanup(server.Close)
+	}
+	exchange := newClientSecret()
+	lab := keycloakSambaExchangeLab(t, CloudEndpoints{
+		ResourceManager: "https://" + api.Listener.Addr().String(), MicrosoftGraph: "https://" + graph.Listener.Addr().String(),
+	}, exchange)
 	ctx, admin, tenant := lab.ctx, lab.admin, lab.tenant
 	if _, err := admin.ensureDirectoryFederation(ctx, tenant, lab.directory, lab.connectors, lab.value("reader"), directoryKerberos{}); err != nil {
 		t.Fatal(err)
@@ -86,11 +92,48 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	if err := sambaFederationGraph(ctx, lab.primary, "groupMemberAdd", nil, secondGroup, member); err != nil {
 		t.Fatal(err)
 	}
-	apps := []Application{
-		{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: "Samba browser A", WebRedirectURIs: []string{"https://a.apps.ocean.test/oidc"}},
-		{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: "Samba browser B", WebRedirectURIs: []string{"https://b.apps.ocean.test/oidc"}},
+	command := startAuthenticatedWebPolicyLab(t, lab, api, graph, authority, exchange)
+	callback, callbackCA := kerberosBrowserCallback(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.URL.Path != "/a" && r.URL.Path != "/b") || !r.URL.Query().Has("code") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "Ocean test callback received")
+	}))
+	var apps []Application
+	for _, suffix := range []string{"a", "b"} {
+		name, redirect := "Samba browser "+suffix, callback.URL+"/"+suffix
+		var app struct {
+			ID          string                          `json:"id"`
+			AppID       string                          `json:"appId"`
+			DisplayName string                          `json:"displayName"`
+			Web         struct{ RedirectURIs []string } `json:"web"`
+		}
+		created := command("", "ad", "app", "create", "--display-name", name, "--sign-in-audience", "AzureADMyOrg", "--web-redirect-uris", redirect, "-o", "json")
+		if err := json.Unmarshal(created, &app); err != nil || !tenantID.MatchString(app.ID) || !tenantID.MatchString(app.AppID) ||
+			app.ID == app.AppID || app.DisplayName != name || !slices.Equal(app.Web.RedirectURIs, []string{redirect}) {
+			t.Fatalf("validate the registered web application: %v", err)
+		}
+		apps = append(apps, Application{TenantID: tenant.TenantID, ID: app.ID, ClientID: app.AppID,
+			DisplayName: app.DisplayName, WebRedirectURIs: app.Web.RedirectURIs})
 	}
-	az := startWebPolicyLab(t, lab, api, apps, "")
+	if apps[0].ID == apps[1].ID || apps[0].ClientID == apps[1].ClientID {
+		t.Fatal("the CLI registrations shared an application or client identity")
+	}
+	t.Log("the authenticated Azure CLI created both browser client registrations through Graph")
+	az := func(method, path string, groups []string, wantError string) []byte {
+		t.Helper()
+		args := []string{"rest", "--method", method, "--url", api.URL + path + "?api-version=" + directoryAPIVersion, "-o", "json"}
+		if groups != nil {
+			body, err := json.Marshal(map[string][]string{"groupIds": groups})
+			if err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "--body", string(body))
+		}
+		return command(wantError, args...)
+	}
 	policyPath := func(tenantID, applicationID string) string {
 		return directoryPath(tenantID) + "/webApplications/" + applicationID
 	}
@@ -125,6 +168,19 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	issuer := admin.endpoints[0] + "/realms/" + tenant.TenantID
 	protocol := issuer + "/protocol/openid-connect"
 	keys := oidc.NewRemoteKeySet(oidc.ClientContext(ctx, &browser), protocol+"/certs")
+	unscoped := browser
+	unscoped.Jar, err = cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsider := newBrowserAuthorization(apps[0])
+	page := browserCall(t, ctx, &unscoped, protocol+"/auth?"+outsider.params.Encode(), nil)
+	page = submitBrowserForm(t, ctx, &unscoped, issuer, page, nil, url.Values{})
+	page = submitBrowserForm(t, ctx, &unscoped, issuer, page, browserPasswordForm,
+		url.Values{"username": {"outsider@" + federationLabDomain}, "password": {lab.value("outsider")}})
+	if page.header.Get("Location") != "" || !browserPasswordForm.Match(page.body) {
+		t.Fatalf("the out-of-scope account bypassed the password form: status %d", page.status)
+	}
 	foreignCallback := newBrowserAuthorization(apps[0])
 	foreignCallback.params.Set("redirect_uri", apps[1].WebRedirectURIs[0])
 	if page := browserCall(t, ctx, &browser, protocol+"/auth?"+foreignCallback.params.Encode(), nil); page.status != http.StatusBadRequest || page.header.Get("Location") != "" {
@@ -136,25 +192,17 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 		t.Fatalf("the client accepted a plain PKCE challenge: status %d", page.status)
 	}
 	var firstBrowserSession string
-	for index, app := range apps {
-		authorization := newBrowserAuthorization(app)
-		page := browserCall(t, ctx, &browser, protocol+"/auth?"+authorization.params.Encode(), nil)
-		if index == 0 {
-			if page.status != http.StatusUnauthorized || page.header.Get("WWW-Authenticate") != "Negotiate" {
-				t.Fatalf("the fresh browser did not receive a Kerberos challenge: status %d", page.status)
-			}
-			page = submitBrowserForm(t, ctx, &browser, issuer, page, nil, url.Values{})
-			page = submitBrowserForm(t, ctx, &browser, issuer, page, browserPasswordForm,
-				url.Values{"username": {principal}, "password": {lab.value("employee")}})
-			page = submitBrowserForm(t, ctx, &browser, issuer, page, browserOTPForm,
-				url.Values{"otp": {fixtureOTP(seed)}})
-		}
+	authorizations := []browserAuthorization{newBrowserAuthorization(apps[0]), newBrowserAuthorization(apps[1])}
+	callbacks := externalMFABrowser(t, ctx, issuer, admin.endpoints[0], callbackCA, principal, lab.value("employee"), seed, authorizations, browser.Jar)
+	for index, authorization := range authorizations {
+		page := browserPage{status: http.StatusFound, header: http.Header{"Location": {callbacks[index]}}}
 		token := exchangeBrowserCode(t, ctx, &browser, issuer, keys, authorization, page)
 		if token.Subject != user || (index != 0 && token.SessionID != firstBrowserSession) {
 			t.Fatal("the web apps did not reuse an assured session for the same AD user")
 		}
 		firstBrowserSession = token.SessionID
 	}
+	t.Log("the two CLI-registered clients issued separate audiences for one LDAP subject and one MFA session")
 	started := time.Now()
 	if err := sambaFederationGraph(ctx, lab.primary, "groupMemberRemove", nil, secondGroup, member); err != nil {
 		t.Fatal(err)
@@ -185,6 +233,65 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	if denied.status != http.StatusUnauthorized || denied.header.Get("WWW-Authenticate") != "" || denied.header.Get("Location") != "" {
 		t.Fatalf("the recreated group inherited the earlier grant: status %d", denied.status)
 	}
+}
+
+func externalMFABrowser(t *testing.T, ctx context.Context, issuer, origin string, callbackCA []byte, user, password string, seed []byte,
+	authorizations []browserAuthorization, cookies http.CookieJar) []string {
+	t.Helper()
+	home := t.TempDir()
+	callbackCert := filepath.Join(home, "callback-ca.pem")
+	if err := os.WriteFile(callbackCert, callbackCA, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var addresses, redirects []string
+	for _, auth := range authorizations {
+		addresses = append(addresses, issuer+"/protocol/openid-connect/auth?"+auth.params.Encode())
+		redirects = append(redirects, auth.params.Get("redirect_uri"))
+	}
+	config, err := json.Marshal(map[string]any{
+		"home": home, "issuer": issuer, "issuerOrigin": origin, "user": user, "password": password, "otpSeed": seed,
+		"addresses": addresses, "redirects": redirects,
+		"certificates": map[string]string{"Ocean issuer": os.Getenv("SSL_CERT_FILE"), "Ocean callback": callbackCert},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, cancel := context.WithTimeout(ctx, 50*time.Second)
+	defer cancel()
+	command := exec.CommandContext(probe, "node", filepath.Join("..", "..", "tests", "e2e", "web_mfa_browser.mjs"))
+	command.Stdin = bytes.NewReader(config)
+	output, err := command.Output()
+	if failure, ok := err.(*exec.ExitError); ok {
+		t.Fatalf("external browser MFA: %v\n%s", failure, failure.Stderr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence struct {
+		Redirects []string `json:"redirects"`
+		Cookies   []struct {
+			Name, Value, Path string
+			Secure, HTTPOnly  bool
+		} `json:"cookies"`
+		Product string `json:"product"`
+	}
+	if err := json.Unmarshal(output, &evidence); err != nil || len(evidence.Redirects) != len(authorizations) || len(evidence.Cookies) == 0 || evidence.Product == "" {
+		t.Fatalf("read the native MFA browser evidence: %v", err)
+	}
+	issuerURL, err := url.Parse(issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range evidence.Cookies {
+		parsed, err := http.ParseCookie(cookie.Name + "=" + cookie.Value)
+		if err != nil || len(parsed) != 1 || parsed[0].Name != cookie.Name {
+			t.Fatal("Chromium returned an invalid browser session cookie")
+		}
+		parsed[0].Path, parsed[0].Secure, parsed[0].HttpOnly = cookie.Path, cookie.Secure, cookie.HTTPOnly
+		cookies.SetCookies(issuerURL, parsed)
+	}
+	t.Logf("external MFA and both redirects completed in %s with no domain ticket", evidence.Product)
+	return evidence.Redirects
 }
 
 type browserAuthorization struct {
@@ -236,7 +343,6 @@ func browserCall(t *testing.T, ctx context.Context, browser *http.Client, endpoi
 }
 
 var browserPasswordForm = regexp.MustCompile(`(?i)<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"`)
-var browserOTPForm = regexp.MustCompile(`(?i)<form[^>]*id="kc-otp-login-form"[^>]*action="([^"]+)"`)
 var fallbackBrowserForm = regexp.MustCompile(`(?i)<form[^>]*action="([^"]+)"`)
 
 func submitBrowserForm(t *testing.T, ctx context.Context, browser *http.Client, issuer string, page browserPage, field *regexp.Regexp, form url.Values) browserPage {
@@ -253,16 +359,6 @@ func submitBrowserForm(t *testing.T, ctx context.Context, browser *http.Client, 
 		t.Fatal("the provider returned a form outside the tenant issuer")
 	}
 	return browserCall(t, ctx, browser, endpoint, form)
-}
-
-func fixtureOTP(seed []byte) string {
-	var counter [8]byte
-	binary.BigEndian.PutUint64(counter[:], uint64(time.Now().Unix()/30))
-	mac := hmac.New(sha1.New, seed)
-	mac.Write(counter[:])
-	digest := mac.Sum(nil)
-	offset := int(digest[len(digest)-1] & 15)
-	return fmt.Sprintf("%06d", (binary.BigEndian.Uint32(digest[offset:offset+4])&0x7fffffff)%1000000)
 }
 
 type browserIdentity struct {

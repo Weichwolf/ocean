@@ -149,6 +149,8 @@ VM-01	vm-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId
 VM-02	vm-replacement-power-state	2.93.0	none	2024-03-01	rest --method get --url {vmId}/instanceView?api-version=2024-03-01 -o json
 WORKPLACE-17	web-app-register	2.93.0	none	v1.0	ad app create --display-name {name} --sign-in-audience AzureADMyOrg --web-redirect-uris {callback} -o json
 WORKPLACE-17	web-app-show	2.93.0	none	v1.0	ad app show --id {appId} -o json
+WORKPLACE-20	web-admin-login	2.93.0	none	v2.0+2022-12-01	login --tenant {tenant} --use-device-code -o none
+WORKPLACE-20	web-client-register	2.93.0	none	v1.0	ad app create --display-name {name} --sign-in-audience AzureADMyOrg --web-redirect-uris {callback} -o json
 WORKPLACE-20	web-policy-put	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory/webApplications/{applicationObjectId}?api-version=2026-11-01 --body {groupPolicyJson} -o json
 WORKPLACE-20	web-policy-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory/webApplications/{applicationObjectId}?api-version=2026-11-01 -o json
 WORKPLACE-22	cli-cloud-register	2.93.0	none	2022-09-01	cloud register --name ocean --endpoint-resource-manager {arm} -o none
