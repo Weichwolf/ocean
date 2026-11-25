@@ -1,0 +1,5 @@
+farms: 2
+nodesPerFarm: 3
+defaults:
+  memoryMiB: 1024
+  vcpus: 1
