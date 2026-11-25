@@ -237,6 +237,43 @@ state's `evidence` directory. It exercises the backing files directly. The
 VM-provider acceptance exercises Windows writes and confirms the fence before
 placing a failed worker's VM on another host.
 
+### Regional VM store probe
+
+The optional `region.virtualMachines` configuration registers the catalog
+for the regional ARM routes. Each `images` entry specifies `tenantId`,
+`subscriptionId`, `blobUri`, `sizeGiB`, `imageSha256` and `firmwareSha256`.
+The HTTPS URI identifies an operator-prepared image in that subscription.
+Catalog lookups use the URI as an identifier. Workers use the paired digests
+to verify the files staged by the operator. The optional `diskQuotaGiB`
+sets the OS disk quota for each subscription in the region and defaults to
+128 GiB. CPU and RAM count against the subscription's workload placement
+policy. A VM retains these reservations while it is stopped.
+
+Creating a private network interface reserves its IPv4 address in an
+undelegated subnet. VM creation attaches the interface and reserves the OS
+disk, worker and quotas in one transaction. Acknowledged VM deletion frees
+the disk reservation and detaches the interface. Delete the interface to
+release its private address. The VM, image and NIC belong to the same
+resource group and subscription.
+
+The regional controller persists signed power-off evidence for the exact
+disk writer, withdraws the old assignment and waits for a ready KVM worker
+in an allowed pool if capacity is full. It replaces the writer generation
+and worker reservation together, preserving the disk, key, machine ID and
+private IPv4 address. Start the worker only after obtaining its current
+assignment. Lease expiry updates availability without moving the writer.
+
+Run the transaction probe against an isolated loopback etcd. Set
+`OCEAN_E2E_VM_AZ` to run the instance-view request with the pinned unmodified
+Azure CLI. The probe uses seeded host availability and reports, and the
+optional CLI request uses fixture authentication over TLS.
+
+```sh
+OCEAN_E2E_VM_ETCD=http://127.0.0.1:12379 OCEAN_E2E_VM_AZ="$(command -v az)" \
+  go test -mod=readonly -race -tags=e2e -count=1 \
+  -run '^TestRegionalVirtualMachineStore$' -v ./internal/controlplane
+```
+
 ## Azure CLI identity compatibility
 
 After starting the regional stack and the replicated database, deploy two Keycloak instances and run the sign-in fault check. The verification uses the isolated operator VM and the unmodified Microsoft Debian AMD64 package for Azure CLI 2.93.0. Use the package argument to install it if it is absent. The deploy and verification scripts check the SHA-256 of the supplied artifacts. [Keycloak 26.8.2](https://github.com/keycloak/keycloak/releases/tag/26.8.2) · [Microsoft Azure CLI packages](https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/)

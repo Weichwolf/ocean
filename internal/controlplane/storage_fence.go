@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
@@ -55,6 +56,9 @@ func (r *Region) ApplyStorageFence(ctx context.Context, signed storage.SignedFen
 	}
 	if read.Responses[1].GetResponseRange().Count != 0 {
 		return arm.ErrStorageBusy
+	}
+	if strings.HasPrefix(strings.ToLower(writer.Resource.Path), strings.ToLower(arm.VirtualMachineType)+"/") {
+		return r.queueVMFence(ctx, scope, writer, proof, items[0].ModRevision, fenceKey)
 	}
 	_, record, previous, revision, err := r.readContainer(ctx, scope, writer.Resource)
 	if err != nil {

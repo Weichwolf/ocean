@@ -59,7 +59,8 @@ func (r *Region) claimContainerNetwork(ctx context.Context, scope arm.Subscripti
 		return nil, nil, err
 	}
 	index := vnet.SubnetIndex(name)
-	if index < 0 || !vnet.Subnets[index].Properties.HasDelegation(service) {
+	if index < 0 || service != "" && !vnet.Subnets[index].Properties.HasDelegation(service) ||
+		service == "" && len(vnet.Subnets[index].Properties.Delegations) != 0 {
 		return nil, nil, arm.ErrContainerDelegationRequired
 	}
 	claims, guard, key, err := r.containerNetworkClaims(ctx)

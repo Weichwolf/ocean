@@ -42,6 +42,7 @@ type regionConfig struct {
 	WireGuard           *wireGuardConfig          `json:"wireGuard"`
 	Workloads           *workloadConfig           `json:"workloads"`
 	Storage             *storageConfig            `json:"storage"`
+	VirtualMachines     *vmConfig                 `json:"virtualMachines,omitempty"`
 	Telemetry           *telemetryConfig          `json:"telemetry"`
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
@@ -125,6 +126,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				if region.workloads != nil {
 					go region.reconcileReplicaSets(ctx, logger)
 				}
+				if region.vms != nil {
+					go region.reconcileVMFences(ctx, logger)
+				}
 				if cfg.Region.ManagedDirectories != nil {
 					go region.reconcileManagedDirectories(ctx, logger)
 				}
@@ -156,6 +160,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				}
 				if region.storage != nil {
 					resources.Storage = region
+				}
+				if region.vms != nil {
+					resources.VirtualMachines = region
 				}
 				if cfg.Region.FunctionPlans && cfg.Region.FunctionDomain != "" && cfg.Identity.Cloud.StorageEndpoint != "" &&
 					region.workloads != nil && region.storage != nil {
@@ -191,6 +198,7 @@ type Region struct {
 	directoryCapacity enrollment.Capacity
 	directoryFencer   ed25519.PublicKey
 	storage           *storageControl
+	vms               *vmControl
 	telemetry         *telemetryControl
 	cell              string
 }
@@ -219,6 +227,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
+	vms, err := openVMControl(cfg.VirtualMachines, workloads, storage)
+	if err != nil {
+		return nil, err
+	}
 	directoryFencer, err := loadFencerKey(cfg.DirectoryFenceKey)
 	if err != nil {
 		return nil, err
@@ -243,7 +255,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
-		directoryFencer: directoryFencer}
+		directoryFencer: directoryFencer, vms: vms}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
@@ -296,6 +308,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapStorage(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapVirtualMachines(ctx); err != nil {
 		return err
 	}
 	return region.bootstrapFencing(ctx)
