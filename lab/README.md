@@ -116,6 +116,11 @@ Unix socket `<state>/<profile>/vnc`. The probe script is on the
 `OCEAN_PROBE` optical volume. The launcher records the installation
 media digest in `<state>/<profile>/media.json`.
 
+After a fixture has booted from its installed disk, resume a stopped guest
+with `--resume`, the same `--state` and `--profile`, and the original `--iso`.
+The launcher checks the media digest and retains the disk, firmware state,
+probe ISO, and serial log.
+
 In each disposable Windows guest, set the Ethernet interface to
 `10.232.1.20/24` (Server Core) or `10.232.1.21/24` (Windows 11), with
 DNS at `10.232.1.11` and without a default gateway. Set the correct time

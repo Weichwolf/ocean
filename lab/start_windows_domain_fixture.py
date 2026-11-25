@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -26,6 +27,18 @@ def media_digest(image):
         return hashlib.file_digest(media, "sha256").hexdigest()
 
 
+def clear_stale_socket(path):
+    if not path.is_socket():
+        return
+    with socket.socket(socket.AF_UNIX) as endpoint:
+        try:
+            endpoint.connect(str(path))
+        except ConnectionRefusedError:
+            path.unlink()
+            return
+    raise RuntimeError(f"the guest endpoint is still active: {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", required=True, type=Path)
@@ -34,6 +47,7 @@ def main():
     parser.add_argument("--answer-file", type=Path, help="optional private Autounattend.xml")
     parser.add_argument("--guest-file", action="append", default=[], type=Path,
                         help="optional file to attach to this fixture's private probe ISO")
+    parser.add_argument("--resume", action="store_true", help="boot the existing fixture disk after the guest has stopped")
     args = parser.parse_args()
 
     state = args.state.resolve()
@@ -47,6 +61,8 @@ def main():
         parser.error("--answer-file must identify an Autounattend.xml file")
     if any(not path.is_file() for path in args.guest_file):
         parser.error("each --guest-file must identify a regular file")
+    if args.resume and (args.answer_file or args.guest_file):
+        parser.error("--resume reuses the existing probe ISO")
 
     use_tpm = args.profile == "windows-11"
     if use_tpm and not shutil.which("swtpm"):
@@ -55,25 +71,36 @@ def main():
     firmware_vars = "OVMF_VARS_4M.ms.fd" if use_tpm else "OVMF_VARS_4M.fd"
 
     fixture = state / args.profile
-    fixture.mkdir(mode=0o700)
     disk = fixture / "disk.qcow2"
     variables = fixture / "OVMF_VARS.fd"
     probe_iso = fixture / "probe.iso"
-    shutil.copyfile(FIRMWARE / firmware_vars, variables)
-    run("qemu-img", "create", "-q", "-f", "qcow2", disk, "64G")
-    probe_files = [HERE / "verify_windows_domain_join.ps1"]
-    if args.answer_file:
-        probe_files.append(args.answer_file.resolve())
-    probe_files.extend(path.resolve() for path in args.guest_file)
-    run("genisoimage", "-quiet", "-J", "-V", "OCEAN_PROBE", "-o", probe_iso, *probe_files)
-    probe_iso.chmod(0o600)
+    media_file = fixture / "media.json"
     ip, mac = PROFILES[args.profile]
-    (fixture / "media.json").write_text(json.dumps({
+    media = {
         "profile": args.profile,
         "installationMediaSHA256": media_digest(iso),
         "guestAddress": ip,
         "directoryDNS": "10.232.1.11",
-    }, indent=2) + "\n")
+    }
+    if args.resume:
+        if json.loads(media_file.read_text()) != media:
+            parser.error("--resume requires the original fixture profile and installation media")
+        for path in (disk, variables, probe_iso):
+            if not path.is_file():
+                parser.error(f"the existing fixture is missing {path.name}")
+        for name in ("qmp", "vnc", "tpm.sock"):
+            clear_stale_socket(fixture / name)
+    else:
+        fixture.mkdir(mode=0o700)
+        shutil.copyfile(FIRMWARE / firmware_vars, variables)
+        run("qemu-img", "create", "-q", "-f", "qcow2", disk, "64G")
+        probe_files = [HERE / "verify_windows_domain_join.ps1"]
+        if args.answer_file:
+            probe_files.append(args.answer_file.resolve())
+        probe_files.extend(path.resolve() for path in args.guest_file)
+        run("genisoimage", "-quiet", "-J", "-V", "OCEAN_PROBE", "-o", probe_iso, *probe_files)
+        probe_iso.chmod(0o600)
+        media_file.write_text(json.dumps(media, indent=2) + "\n")
 
     def qemu_path(path):
         return str(path).replace(",", ",,")
@@ -82,8 +109,9 @@ def main():
         "nice", "-n", "10", "qemu-system-x86_64", "-accel", "kvm", "-cpu", "host",
         "-machine", "q35,smm=on", "-m", "4096", "-smp", "2", "-name", f"ocean-{args.profile}",
         "-display", "none", "-vnc", f"unix:{fixture / 'vnc'}", "-qmp",
-        f"unix:{fixture / 'qmp'},server=on,wait=off", "-monitor", "none", "-boot", "once=d",
-        "-serial", f"file:{fixture / 'guest-serial.log'}",
+        f"unix:{fixture / 'qmp'},server=on,wait=off", "-monitor", "none", "-boot", "order=c" if args.resume else "once=d",
+        "-chardev", f"file,id=probe-serial,path={qemu_path(fixture / 'guest-serial.log')},append=on",
+        "-serial", "chardev:probe-serial",
         "-drive", f"if=pflash,format=raw,readonly=on,file={qemu_path(FIRMWARE / firmware_code)}",
         "-drive", f"if=pflash,format=raw,file={qemu_path(variables)}",
         "-drive", f"if=none,id=disk,format=qcow2,file={qemu_path(disk)}",
@@ -99,7 +127,7 @@ def main():
 
     if use_tpm:
         tpm_state = fixture / "tpm"
-        tpm_state.mkdir(mode=0o700)
+        tpm_state.mkdir(mode=0o700, exist_ok=args.resume)
         tpm_socket = fixture / "tpm.sock"
         command.extend([
             "-global", "driver=cfi.pflash01,property=secure,value=on",
