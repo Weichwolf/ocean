@@ -67,16 +67,17 @@ proof() {
         host="dc0$2.ad.runtime.test"
         cache=$(mktemp -d)
         printf "%s\n" "[libdefaults]" "default_realm = AD.RUNTIME.TEST" "rdns = false" \
-            "[realms]" "AD.RUNTIME.TEST = {" "kdc = $address" "}" >"$cache/krb5.conf"
-        printf "\n%s %s\n" "$address" "$host" >> /etc/hosts
+            "dns_lookup_kdc = true" "udp_preference_limit = 1" >"$cache/krb5.conf"
+        printf "nameserver %s\noptions timeout:1 attempts:2\n" "$address" > /etc/resolv.conf
+        test "$(dig +time=1 +tries=1 +short "$host" A)" = "$address"
         export KRB5_CONFIG="$cache/krb5.conf" KRB5CCNAME="FILE:$cache/ticket"
-        kinit employee@AD.RUNTIME.TEST
+        timeout 10 kinit employee@AD.RUNTIME.TEST
         klist | grep -F krbtgt/AD.RUNTIME.TEST@AD.RUNTIME.TEST
         path="ad.runtime.test/Policies/{31B2F340-016D-11D2-945F-00C04FB984F9}/GPT.INI"
-        smbclient "//$host/sysvol" -I "$address" --use-kerberos=required \
+        smbclient "//$host/sysvol" --use-kerberos=required \
             --use-krb5-ccache="$KRB5CCNAME" -c "get $path $cache/gpt.ini"
         sha256sum "$cache/gpt.ini" | cut -d " " -f 1
-        if smbclient "//$host/sysvol" -I "$address" --use-kerberos=required \
+        if smbclient "//$host/sysvol" --use-kerberos=required \
             --use-krb5-ccache="$KRB5CCNAME" -c "put $cache/gpt.ini $path" >"$cache/denied" 2>&1; then
             printf "Unprivileged employee could write policy\n" >&2
             exit 1
@@ -84,9 +85,31 @@ proof() {
         grep -F NT_STATUS_ACCESS_DENIED "$cache/denied"
     ' -- "$@" <"$probe/employee.secret"
 }
+directory_tool() {
+    local controller=$1
+    shift
+    p exec "$controller" sh -ec '
+        entry=$(find /var/lib/ocean-ad -path "*/etc/smb.conf")
+        export KRB5_CONFIG="${entry%/etc/smb.conf}/private/krb5.conf"
+        exec samba-tool "$@" -s "$entry"
+    ' -- "$@"
+}
 account() {
-    p exec "$1" sh -c 'entry=$(find /var/lib/ocean-ad -path "*/etc/smb.conf"); samba-tool user show employee -s "$entry" |
-      grep -E "^(objectSid|objectGUID):"'
+    directory_tool "$1" user show employee | grep -E "^(objectSid|objectGUID):"
+}
+wait_membership() {
+    local controller=$1 group=$2 expected=$3 started=$4 members
+    while (( SECONDS - started < 45 )); do
+        if members=$(directory_tool "$controller" group listmembers "$group" 2>/dev/null) && [[ "$members" == "$expected" ]]; then
+            printf '%s replicated on %s in %d seconds (members: %s).\n' \
+                "$group" "$controller" "$(( SECONDS - started ))" "${expected:-empty}"
+            return
+        fi
+        sleep 1
+    done
+    printf 'Group membership failed to converge on %s for %s within 45 seconds.\n' "$controller" "$group" >&2
+    directory_tool "$controller" drs showrepl -P >&2 || true
+    return 1
 }
 same_policy() {
     local hash
@@ -128,6 +151,12 @@ start "$replica" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr" \
     --secret "$secret,target=ocean-directory-bootstrap,mode=0400"
 wait_dns "$replica" "$replica_addr" 2
 test "$original" = "$(account "$replica")"
+directory_tool "$name" group add LabPrimaryGroup
+directory_tool "$name" group addmembers LabPrimaryGroup employee
+wait_membership "$replica" LabPrimaryGroup employee "$SECONDS"
+directory_tool "$replica" group add LabReplicaGroup
+directory_tool "$replica" group addmembers LabReplicaGroup employee
+wait_membership "$name" LabReplicaGroup employee "$SECONDS"
 p stop --time 15 "$name" >/dev/null
 p rm "$replica" --force >/dev/null
 start "$replica" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr"
@@ -137,8 +166,11 @@ replicated=$(proof "$replica_addr" 2)
 printf '%s\n' "$replicated"
 same_policy "$before" "$replicated"
 printf 'The replica reopened without the bootstrap secret and served Kerberos and SYSVOL with the primary stopped.\n'
+directory_tool "$replica" group removemembers LabPrimaryGroup employee
+recovery_started=$SECONDS
 p start "$name" >/dev/null
 wait_dns "$name" "$addr" 1
+wait_membership "$name" LabPrimaryGroup "" "$recovery_started"
 p stop --time 15 "$replica" >/dev/null
 after=$(proof "$addr" 1)
 same_policy "$before" "$after"

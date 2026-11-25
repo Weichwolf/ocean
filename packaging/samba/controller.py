@@ -320,8 +320,13 @@ def serve(settings):
         Path("/etc/resolv.conf").write_text("nameserver " + settings["address"] + "\n")
         Path("/run/samba").mkdir(mode=0o755, parents=True, exist_ok=True)
         runtime = dict(os.environ, KRB5_CONFIG=str(config.parent.parent / "private/krb5.conf"))
-        process = subprocess.Popen(["/usr/sbin/samba", "-F", "--debug-stdout", "-s", str(config)], stdin=subprocess.DEVNULL,
-                                   env=runtime)
+        # Native DRS notifications handle steady-state writes. Poll as well so
+        # a late join or a disconnected partner catches up without a manual sync.
+        process = subprocess.Popen([
+            "/usr/sbin/samba", "-F", "--debug-stdout", "-s", str(config),
+            "--option=dreplsrv:periodic_startup_interval=5",
+            "--option=dreplsrv:periodic_interval=15",
+        ], stdin=subprocess.DEVNULL, env=runtime)
         stopping = False
 
         def stop(_signum, _frame):

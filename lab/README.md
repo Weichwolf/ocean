@@ -265,6 +265,9 @@ The primary provisions the domain. The replica joins over Kerberos and seeds
 SYSVOL over signed SMB, including the remote security descriptors. It checks
 the seeded policy ACLs before listening. A persistent join checkpoint lets the
 replica retry the seed if the primary goes away during the initial copy.
+Samba DRS replicates directory records in both directions. Both controllers
+retain native change notifications and poll their peers every 15 seconds to
+catch up after a late join or a disconnection.
 
 ```sh
 nice -n 10 podman build -t localhost/ocean-directory:lab packaging/samba
@@ -275,9 +278,13 @@ OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha
 
 The probe runs both controllers on one isolated rootless Podman network. It
 compares employee identity and SYSVOL bytes, checks that the employee cannot
-write the policy, and tests each controller with its peer stopped. It reopens
-both volumes without bootstrap credentials. The harness stores the Markdown
-report, TSV, and client logs under `artifacts/e2e`.
+write the policy, and tests each controller with its peer stopped. The client
+uses AD DNS for Kerberos and SMB discovery. The probe reopens both volumes
+without bootstrap credentials and requires new group memberships to converge
+in either direction within 45 seconds. It revokes a membership while the
+primary is stopped and requires the restarted primary to observe the change
+within 45 seconds. The harness stores the Markdown report, TSV, and client
+logs under `artifacts/e2e`.
 
 The regional directory stays in `Creating` pending verified health reporting.
 Ongoing SYSVOL synchronization, controller replacement, and the separate-host
