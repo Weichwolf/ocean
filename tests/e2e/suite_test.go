@@ -163,7 +163,9 @@ func TestAcceptance(t *testing.T) {
 			continue
 		}
 		step.Cases = applicable
+		executed := false
 		t.Run(step.Name, func(t *testing.T) {
+			executed = true
 			if sessions != nil && step.BlockedReason == "" && step.LabState != "" {
 				starting, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 				err := sessions.use(starting, step.LabState)
@@ -180,6 +182,10 @@ func TestAcceptance(t *testing.T) {
 			}
 			t.Logf("%s %s — %s", strings.Join(applicable, ", "), outcome.Status, outcome.Detail)
 		})
+		if !executed {
+			outcomes = append(outcomes, harness.Outcome{Name: step.Name, Cases: applicable, Status: harness.Blocked,
+				Detail: "The Go subtest filter excluded a required probe."})
+		}
 	}
 }
 
