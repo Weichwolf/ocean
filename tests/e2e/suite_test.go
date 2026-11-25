@@ -26,6 +26,7 @@ type labOptions struct {
 	domain      string
 	domainImage string
 	sambaImage  string
+	adcliImage  string
 	packageDeb  string
 	backup      string
 	phaseOne    bool
@@ -99,6 +100,9 @@ func TestAcceptance(t *testing.T) {
 	}
 	if image := options.sambaImage; image != "" {
 		meta.Inputs["Samba controller image"] = image
+	}
+	if image := options.adcliImage; image != "" {
+		meta.Inputs["Debian directory client image"] = image
 	}
 	for _, file := range []string{filepath.Join(root, "acceptance.tsv"), contractFile,
 		filepath.Join(root, "tests", "e2e", "testdata", "images.lock.yaml")} {
@@ -202,6 +206,7 @@ func configureLab(root, profile string) labOptions {
 		packageDeb: localPath(root, os.Getenv("OCEAN_E2E_PACKAGE")), backup: localPath(root, os.Getenv("OCEAN_E2E_ETCD_ARCHIVE")),
 		domain: localPath(root, os.Getenv("OCEAN_E2E_DOMAIN_STATE")), domainImage: localPath(root, os.Getenv("OCEAN_E2E_DEBIAN_IMAGE")),
 		sambaImage: os.Getenv("OCEAN_E2E_SAMBA_IMAGE"),
+		adcliImage: os.Getenv("OCEAN_E2E_ADCLI_IMAGE"),
 		phaseOne:   profile == "phase-one",
 	}
 	switch profile {

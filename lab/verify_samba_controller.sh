@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || (${2:-} != "" && ${2:-} != --restore) ]]; then
-    printf 'Usage: %s sha256:<local-controller-image-id> [--restore]\n' "$0" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--delegated-join)?$ ]]; then
+    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--delegated-join]\n' "$0" >&2
     exit 2
 fi
 image=$1
+if [[ ${2:-} == --delegated-join && ! ${OCEAN_E2E_ADCLI_IMAGE:-} =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    printf 'Set OCEAN_E2E_ADCLI_IMAGE to the local Debian join client image ID.\n' >&2
+    exit 2
+fi
 umask 077
 probe=$(mktemp -d)
 name="ocean-directory-test-${probe##*.}"
@@ -238,6 +242,111 @@ same_policy() {
     hash=$(grep -Ex '[a-f0-9]{64}' <<<"$1")
     test "$hash" = "$(grep -Ex '[a-f0-9]{64}' <<<"$2")"
 }
+debian_join() {
+    local machine=$1 user=$2
+    p run --rm -i --network "$net" --entrypoint /bin/bash "$OCEAN_E2E_ADCLI_IMAGE" -c '
+        set -euo pipefail
+        umask 077
+        printf "nameserver %s\noptions timeout:1 attempts:2\n" "$1" >/etc/resolv.conf
+        private=$(mktemp -d)
+        export KRB5_CONFIG="$private/krb5.conf" KRB5CCNAME="FILE:$private/ticket"
+        printf "%s\n" "[libdefaults]" "default_realm = AD.RUNTIME.TEST" "rdns = false" \
+            "[realms]" "AD.RUNTIME.TEST = {" "kdc = $1" "}" >"$KRB5_CONFIG"
+        if [[ "$2" == authenticate ]]; then
+            timeout 10 kinit "$3@AD.RUNTIME.TEST"
+            exit
+        fi
+        timeout 20 adcli join --domain ad.runtime.test --domain-controller dc01.ad.runtime.test \
+            --computer-name "$2" --host-fqdn "${2,,}.ad.runtime.test" --login-user "$3" \
+            --stdin-password --host-keytab "$private/host.keytab"
+        timeout 10 adcli testjoin --domain ad.runtime.test --domain-controller dc01.ad.runtime.test \
+            --host-keytab "$private/host.keytab"
+    ' -- "$addr" "$machine" "$user"
+}
+
+join_request() {
+    local action=$1 request=$2 machine=$3 expires=$4 payload=${5:-}
+    printf '{"requestId":"%s","machineName":"%s","expiresAt":%s%s}\n' "$request" "$machine" "$expires" "$payload" |
+        p exec -i "$name" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py "$action"
+}
+
+join_user() {
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["userPrincipalName"].split("@")[0])'
+}
+
+verify_delegated_join() {
+    local first_id second_id expires password field receipt user sid probe_acl sweep started
+    first_id=$(cat /proc/sys/kernel/random/uuid)
+    second_id=$(cat /proc/sys/kernel/random/uuid)
+    expires=$(($(date +%s) + 180))
+    password="Join9-$(openssl rand -hex 27)"
+    field=',"password":"'"$password"'"'
+    receipt=$(join_request stage-join "$first_id" OCEANJOIN "$expires" "$field")
+    test "$receipt" = "$(join_request stage-join "$first_id" OCEANJOIN "$expires" "$field")"
+    user=$(join_user <<<"$receipt")
+    sid=$(directory_tool "$name" user show "$user" --attributes=objectSid | awk '$1 == "objectSid:" { print $2 }')
+    probe_acl='CN=OCEANJOIN,CN=Computers,DC=ad,DC=runtime,DC=test'
+    directory_tool "$name" dsacl get --objectdn="$probe_acl" | grep -Fq "$sid"
+    if join_request stage-join "$second_id" OCEANJOIN "$expires" "$field" >/dev/null 2>&1; then
+        printf 'A different request adopted the prestaged computer.\n' >&2
+        return 1
+    fi
+    directory_tool "$name" computer add OTHERPC
+    local machine
+    for machine in OTHERPC FRESHPC; do
+        if debian_join "$machine" "$user" <<<"$password" >"$probe/denied-join.log" 2>&1; then
+            printf 'The join principal was accepted for %s.\n' "$machine" >&2
+            return 1
+        fi
+        grep -Ei 'access denied|insufficient (access|permissions)' "$probe/denied-join.log"
+    done
+    printf 'A valid delegated credential could neither reset another computer nor create a new one.\n'
+    debian_join OCEANJOIN "$user" <<<"$password"
+    if join_request stage-join "$first_id" OCEANJOIN "$expires" "$field" >/dev/null 2>&1; then
+        printf 'The used authorization was staged again.\n' >&2
+        return 1
+    fi
+    join_request close-join "$first_id" OCEANJOIN "$expires" >/dev/null
+    join_request close-join "$first_id" OCEANJOIN "$expires" >/dev/null
+    if debian_join OCEANJOIN "$user" <<<"$password" >"$probe/reused-join.log" 2>&1; then
+        printf 'The closed authorization was reused.\n' >&2
+        return 1
+    fi
+    grep -F 'credentials have been revoked' "$probe/reused-join.log"
+    if directory_tool "$name" dsacl get --objectdn="$probe_acl" | grep -Fq "$sid"; then
+        printf 'The revoked credential retained an explicit ACL.\n' >&2
+        return 1
+    fi
+    printf 'Debian verified machine trust. Closing the authorization revoked the login and removed its ACEs.\n'
+
+    expires=$(($(date +%s) + 12))
+    receipt=$(join_request stage-join "$second_id" EXPIREDPC "$expires" "$field")
+    user=$(join_user <<<"$receipt")
+    sid=$(directory_tool "$name" user show "$user" --attributes=objectSid | awk '$1 == "objectSid:" { print $2 }')
+    debian_join authenticate "$user" <<<"$password"
+    sleep "$(( expires - $(date +%s) + 1 ))"
+    if debian_join authenticate "$user" <<<"$password" >"$probe/expired-join.log" 2>&1; then
+        printf 'The expired account could still get a new ticket.\n' >&2
+        return 1
+    fi
+    grep -Ei 'credentials have been revoked|entry in database has expired|client.*expired' "$probe/expired-join.log"
+    probe_acl='CN=EXPIREDPC,CN=Computers,DC=ad,DC=runtime,DC=test'
+    started=$SECONDS
+    while true; do
+        sweep=$(directory_tool "$name" dsacl get --objectdn="$probe_acl")
+        if ! grep -Fq "$sid" <<<"$sweep"; then
+            break
+        fi
+        if (( SECONDS - started >= 15 )); then
+            printf 'The expiration worker did not remove the delegated ACEs.\n' >&2
+            return 1
+        fi
+        sleep 1
+    done
+    printf 'Kerberos refused the expired principal and the controller removed its ACEs in %d seconds after the refusal.\n' \
+        "$(( SECONDS - started ))"
+}
+
 machine_trust() {
     p run --rm -i --network "$net" --hostname oceanmember \
         --mount "type=bind,source=$probe/member,target=/member" \
@@ -265,12 +374,21 @@ machine_trust() {
 }
 verify_independent_restore() {
     local start_time=$SECONDS checksum restored machine
+    local join_id join_expiry join_password join_fields join_receipt pending_user pending_sid flags
     local recovery_name=dc-recovery
     local path=/usr/local/lib/ocean-directory/controller.py
     mkdir "$probe/member"
     machine_trust "$addr" dc01.ad.runtime.test join
     machine_trust "$addr" dc01.ad.runtime.test test
     machine=$(directory_tool "$name" computer show OCEANMEMBER | grep '^objectGUID:')
+    join_id=$(cat /proc/sys/kernel/random/uuid)
+    join_expiry=$(($(date +%s) + 240))
+    join_password="Join9-$(openssl rand -hex 27)"
+    join_fields=',"password":"'"$join_password"'"'
+    join_receipt=$(join_request stage-join "$join_id" RESTOREJOIN "$join_expiry" "$join_fields")
+    pending_user=$(join_user <<<"$join_receipt")
+    pending_sid=$(directory_tool "$name" user show "$pending_user" --attributes=objectSid | awk '$1 == "objectSid:" { print $2 }')
+    directory_tool "$name" dsacl get --objectdn='CN=RESTOREJOIN,CN=Computers,DC=ad,DC=runtime,DC=test' | grep -Fq "$pending_sid"
     openssl req -x509 -newkey rsa:2048 -noenc -days 1 -subj '/CN=Ocean disposable backup probe' \
         -keyout "$probe/backup.key" -out "$probe/backup.crt" 2>"$probe/key.log"
     if ! p exec -i "$name" /usr/bin/python3 "$path" backup-domain \
@@ -323,6 +441,16 @@ verify_independent_restore() {
     test "$original" = "$(account "$recovered")"
     test "$machine" = "$(directory_tool "$recovered" computer show OCEANMEMBER | grep '^objectGUID:')"
     machine_trust "$addr" "$recovery_name.ad.runtime.test" test
+    test "$(date +%s)" -lt "$join_expiry"
+    flags=$(directory_tool "$recovered" user show "$pending_user" --attributes=userAccountControl |
+        awk '$1 == "userAccountControl:" { print $2 }')
+    (( flags & 2 ))
+    if directory_tool "$recovered" dsacl get --objectdn='CN=RESTOREJOIN,CN=Computers,DC=ad,DC=runtime,DC=test' |
+            grep -Fq "$pending_sid"; then
+        printf 'Recovery restored the outstanding authorization ACL.\n' >&2
+        return 1
+    fi
+    printf 'Recovery revoked the outstanding join account and removed its ACEs before their original deadline.\n'
     wait_membership "$recovered" LabPrimaryGroup employee "$SECONDS"
     wait_membership "$recovered" LabReplicaGroup employee "$SECONDS"
     test "$(gpo_version "$recovered")" = 1
@@ -354,6 +482,10 @@ printf '%s\n' "$original"
 employee_sid=$(awk '$1 == "objectSid:" { print $2 }' <<<"$original")
 domain_sid=${employee_sid%-*}
 wait_health "$name" "$domain_sid"
+if [[ ${2:-} == --delegated-join ]]; then
+    verify_delegated_join
+    exit
+fi
 before=$(proof "$addr" 1)
 printf '%s\n' "$before"
 p stop --time 15 "$name" >/dev/null

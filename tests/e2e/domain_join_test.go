@@ -42,6 +42,12 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if _, err := exec.LookPath("openssl"); err != nil && recovery.BlockedReason == "" {
 		recovery.BlockedReason = "Install OpenSSL for the encrypted backup recovery probe."
 	}
+	delegation := harness.Step{Name: "directory-machine-authorization", Cases: []string{"WORKPLACE-08"}, Timeout: 2 * time.Minute,
+		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--delegated-join"},
+		BlockedReason: recovery.BlockedReason}
+	if options.adcliImage == "" && delegation.BlockedReason == "" {
+		delegation.BlockedReason = "Provide OCEAN_E2E_ADCLI_IMAGE with the locally built Debian directory client image ID."
+	}
 	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
 		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
 			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
@@ -54,5 +60,5 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
 		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
 	}
-	return append(steps, runtime, cli, fencing, recovery)
+	return append(steps, runtime, cli, fencing, recovery, delegation)
 }

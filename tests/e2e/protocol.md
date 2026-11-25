@@ -59,6 +59,11 @@ exercise encrypted backup recovery. The isolated probe deletes both original
 controller volumes, brings up a fresh controller, verifies the original domain
 and policy, and checks an existing Samba member's machine credentials.
 
+Select `WORKPLACE-08` explicitly with `OCEAN_E2E_SAMBA_IMAGE` and
+`OCEAN_E2E_ADCLI_IMAGE` set to exercise a scoped Debian join. The isolated
+client verifies access to the named computer, denied joins for other
+computers, a fresh machine keytab, and authorization closure and expiry.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

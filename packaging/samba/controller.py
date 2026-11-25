@@ -19,7 +19,10 @@ import tempfile
 import time
 from pathlib import Path, PurePosixPath
 
+import ldb
+
 import domain_backup
+import domain_join
 import sysvol as policy
 
 STATE = Path("/var/lib/ocean-ad")
@@ -393,6 +396,23 @@ def backup_identity(settings, sid):
     return {key: settings[key] for key in ("directoryId", "domain", "netbios")} | {"domainSid": sid}
 
 
+def authorize_join(settings, stage):
+    if settings.get("controller") == 2:
+        raise DirectoryIdentityError("manage join authorizations on the designated directory writer")
+    config = read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf"
+    database = domain_join.open_directory(config)
+    expected = os.environ.get("OCEAN_AD_EXPECTED_SID", "")
+    if expected and database.get_domain_sid() != expected:
+        raise DirectoryIdentityError("the local directory SID differs from the established SID")
+    request = domain_join.read_request(sys.stdin.buffer, stage)
+    try:
+        username = domain_join.managed_join(database, request, stage)
+    except ldb.LdbError:
+        raise DirectoryIdentityError("Samba could not update the join authorization") from None
+    print(json.dumps({"userPrincipalName": username + "@" + settings["domain"],
+                      "machineName": request["machineName"], "expiresAt": request["expiresAt"]}))
+
+
 def backup_domain(settings):
     os.umask(0o077)
     if settings.get("controller") == 2:
@@ -474,6 +494,7 @@ def restore_domain(settings, checksum):
                 if (lp.get("realm").lower() != settings["domain"] or lp.get("workgroup") != settings["netbios"]
                         or lp.get("netbios name").lower() != controller_name(settings) or local_domain_sid(config) != expected_sid):
                     raise DirectoryIdentityError("restored configuration does not match the managed directory")
+                domain_join.revoke_join_accounts(domain_join.open_directory(config), restore=True)
                 subprocess.run(["/usr/bin/sync", "-f", str(root)], check=True, timeout=30)
                 write_checkpoint(STATE / "controller.json", root, settings)
             finally:
@@ -485,7 +506,6 @@ def restore_domain(settings, checksum):
 
 
 def retire_replica(settings, generation):
-    import ldb
     from samba.auth import system_session
     from samba.param import LoadParm
     from samba.remove_dc import remove_dc
@@ -558,7 +578,6 @@ def wait_for_startup_authorization(sid):
 
 
 def health(settings):
-    import ldb
     from samba import NTSTATUSError
     from samba.credentials import Credentials, MUST_USE_KERBEROS
     from samba.dcerpc.security import dom_sid
@@ -655,10 +674,13 @@ def serve(settings):
             "--option=dreplsrv:periodic_startup_interval=5",
             "--option=dreplsrv:periodic_interval=15",
         ], stdin=subprocess.DEVNULL, env=runtime)
-        policy_worker = None
+        workers = []
         if maintain_policy:
-            policy_worker = subprocess.Popen([sys.executable, str(SCRIPT), "sync-policy", str(config)],
-                                             stdin=subprocess.DEVNULL)
+            workers.append(subprocess.Popen([sys.executable, str(SCRIPT), "sync-policy", str(config)],
+                                            stdin=subprocess.DEVNULL))
+        if settings.get("controller") != 2:
+            workers.append(subprocess.Popen([sys.executable, str(SCRIPT), "expire-joins", str(config)],
+                                            stdin=subprocess.DEVNULL))
         stopping = False
 
         def stop(_signum, _frame):
@@ -671,14 +693,13 @@ def serve(settings):
         try:
             status = process.wait()
         finally:
-            if policy_worker is not None:
-                policy_worker.terminate()
-                policy_worker.wait()
+            for worker in workers:
+                worker.terminate()
+                worker.wait()
         return 0 if stopping else status
 
 
 def sync_policy(config, settings):
-    import ldb
     from samba import NTSTATUSError
     from samba.ntacls import XattrBackendError
 
@@ -692,6 +713,15 @@ def sync_policy(config, settings):
         except (OSError, RuntimeError, ValueError, NTSTATUSError, XattrBackendError, ldb.LdbError,
                 subprocess.SubprocessError, tarfile.TarError, KeyError) as error:
             print(f"SYSVOL synchronization will retry ({type(error).__name__}).", file=sys.stderr)
+        time.sleep(10)
+
+
+def expire_joins(config):
+    while True:
+        try:
+            domain_join.revoke_join_accounts(domain_join.open_directory(config))
+        except (OSError, RuntimeError, ValueError, KeyError, ldb.LdbError) as error:
+            print(f"Join expiration will retry ({type(error).__name__}).", file=sys.stderr)
         time.sleep(10)
 
 
@@ -710,6 +740,8 @@ if __name__ == "__main__":
             seed_replica(Path(sys.argv[2]), settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "sync-policy":
             sync_policy(Path(sys.argv[2]), settings)
+        elif len(sys.argv) == 3 and sys.argv[1] == "expire-joins" and settings.get("controller") != 2:
+            expire_joins(Path(sys.argv[2]))
         elif len(sys.argv) == 2 and sys.argv[1] == "health":
             health(settings)
         elif len(sys.argv) == 2 and sys.argv[1] == "startup-identity":
@@ -725,6 +757,8 @@ if __name__ == "__main__":
             backup_domain(settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "restore-domain":
             restore_domain(settings, sys.argv[2])
+        elif len(sys.argv) == 2 and sys.argv[1] in ("stage-join", "close-join"):
+            authorize_join(settings, stage=sys.argv[1] == "stage-join")
         elif len(sys.argv) == 1:
             signal.signal(signal.SIGTERM, stop_before_service)
             signal.signal(signal.SIGINT, stop_before_service)

@@ -370,6 +370,55 @@ The replica workflow requires a valid directory join credential. The
 physical-host fencing run, primary replacement, and Windows and Debian
 client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
+### Delegated join on the directory writer
+
+The controller can prestage a computer and issue permissions to a temporary AD
+principal for that computer. On the first successful staging operation, Ocean
+sets the domain's default workstation quota to zero so a regular principal
+cannot provision a different machine through the default quota. The temporary
+principal receives only the object-level rights needed for the intended join.
+
+Send `stage-join` a private JSON request on standard input. Include
+`requestId` as a lowercase UUID, `machineName` as an uppercase NetBIOS
+computer name, `expiresAt` as a Unix timestamp up to ten minutes in the
+future, and `password` as a generated random password of 32 through 128
+printable ASCII characters. Repeat an in-flight request with the same fields.
+The controller prints the UPN and authorization metadata without the password.
+Deliver the join password through a private channel.
+
+```sh
+nice -n 10 podman exec -i "$CONTROLLER" /usr/bin/python3 \
+  /usr/local/lib/ocean-directory/controller.py stage-join <"$PRIVATE_STAGE_REQUEST"
+adcli join --domain "$DOMAIN" --domain-controller "$CONTROLLER_DNS" \
+  --computer-name "$MACHINE" --host-fqdn "$MACHINE_FQDN" --login-user "$JOIN_USER" \
+  --stdin-password <"$PRIVATE_JOIN_PASSWORD"
+adcli testjoin --domain "$DOMAIN" --domain-controller "$CONTROLLER_DNS"
+nice -n 10 podman exec -i "$CONTROLLER" /usr/bin/python3 \
+  /usr/local/lib/ocean-directory/controller.py close-join <"$PRIVATE_CLOSE_REQUEST"
+```
+
+Use the UPN's account name as `JOIN_USER`. Keep the temporary files
+operator-only and remove them after the procedure. The close request contains
+the original request ID, machine name, and expiry. Close after the client
+verifies its machine credential. Closing disables the principal and removes
+its ACLs. If unused, the authorization expires in AD and the writer removes
+its ACLs. The credential is active until close or expiry. This procedure runs
+locally on the designated writer. Regional `az rest` issuance and validation
+from Windows guests remain separate delivery gates.
+
+Run `WORKPLACE-08` with the controller image and the isolated Debian client
+fixture built from `tests/e2e/testdata/workloads/domain-join-client`. Supply both
+local image IDs, including their `sha256:` prefix.
+
+```sh
+client_id=$(nice -n 10 podman build --quiet \
+  tests/e2e/testdata/workloads/domain-join-client)
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-08 \
+  OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  OCEAN_E2E_ADCLI_IMAGE="sha256:${client_id#sha256:}" \
+  go test -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Standalone domain recovery
 
 On the designated SYSVOL writer, run `backup-domain` with a current domain
@@ -406,7 +455,8 @@ input. Set the original `OCEAN_AD_DIRECTORY_ID`, `OCEAN_AD_DNS_NAME`,
 controller's private IP in `OCEAN_AD_ADDRESS` and a distinct NetBIOS-safe
 hostname in `OCEAN_AD_RECOVERY_NAME`. Use the same UID/GID mappings as the
 controller runtime. Recovery removes the old controller accounts and rotates
-the Kerberos ticket-granting keys. Clients need fresh tickets.
+the Kerberos ticket-granting keys. It also revokes outstanding delegated join
+accounts and removes their ACLs. Clients need fresh tickets.
 
 After the isolated restore succeeds, start the recovery controller using the
 same volume and settings, with `OCEAN_AD_REQUIRE_AUTHORIZATION=1`. Confirm the
