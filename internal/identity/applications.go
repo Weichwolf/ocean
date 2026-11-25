@@ -6,17 +6,23 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // Application is the durable directory record for a tenant-owned application.
 type Application struct {
-	TenantID    string             `json:"tenantId"`
-	ID          string             `json:"id"`
-	ClientID    string             `json:"appId"`
-	DisplayName string             `json:"displayName"`
-	PrincipalID string             `json:"principalId,omitempty"`
-	Credentials []ClientCredential `json:"credentials,omitempty"`
+	TenantID        string                `json:"tenantId"`
+	ID              string                `json:"id"`
+	ClientID        string                `json:"appId"`
+	DisplayName     string                `json:"displayName"`
+	PrincipalID     string                `json:"principalId,omitempty"`
+	Credentials     []ClientCredential    `json:"credentials,omitempty"`
+	WebRedirectURIs []string              `json:"webRedirectUris,omitempty"`
+	WebPolicy       *webApplicationPolicy `json:"webPolicy,omitempty"`
 }
 
 // ClientCredential stores metadata and a keyed verifier rather than the secret.
@@ -37,7 +43,37 @@ type ApplicationStore interface {
 
 func (a Application) Valid(tenant string) bool {
 	return a.TenantID == tenant && tenantID.MatchString(a.TenantID) && tenantID.MatchString(a.ID) &&
-		tenantID.MatchString(a.ClientID) && (a.PrincipalID == "" || tenantID.MatchString(a.PrincipalID)) && a.DisplayName != ""
+		tenantID.MatchString(a.ClientID) && (a.PrincipalID == "" || tenantID.MatchString(a.PrincipalID)) && a.DisplayName != "" &&
+		validWebRedirectURIs(a.WebRedirectURIs) && (a.WebPolicy == nil || len(a.WebRedirectURIs) != 0 &&
+		a.PrincipalID == "" && len(a.Credentials) == 0 && a.WebPolicy.valid())
+}
+
+func validWebRedirectURIs(uris []string) bool {
+	seen := make(map[string]bool, len(uris))
+	for _, uri := range uris {
+		if seen[uri] || !validWebRedirectURI(uri) {
+			return false
+		}
+		seen[uri] = true
+	}
+	return true
+}
+
+func validWebRedirectURI(uri string) bool {
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil ||
+		strings.HasSuffix(parsed.Host, ":") || strings.ContainsAny(uri, "#\\*") || strings.ContainsFunc(uri, unicode.IsSpace) {
+		return false
+	}
+	decoded, err := url.PathUnescape(uri)
+	if err != nil || strings.ContainsAny(decoded, "\\*") || strings.ContainsFunc(decoded, unicode.IsControl) {
+		return false
+	}
+	if value := parsed.Port(); value != "" {
+		port, err := strconv.ParseUint(value, 10, 16)
+		return err == nil && port > 0
+	}
+	return true
 }
 
 func (o *onboarding) credentialVerifier(tenant, client, secret string) string {

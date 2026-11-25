@@ -26,12 +26,13 @@ var ErrTenantConflict = errors.New("tenant registration conflicts with an existi
 
 // OnboardingConfig identifies the operator and the private Keycloak admin API.
 type OnboardingConfig struct {
-	OperatorTenant  string   `json:"operatorTenant"`
-	OperatorClient  string   `json:"operatorClient"`
-	AdminEndpoints  []string `json:"adminEndpoints"`
-	AdminClient     string   `json:"adminClient"`
-	AdminSecretFile string   `json:"adminSecretFile"`
-	RegionalKeyFile string   `json:"regionalKeyFile"`
+	OperatorTenant  string                        `json:"operatorTenant"`
+	OperatorClient  string                        `json:"operatorClient"`
+	AdminEndpoints  []string                      `json:"adminEndpoints"`
+	AdminClient     string                        `json:"adminClient"`
+	AdminSecretFile string                        `json:"adminSecretFile"`
+	RegionalKeyFile string                        `json:"regionalKeyFile"`
+	WebDirectories  map[string]WebDirectoryConfig `json:"webDirectories,omitempty"`
 }
 
 // TenantReservation relates an idempotent request to its identities and subscription.
@@ -92,6 +93,12 @@ func (c *Compatibility) EnableOnboarding(cfg OnboardingConfig, store TenantStore
 	}
 	if len(key) < 32 || len(secret) < 32 {
 		return errors.New("onboarding credentials must contain at least 32 bytes")
+	}
+	for tenant, directory := range cfg.WebDirectories {
+		if !tenantID.MatchString(tenant) || !directory.valid() ||
+			(directory.KerberosKeytab != "" && kerberosServiceHost(c.provider) == "") {
+			return errors.New("invalid pre-authorized web directory configuration")
+		}
 	}
 	adminClient := *c.client
 	adminClient.Timeout = 20 * time.Second

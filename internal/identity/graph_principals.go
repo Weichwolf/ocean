@@ -51,6 +51,10 @@ func (c *Compatibility) graphPrincipal(w http.ResponseWriter, req *http.Request)
 		writeJSON(w, http.StatusOK, app.principalView())
 		return
 	}
+	if len(app.WebRedirectURIs) != 0 {
+		writeApplicationError(w, errWebApplicationCredential)
+		return
+	}
 	subject, err := c.onboarding.admin.ensureServicePrincipal(ctx, *app, c.cloud, c.onboarding.providerClientSecret(tenant.TenantID, app.ClientID))
 	if err != nil {
 		graphUnavailable(w)
@@ -71,7 +75,7 @@ func (c *Compatibility) graphPrincipal(w http.ResponseWriter, req *http.Request)
 }
 
 type providerClient struct {
-	ID         string            `json:"id"`
+	ID         string            `json:"id,omitempty"`
 	ClientID   string            `json:"clientId"`
 	Enabled    bool              `json:"enabled"`
 	Service    bool              `json:"serviceAccountsEnabled"`

@@ -994,6 +994,182 @@ Use `az ad app credential reset --id <app-id> --append` to add a password creden
 
 Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE" --directory-users --directory-apps` to exercise these commands. The run verifies separate ARM and Graph tokens from fresh CLI caches, rejects cross-tenant reads, signs in with both secrets after append, and checks that the remaining secret works after revocation. Inspect `evidence/graph-applications.json` for the object IDs and assertions.
 
+For web application registration, use `az ad app create --display-name
+<name> --sign-in-audience AzureADMyOrg --web-redirect-uris <https-callback>`.
+The register and read contract stores exact HTTPS callback URIs and returns
+them under `web.redirectUris`. Replay uses the same callback list and retains
+the existing object and client IDs. A replay that changes the callback list
+returns a conflict. The Graph probe uses signed fixture identities and a
+disposable loopback etcd. Register a separate automation application for
+service principals and Graph password credentials.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-17 \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
+  go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+`WORKPLACE-18` exercises preparation of the native OIDC clients on a disposable
+Keycloak 26.8.2 instance. Set `OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN` to its HTTPS
+origin, `OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT` to an admin service account client
+with the `kc-admin-api` scope, and `OCEAN_E2E_KEYCLOAK_ADMIN_SECRET` to its
+private secret file. The Go client must trust the instance's TLS certificate.
+The test creates and removes an isolated tenant realm. It confirms that two
+web registrations preserve their callbacks and share a dedicated browser
+flow with no change to the tenant realm's default flow. The prepared clients
+reject authorization before a policy is published.
+
+`WORKPLACE-19` uses the same Keycloak admin access with an isolated pair of
+Samba controllers on the test machine. The Keycloak truststore must contain
+the CA for the controllers' LDAPS certificates. Publish each controller's
+LDAPS port on loopback with a certificate valid for `127.0.0.1`.
+
+Set `OCEAN_E2E_SAMBA_FEDERATION_STATE` to the private state directory for an
+`ad.ocean.web.test` fixture. Its `name` file contains the Podman name prefix
+`ocean-web-ad-…`, with controllers suffixed `-dc1` and `-dc2`. The `port1`,
+`port2`, `sid`, and `directory-id` files contain their published ports and
+directory identity. Provision the ordinary `ocean-sso-reader` and `outsider`
+accounts outside the managed workforce OU. Provision `employee` through a
+managed user task and grant it membership in the managed `WebLab` security
+group. The `reader`, `employee`, `outsider`, `employee-guid`, and `group-guid`
+files contain the fixture credentials and expected native IDs. All state
+files must be private.
+
+The test checks scoped imports, direct group membership and both object
+GUIDs. It stops the disposable primary, verifies fresh LDAP authentication
+through the surviving controller, and restarts the primary using the fixture
+SID authorization. It then checks group removal and disabled credentials
+with a test-only Keycloak password client. Samba rejects membership changes
+attempted via the LDAP reader. The browser and application access tests have
+their own acceptance criteria.
+
+### Publish a managed web application
+
+Configure `identity.onboarding.webDirectories` on each regional API replica.
+Each key is a tenant ID. Its entry identifies the managed `directoryId` and
+`domainSid`, two ordered private `ldaps://host:port` `connectors`, and a
+`readerSecretFile` readable by the API process with owner-only permissions.
+The connectors must reach the same Samba domain from every Keycloak replica.
+Install the issuers of both endpoint certificates in the Keycloak truststore
+and provision `ocean-sso-reader` as an ordinary account outside the workforce
+OU. The API checks both reader binds before first enabling LDAP federation.
+
+Register a web application with `az ad app create` and save its application
+object ID. Sign in as the tenant administrator to publish a list of up to
+32 managed AD security group GUIDs that can access it.
+
+```sh
+policy_url="$OCEAN_ARM/ocean/tenants/$TENANT_ID/directory/webApplications/$APPLICATION_OBJECT_ID?api-version=2026-11-01"
+az rest --method put --url "$policy_url" --body @web-policy.json -o json
+az rest --method get --url "$policy_url" -o json
+```
+
+`web-policy.json` contains `{"groupIds":["<managed-ad-group-object-guid>"]}`.
+Replaying the same group set preserves the client. A different set returns
+`WebApplicationPolicyConflict`. Update native AD membership to grant or
+revoke a user's access. If publication reports a temporary provider failure,
+replay the original request. A GET reports `Pending` for a reserved policy
+until the native client is enabled and confirmed.
+
+Use the returned `issuer`, the Graph `appId`, the exact registered callback,
+and OIDC authorization code with S256 PKCE. The browser client requires the
+`ocean-web` assurance claim, issues no refresh tokens, and uses a 120-second
+access-token lifetime. Validate the issuer, client audience, nonce and
+expiry when consuming tokens. The LDAP group filter uses native object
+GUIDs, so a recreated group with the same name requires its own policy grant.
+
+`WORKPLACE-20` uses the WORKPLACE-19 fixtures, Python 3, stock Azure CLI
+2.93.0, Chromium, Node.js, `certutil` and the CA from `SSL_CERT_FILE`. It
+starts with an empty CLI cache and completes a device login. It registers
+both apps with `az ad app create` and publishes their policies with `az rest`.
+A clean Chromium profile without a domain ticket signs in with password and
+OTP, then follows the second app's callback from the same browser session.
+The verifier checks the signed audiences, exact callbacks, PKCE, denial of
+an out-of-scope LDAP user, selective revocation and group-name reuse. The
+case uses loopback ingress and disposable application storage. The probe
+imports the lab CAs into Chromium's disposable profile. [Chromium Linux certificate management](https://chromium.googlesource.com/chromium/src/%2Bshow/f6f63071cc0aaf9a4865b31d0fccd5bca5e0cb89/docs/linux/cert_management.md)
+
+### Enable web Kerberos for a managed tenant
+
+Set `kerberosKeytab` in the tenant's `identity.onboarding.webDirectories`
+entry to the same absolute path on every Keycloak replica. Keycloak needs
+read access to that private keytab. Export the current keys for the tenant
+domain's `HTTP/<public-oauth-host>@<AD-REALM>` principal. Use the named HTTPS
+host of `identity.provider` as `<public-oauth-host>`, without a port. Set the
+realm to the Samba DNS domain in uppercase. Use a dedicated Samba service
+account with AES tickets. Keep the LDAP reader account separate.
+
+Replay the existing web `az rest` policy after staging the keytab. Ocean
+enables Kerberos on the previously configured LDAP provider and confirms
+that SPNEGO is disabled on the standard browser binding.
+The web client first offers SPNEGO, and its interactive fallback uses the
+Samba password with TOTP. Configure browsers to send negotiation credentials
+to the public OAuth HTTPS origin. [Keycloak Kerberos configuration](https://www.keycloak.org/docs/26.8.2/server_admin/index.html#_kerberos)
+
+`WORKPLACE-21` uses the WORKPLACE-19 Samba and Keycloak fixture and the
+WORKPLACE-20 CLI activation path. Set `OCEAN_E2E_KERBEROS_BROWSER_STATE` to
+a private directory with `service.keytab`, `employee.ccache`, `krb5.conf`,
+and `tls.pem`. Use a Keycloak HTTPS certificate issued by the CA in
+`tls.pem`. The test runs Firefox ESR on Debian with a fresh profile, imports
+the fixture CAs through `certutil`, and verifies the signed OIDC response
+from a new browser session with a real Samba service ticket. Restrict the
+fixture KDC to the isolated lab, and keep the ticket cache and keytab private.
+The probe also checks the live UserInfo response for the token issued before
+the account is disabled and measures the denial of a new authorization code.
+
+`WORKPLACE-22` exercises stock Azure CLI 2.93.0 against the compatibility
+handlers and the same real Keycloak and Samba fixtures. Set `SSL_CERT_FILE`
+to the Keycloak lab CA and provide the Kerberos fixture keytab. The probe
+creates an existing tenant and a tenant eligible for web federation. It runs
+device-code and service-principal sign-in from separate temporary CLI caches
+for each tenant. It checks subscription and location discovery, audience and
+subject stability, tenant isolation in Graph, and administrator-only access.
+The managed tenant publishes its Kerberos policy with an authenticated
+`az rest` call, and both tenants repeat the checks with new caches. The
+regional reservation and application records are disposable fixture data.
+
+`WORKPLACE-23` uses the running `domain-join` lab and its verified SSH host
+keys. In the isolated domain, keep the primary at `farm-1-node-01`, promote
+`farm-1-node-03` as a replica, and use the joined Debian client at
+`farm-1-node-02` with Firefox ESR, `certutil`, `adcli`, and SSSD's PAM
+modules. Create `webemployee@ad.ocean.test` in the workforce user OU and
+assign it to `OceanWebJoined`, a security group in the workforce group OU.
+Keep both LDAPS connectors authenticated and reachable from Keycloak.
+Synchronize SYSVOL, including policy ACLs, before offering the replica to
+clients. Verify that both controllers publish only their workload addresses
+in AD DNS and that the replica serves both default policy files.
+
+Set `OCEAN_E2E_JOINED_WEB_STATE` to a private fixture directory containing
+`directory-id`, `sid`, `reader`, `employee`, `group-guid`, `port1`, `port2`,
+`guest-ssh-port`, `tls.pem`, and `service.keytab`. The two connector ports
+are loopback forwards to the respective controllers' LDAPS listeners. The
+issuer URL uses `oauth.ad.ocean.test`, resolved through the guest's AD DNS.
+The exported keytab covers `HTTP/oauth.ad.ocean.test@AD.OCEAN.TEST`. Enable
+AES128 and AES256 on the Samba service account before exporting the keytab. Trust
+the issuer CA in `SSL_CERT_FILE` and, if the host routes to a local Keycloak
+port, use `OCEAN_E2E_KEYCLOAK_LOOPBACK` for that loopback address and port.
+The probe checks the machine join and opens a fresh PAM session. Firefox
+uses the session's TGT to obtain an AES service ticket without a browser password
+prompt. The test validates the code and signed token for the same federated
+subject. The callback is HTTPS through an SSH reverse forward to the host.
+
+`WORKPLACE-24` uses the same test directory and an unlocked Windows 11 KVM
+guest signed in as `webemployee@ad.ocean.test`. Use a fresh OS sign-in after
+boot and leave the desktop available to the QEMU console. Install the lab
+CA in the guest's machine root store and apply the Edge `AuthServerAllowlist`
+policy to `oauth.ad.ocean.test`. Set `EnableAuthNegotiatePort` to disabled
+for the lab's nonstandard HTTPS port. [Edge integrated authentication policy](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/authserverallowlist) · [SPN port policy](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/enableauthnegotiateport)
+
+Set `OCEAN_E2E_JOINED_WEB_WINDOWS=1` and include `primary-ssh-port`,
+`oauth.pem` and `oauth.key` in the private state directory. Use `socat` on
+the primary controller to relay the probe's HTTPS callback from workload
+port `18444` to the bounded loopback SSH reverse forward. Keep these ports
+free before running the verifier. The launcher reads the native ticket
+cache in the desktop user's own session, starts Edge with an empty profile,
+and verifies the newly acquired AES service ticket and signed OIDC token.
+The probe submits no credentials to Edge and restores the lab CD after the
+test.
+
 ## ARM resource groups
 
 Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.

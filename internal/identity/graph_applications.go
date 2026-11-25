@@ -19,6 +19,11 @@ type applicationInput struct {
 	Audience    string            `json:"signInAudience"`
 	Identifiers []string          `json:"identifierUris"`
 	Keys        []json.RawMessage `json:"keyCredentials"`
+	Web         *applicationWeb   `json:"web"`
+}
+
+type applicationWeb struct {
+	RedirectURIs []string `json:"redirectUris"`
 }
 
 type passwordMetadata struct {
@@ -55,11 +60,18 @@ func (c *Compatibility) graphApplication(w http.ResponseWriter, req *http.Reques
 	var input applicationInput
 	if req.URL.RawQuery != "" || !decodeGraphBody(w, req, &input) || !validGraphDisplayName(input.DisplayName) ||
 		(input.Audience != "" && input.Audience != "AzureADMyOrg") || len(input.Identifiers) != 0 || len(input.Keys) != 0 {
-		graphError(w, http.StatusBadRequest, "Request_BadRequest", "Configure the display name of a single-tenant application.")
+		graphError(w, http.StatusBadRequest, "Request_BadRequest", "Specify the supported properties of a single-tenant application.")
+		return
+	}
+	if input.Web != nil && (len(input.Web.RedirectURIs) == 0 || !validWebRedirectURIs(input.Web.RedirectURIs)) {
+		graphError(w, http.StatusBadRequest, "Request_BadRequest", "Specify unique, exact HTTPS web redirect URIs.")
 		return
 	}
 	if req.Method == http.MethodPost {
 		app := Application{TenantID: tenant.TenantID, ID: newUUID(), ClientID: newUUID(), DisplayName: input.DisplayName}
+		if input.Web != nil {
+			app.WebRedirectURIs = input.Web.RedirectURIs
+		}
 		if saved, err := store.SaveApplication(ctx, app, 0); err != nil || !saved {
 			graphUnavailable(w)
 			return
@@ -68,6 +80,9 @@ func (c *Compatibility) graphApplication(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	_, err := updateGraphApplication(ctx, store, tenant.TenantID, id, func(app *Application) error {
+		if input.Web != nil && !slices.Equal(app.WebRedirectURIs, input.Web.RedirectURIs) {
+			return errApplicationRedirectChange
+		}
 		app.DisplayName = input.DisplayName
 		return nil
 	})
@@ -93,8 +108,12 @@ func (app Application) graphView() map[string]any {
 	for _, cred := range app.Credentials {
 		passwords = append(passwords, cred.metadata())
 	}
-	return map[string]any{"id": app.ID, "appId": app.ClientID, "displayName": app.DisplayName, "signInAudience": "AzureADMyOrg",
+	view := map[string]any{"id": app.ID, "appId": app.ClientID, "displayName": app.DisplayName, "signInAudience": "AzureADMyOrg",
 		"identifierUris": []string{}, "passwordCredentials": passwords, "keyCredentials": []any{}}
+	if len(app.WebRedirectURIs) > 0 {
+		view["web"] = applicationWeb{RedirectURIs: app.WebRedirectURIs}
+	}
+	return view
 }
 
 func (cred ClientCredential) metadata() passwordMetadata {
@@ -210,8 +229,9 @@ func lookupGraphApplication(ctx context.Context, store ApplicationStore, tenant,
 }
 
 var (
-	errDirectoryNotFound = errors.New("directory object not found")
-	errCredentialLimit   = errors.New("application credential limit reached")
+	errDirectoryNotFound        = errors.New("directory object not found")
+	errCredentialLimit          = errors.New("application credential limit reached")
+	errWebApplicationCredential = errors.New("the application has a dedicated web client")
 )
 
 func updateGraphApplication(ctx context.Context, store ApplicationStore, tenant, id string, update func(*Application) error) (*Application, error) {
@@ -237,12 +257,18 @@ func updateGraphApplication(ctx context.Context, store ApplicationStore, tenant,
 	return nil, errors.New("application changed concurrently")
 }
 
+var errApplicationRedirectChange = errors.New("application web redirect URIs differ from the registered values")
+
 func writeApplicationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errDirectoryNotFound):
 		graphError(w, http.StatusNotFound, "Request_ResourceNotFound", "The directory object was not found.")
 	case errors.Is(err, errCredentialLimit):
 		graphError(w, http.StatusConflict, "Request_Conflict", "The application already has 64 credentials.")
+	case errors.Is(err, errWebApplicationCredential):
+		graphError(w, http.StatusConflict, "Request_Conflict", "Use a separate automation application for service principals and password credentials.")
+	case errors.Is(err, errApplicationRedirectChange):
+		graphError(w, http.StatusConflict, "Request_Conflict", "Use the registered web redirect URIs when replaying the application request.")
 	default:
 		graphUnavailable(w)
 	}
@@ -314,6 +340,9 @@ func (c *Compatibility) graphAppCredential(w http.ResponseWriter, req *http.Requ
 	secret := newClientSecret()
 	credential := ClientCredential{ID: newUUID(), DisplayName: requested.DisplayName, Start: requested.Start.UTC(), End: requested.End.UTC()}
 	_, err := updateGraphApplication(ctx, store, tenant.TenantID, id, func(app *Application) error {
+		if len(app.WebRedirectURIs) != 0 {
+			return errWebApplicationCredential
+		}
 		if len(app.Credentials) >= 64 {
 			return errCredentialLimit
 		}

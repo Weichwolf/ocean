@@ -85,6 +85,91 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
 		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
 	}
+	webRegistration := harness.Step{Name: "regional-web-app-registration", Cases: []string{"WORKPLACE-17"}, Timeout: 4 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalWebApplicationRegistration$", "./internal/controlplane"},
+		BlockedReason: fencing.BlockedReason}
+	if webRegistration.BlockedReason == "" {
+		webRegistration.BlockedReason = cli.BlockedReason
+	}
+	webClientPreparation := harness.Step{Name: "keycloak-web-client-preparation", Cases: []string{"WORKPLACE-18"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWebClientsLab$", "./internal/identity"}}
+	if os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN") == "" || os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT") == "" {
+		webClientPreparation.BlockedReason = "Provide the HTTPS origin and admin client for a disposable Keycloak lab."
+	}
+	webClientPreparation = requireFile(webClientPreparation, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin credential")
+	directoryFederation := harness.Step{Name: "keycloak-samba-federation", Cases: []string{"WORKPLACE-19"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakDirectoryFederationLab$", "./internal/identity"}, BlockedReason: webClientPreparation.BlockedReason}
+	federationState := os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE")
+	if directoryFederation.BlockedReason == "" && federationState == "" {
+		directoryFederation.BlockedReason = "Provide OCEAN_E2E_SAMBA_FEDERATION_STATE with the isolated Samba controller pair configured for LDAPS."
+	}
+	directoryFederation = requireFile(directoryFederation, filepath.Join(federationState, "directory-id"), "the Samba federation fixture state")
+	webAdmission := harness.Step{Name: "managed-web-application-admission", Cases: []string{"WORKPLACE-20"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWebAdmissionLab$", "./internal/identity"}, BlockedReason: directoryFederation.BlockedReason}
+	if webAdmission.BlockedReason == "" {
+		webAdmission.BlockedReason = cli.BlockedReason
+	}
+	webPolicyPrerequisites := webAdmission.BlockedReason
+	for _, program := range []string{"python3", "chromium", "node", "certutil"} {
+		if _, err := exec.LookPath(program); err != nil && webAdmission.BlockedReason == "" {
+			webAdmission.BlockedReason = "Install " + program + " for the integrated CLI and MFA browser probe."
+		}
+	}
+	webAdmission = requireFile(webAdmission, os.Getenv("SSL_CERT_FILE"), "the Keycloak lab CA in SSL_CERT_FILE")
+	kerberosBrowser := harness.Step{Name: "managed-kerberos-firefox", Cases: []string{"WORKPLACE-21"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakKerberosBrowserLab$", "./internal/identity"}, BlockedReason: webPolicyPrerequisites}
+	kerberosState := os.Getenv("OCEAN_E2E_KERBEROS_BROWSER_STATE")
+	if kerberosBrowser.BlockedReason == "" && kerberosState == "" {
+		kerberosBrowser.BlockedReason = "Provide OCEAN_E2E_KERBEROS_BROWSER_STATE with a disposable Samba service keytab and user ticket cache."
+	}
+	for _, program := range []string{"firefox-esr", "certutil", "curl"} {
+		if _, err := exec.LookPath(program); err != nil && kerberosBrowser.BlockedReason == "" {
+			kerberosBrowser.BlockedReason = "Install " + program + " for the Kerberos browser test."
+		}
+	}
+	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "service.keytab"), "the disposable HTTP service keytab")
+	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "employee.ccache"), "the disposable Samba ticket cache")
+	webCLIRegression := harness.Step{Name: "managed-web-cli-regression", Cases: []string{"WORKPLACE-22"}, Timeout: 5 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWebCLIRegressionLab$", "./internal/identity"}, BlockedReason: webPolicyPrerequisites}
+	if _, err := exec.LookPath("python3"); err != nil && webCLIRegression.BlockedReason == "" {
+		webCLIRegression.BlockedReason = "Install Python 3 for the fresh Azure CLI sign-in probe."
+	}
+	webCLIRegression = requireFile(webCLIRegression, os.Getenv("SSL_CERT_FILE"), "the Keycloak lab CA in SSL_CERT_FILE")
+	webCLIRegression = requireFile(webCLIRegression, filepath.Join(kerberosState, "service.keytab"), "the disposable HTTP service keytab")
+	joinedBrowser := harness.Step{Name: "joined-debian-web-kerberos", Cases: []string{"WORKPLACE-23"}, Timeout: 4 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakDebianDomainBrowserLab$", "./internal/identity"}, BlockedReason: webClientPreparation.BlockedReason}
+	joinedState := os.Getenv("OCEAN_E2E_JOINED_WEB_STATE")
+	if joinedBrowser.BlockedReason == "" {
+		switch {
+		case options.domain == "" || joinedState == "":
+			joinedBrowser.BlockedReason = "Provide the running Debian domain-join lab and OCEAN_E2E_JOINED_WEB_STATE."
+		default:
+			joinedBrowser.BlockedReason = cli.BlockedReason
+		}
+	}
+	joinedBrowser = requireFile(joinedBrowser, filepath.Join(options.domain, "known-hosts"), "the verified SSH host keys for the lab")
+	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "service.keytab"), "the lab HTTP service keytab")
+	windowsBrowser := harness.Step{Name: "joined-windows-web-kerberos", Cases: []string{"WORKPLACE-24"}, Timeout: 4 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestKeycloakWindowsDomainBrowserLab$", "./internal/identity"}, BlockedReason: joinedBrowser.BlockedReason}
+	if windowsBrowser.BlockedReason == "" && os.Getenv("OCEAN_E2E_JOINED_WEB_WINDOWS") != "1" {
+		windowsBrowser.BlockedReason = "Prepare the disposable Windows domain desktop and set OCEAN_E2E_JOINED_WEB_WINDOWS=1."
+	}
+	for _, program := range []string{"genisoimage", "python3", "ssh"} {
+		if _, err := exec.LookPath(program); err != nil && windowsBrowser.BlockedReason == "" {
+			windowsBrowser.BlockedReason = "Install " + program + " for the Windows browser probe."
+		}
+	}
+	windowsBrowser = requireFile(windowsBrowser, filepath.Join(joinedState, "primary-ssh-port"), "the primary controller's loopback SSH port")
+	windowsBrowser = requireFile(windowsBrowser, filepath.Join(joinedState, "oauth.key"), "the lab callback TLS key")
+	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "guest-ssh-port"), "the joined guest's loopback SSH port")
 	promotion := harness.Step{Name: "directory-writer-promotion", Cases: []string{"WORKPLACE-12"}, Timeout: 4 * time.Minute,
 		Command:       []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage, "--promote-writer"},
 		BlockedReason: recovery.BlockedReason}
@@ -136,5 +221,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
-	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery, windowsRecovery, windowsGraph, packaged)
+	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
+		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
+		webCLIRegression, joinedBrowser, windowsBrowser)
 }

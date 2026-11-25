@@ -100,7 +100,11 @@ func (c *Compatibility) managedDirectory(w http.ResponseWriter, req *http.Reques
 		http.NotFound(w, req)
 		return
 	}
-	ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+	timeout := 5 * time.Second
+	if req.Method == http.MethodPut && req.PathValue("application") != "" {
+		timeout = 75 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), timeout)
 	defer cancel()
 	principal, err := c.AuthenticateARM(ctx, req)
 	if err != nil {
@@ -133,6 +137,10 @@ func (c *Compatibility) managedDirectory(w http.ResponseWriter, req *http.Reques
 	}
 	if req.PathValue("authorization") != "" {
 		c.manageDirectoryJoin(ctx, w, req, *record)
+		return
+	}
+	if req.PathValue("application") != "" {
+		c.manageWebApplication(ctx, w, req, *record)
 		return
 	}
 	if req.PathValue("recovery") != "" {
