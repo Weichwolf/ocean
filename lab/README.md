@@ -286,9 +286,18 @@ OCEAN_E2E_VM_WORKER_STATE="$LAB_STATE" \
   OCEAN_E2E_VM_DISK_PIN="$WINDOWS_DISK_SHA256" \
   OCEAN_E2E_VM_VARS_PIN="$WINDOWS_VARS_SHA256" \
   OCEAN_E2E_VM_AZ="$(command -v az)" \
-  go test -mod=readonly -tags=e2e -count=1 -timeout=12m -v \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=20m -v \
     -run '^TestPackagedVMWorker$' ./internal/controlplane
 ```
+
+For a native storage checkpoint, run `prepare_windows_vm_checkpoint.ps1`
+from an elevated PowerShell session inside a disposable Server Core fixture.
+Use a unique test password. The script opens an encrypted SMB share on the
+private NIC for the lab client at `10.232.1.21`. The probe account can write
+under `data` and read the guest identity record. Windows refreshes that
+record on startup with the system UUID, Windows machine GUID, hostname,
+build and boot timestamp. Keep the image and test credentials private.
+[Windows Server SMB shares](https://learn.microsoft.com/powershell/module/smbshare/new-smbshare?view=windowsserver2025-ps)
 
 ### Regional VM store probe
 

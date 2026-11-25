@@ -52,7 +52,7 @@ func TestPackagedVMWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 18*time.Minute)
 	defer cancel()
 	scope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
 	const imageURI = "https://images.ocean.test/server-core.vhd"
@@ -135,7 +135,7 @@ func TestPackagedVMWorker(t *testing.T) {
 	createdAt := time.Now()
 	az("put", url, input)
 	var vmID string
-	pollVMWorker(t, ctx, 7*time.Minute, "the Windows guest to boot with the assigned private IPv4 address", func() bool {
+	pollVMWorker(t, ctx, 12*time.Minute, "the image to import and the Windows guest to boot with the assigned private IPv4 address", func() bool {
 		_, record, operation, _, _, err := r.readVM(ctx, scope, vm)
 		if err == nil && operation != nil && operation.Status == arm.OperationSucceeded && record.Observed == workload.Running {
 			vmID = record.MachineID
