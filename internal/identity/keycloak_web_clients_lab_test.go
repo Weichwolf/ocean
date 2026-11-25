@@ -14,7 +14,8 @@ import (
 	"time"
 )
 
-func TestKeycloakWebClientsLab(t *testing.T) {
+func keycloakTenantLab(t *testing.T) (context.Context, keycloakAdmin, TenantReservation, CloudEndpoints) {
+	t.Helper()
 	origin := os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN")
 	if origin == "" {
 		t.Skip("set OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN for the disposable Keycloak instance")
@@ -29,8 +30,8 @@ func TestKeycloakWebClientsLab(t *testing.T) {
 	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	admin := keycloakAdmin{client: client, endpoints: []string{origin},
 		clientID: os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT"), secret: secret}
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	t.Cleanup(cancel)
 	tenant := newUUID()
 	registration := TenantReservation{TenantID: tenant, Administrator: newUUID(), SubscriptionID: newUUID(), Fingerprint: newUUID()}
 	input := onboardingRequest{DisplayName: "Ocean browser fixture", AdministratorUPN: "fixture-admin@ocean.test",
@@ -58,6 +59,12 @@ func TestKeycloakWebClientsLab(t *testing.T) {
 	if err := admin.ensureRealm(ctx, registration, fixture); err != nil {
 		t.Fatal(err)
 	}
+	return ctx, admin, registration, cloud
+}
+
+func TestKeycloakWebClientsLab(t *testing.T) {
+	ctx, admin, registration, cloud := keycloakTenantLab(t)
+	tenant, origin := registration.TenantID, admin.endpoints[0]
 	const alias = "Ocean web client fixture"
 	status, err := admin.directoryRequest(ctx, tenant, http.MethodPost, "/authentication/flows/browser/copy",
 		map[string]string{"newName": alias}, nil)
@@ -111,7 +118,7 @@ func TestKeycloakWebClientsLab(t *testing.T) {
 		t.Fatalf("a rejected request changed the prepared client: got %q, %v", replay, err)
 	}
 	automation := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Automation fixture"}
-	secret = newClientSecret()
+	secret := newClientSecret()
 	subject, err := admin.ensureServicePrincipal(ctx, automation, cloud, secret)
 	if err != nil {
 		t.Fatal(err)

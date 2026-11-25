@@ -1018,6 +1018,30 @@ The test creates and removes an isolated tenant realm. It confirms that two
 web registrations preserve their callback and browser-flow bindings, and
 that the prepared clients reject authorization before a policy is published.
 
+`WORKPLACE-19` uses the same Keycloak admin access with an isolated pair of
+Samba controllers on the test machine. The Keycloak truststore must contain
+the CA for the controllers' LDAPS certificates. Publish each controller's
+LDAPS port on loopback with a certificate valid for `127.0.0.1`.
+
+Set `OCEAN_E2E_SAMBA_FEDERATION_STATE` to the private state directory for an
+`ad.ocean.web.test` fixture. Its `name` file contains the Podman name prefix
+`ocean-web-ad-…`, with controllers suffixed `-dc1` and `-dc2`. The `port1`,
+`port2`, `sid`, and `directory-id` files contain their published ports and
+directory identity. Provision the ordinary `ocean-sso-reader` and `outsider`
+accounts outside the managed workforce OU. Provision `employee` through a
+managed user task and grant it membership in the managed `WebLab` security
+group. The `reader`, `employee`, `outsider`, `employee-guid`, and `group-guid`
+files contain the fixture credentials and expected native IDs. All state
+files must be private.
+
+The test checks scoped imports, direct group membership and both object
+GUIDs. It stops the disposable primary, verifies fresh LDAP authentication
+through the surviving controller, and restarts the primary using the fixture
+SID authorization. It then checks group removal and disabled credentials
+with a test-only Keycloak password client. Samba rejects membership changes
+attempted via the LDAP reader. The browser and application access tests have
+their own acceptance criteria.
+
 ## ARM resource groups
 
 Run `python3 lab/verify_arm.py --state "$OCEAN_LAB_STATE"` after deploying the control plane and installing the pinned CLI in the operator guest. The verifier runs the [ARM command matrix](../tests/e2e/testdata/arm-contract.tsv) with a fresh CLI cache per tenant. It creates and removes the test groups and records pagination, concurrent writes, tenant isolation, and negative API responses in `evidence/arm-resource-groups.json` under the lab state.
