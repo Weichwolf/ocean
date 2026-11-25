@@ -210,6 +210,33 @@ installation media and prepared disk chain digests with the result. Regional
 ARM operations, tenant isolation and cross-host fencing are separate
 acceptance steps. [Tenant VM issue](https://github.com/Weichwolf/ocean/issues/51)
 
+### Replicated VM backing disk
+
+Stage the fully materialized raw OS disk and its 4 MiB OVMF variable store as
+private root-owned catalog files. Record the logical disk size and SHA-256 of
+both files. The backend imports sparse disks of 32–128 GiB into an exclusively
+mapped RBD volume. The LUKS2-encrypted volume contains ext4 with separate OS
+and UEFI state files. The worker commits the preparation receipt after both
+files are durable. The runtime account can write the two backing files. The
+receipt and directory stay under storage service ownership. The preparation
+receipt makes exact import retries preserve the guest's subsequent writes.
+[Ceph exclusive locks](https://docs.ceph.com/en/reef/rbd/rbd-exclusive-locks/)
+
+With the storage lab running, exercise the backing store on two disposable
+Debian workers. The probe uses a sparse synthetic 32 GiB disk and validates
+digest and key rejection, import replay, open-file protection on detach,
+encrypted snapshot contents, and the disk and UEFI writes on the second
+worker after a confirmed detach.
+
+```sh
+python3 lab/verify_vm_disk.py --state "$LAB_STATE"
+```
+
+The storage probe writes `vm-disk.json` and the worker logs under the lab
+state's `evidence` directory. It exercises the backing files directly. The
+VM-provider acceptance exercises Windows writes and confirms the fence before
+placing a failed worker's VM on another host.
+
 ## Azure CLI identity compatibility
 
 After starting the regional stack and the replicated database, deploy two Keycloak instances and run the sign-in fault check. The verification uses the isolated operator VM and the unmodified Microsoft Debian AMD64 package for Azure CLI 2.93.0. Use the package argument to install it if it is absent. The deploy and verification scripts check the SHA-256 of the supplied artifacts. [Keycloak 26.8.2](https://github.com/keycloak/keycloak/releases/tag/26.8.2) · [Microsoft Azure CLI packages](https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/)

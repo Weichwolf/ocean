@@ -95,12 +95,8 @@ func (b Backend) imageSize(ctx context.Context, id string) (int64, error) {
 	return info.Size, nil
 }
 
-// Create allocates a thin replicated image. An existing image must have the
-// expected size, so a retry cannot resize an unrelated volume.
-func (b Backend) Create(ctx context.Context, volume Volume) error {
-	if !ValidID(volume.ID) || volume.SizeMiB < 128 || volume.SizeMiB > 32768 {
-		return errors.New("invalid RBD volume identifier or capacity")
-	}
+// create allocates a thin replicated image without resizing an existing one.
+func (b Backend) create(ctx context.Context, volume Volume) error {
 	size, err := b.imageSize(ctx, volume.ID)
 	if err != nil {
 		return err
@@ -182,11 +178,15 @@ func withKey(ctx context.Context, key []byte, args ...string) *exec.Cmd {
 // Initialize formats a newly allocated image as LUKS2 and ext4. It is safe to
 // resume before and after each format step, provided the caller holds the
 // initialization claim for the volume.
-func (b Backend) Initialize(ctx context.Context, volume Volume, key []byte) (err error) {
-	if len(key) != KeySize {
-		return errors.New("invalid volume encryption key")
+func (b Backend) Initialize(ctx context.Context, volume Volume, key []byte) error {
+	if !ValidID(volume.ID) || vmDiskID(volume.ID) || volume.SizeMiB < 128 || volume.SizeMiB > 32768 || len(key) != KeySize {
+		return errors.New("invalid encrypted file volume")
 	}
-	if err := b.Create(ctx, volume); err != nil {
+	return b.initialize(ctx, volume, key, nil)
+}
+
+func (b Backend) initialize(ctx context.Context, volume Volume, key []byte, formatOptions []string) (err error) {
+	if err := b.create(ctx, volume); err != nil {
 		return err
 	}
 	device, err := b.mapDevice(ctx, volume.ID)
@@ -213,8 +213,9 @@ func (b Backend) Initialize(ctx context.Context, volume Volume, key []byte) (err
 	}
 	format, probe := exec.CommandContext(ctx, "/usr/sbin/blkid", "-p", "-o", "value", "-s", "TYPE", mapped).Output()
 	if exitCode(probe, 2) {
-		return action(exec.CommandContext(ctx, "/usr/sbin/mkfs.ext4", "-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0", mapped),
-			"initialize encrypted file system")
+		args := []string{"-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0"}
+		args = append(args, formatOptions...)
+		return action(exec.CommandContext(ctx, "/usr/sbin/mkfs.ext4", append(args, mapped)...), "initialize encrypted file system")
 	}
 	if probe != nil || strings.TrimSpace(string(format)) != "ext4" {
 		return errors.New("the encrypted volume has an unexpected file system")
@@ -252,10 +253,14 @@ func (b Backend) closeDevice(ctx context.Context, id, device string) error {
 
 // Mount delivers an already authorized filesystem to a dedicated local path.
 // A caller must hold the cluster writer grant for this volume and generation.
-func (b Backend) Mount(ctx context.Context, id string, key []byte, uid, gid int) (_ string, err error) {
-	if !ValidID(id) || len(key) != KeySize || uid < 1 || gid < 1 {
+func (b Backend) Mount(ctx context.Context, id string, key []byte, uid, gid int) (string, error) {
+	if !ValidID(id) || vmDiskID(id) || len(key) != KeySize || uid < 1 || gid < 1 {
 		return "", errors.New("invalid encrypted volume mount request")
 	}
+	return b.mount(ctx, id, key, func(path string) error { return os.Chown(path, uid, gid) })
+}
+
+func (b Backend) mount(ctx context.Context, id string, key []byte, prepare func(string) error) (_ string, err error) {
 	path := b.MountPath(id)
 	if err := os.MkdirAll(b.config.MountRoot, 0755); err != nil {
 		return "", err
@@ -299,7 +304,7 @@ func (b Backend) Mount(ctx context.Context, id string, key []byte, uid, gid int)
 		}
 		mountedHere = true
 	}
-	if err := os.Chown(path, uid, gid); err != nil {
+	if err := prepare(path); err != nil {
 		return "", err
 	}
 	return path, nil

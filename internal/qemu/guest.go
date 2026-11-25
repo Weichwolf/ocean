@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/workload"
 	"golang.org/x/sys/unix"
 )
 
@@ -22,24 +23,6 @@ var (
 	tapName               = regexp.MustCompile(`^[a-z][a-z0-9-]{0,14}$`)
 	errMonitorUnavailable = errors.New("the KVM process holds its writer lock while the monitor is unavailable")
 )
-
-// Size is the set of qualified VM hardware profiles. Capacity is reserved by
-// the controller for the whole lifetime of a VM, even while it is powered off.
-type Size struct {
-	VCPUs     int
-	MemoryMiB int
-}
-
-func HardwareSize(name string) (Size, bool) {
-	switch name {
-	case "Standard_B1ms":
-		return Size{VCPUs: 1, MemoryMiB: 2048}, true
-	case "Standard_B2s":
-		return Size{VCPUs: 2, MemoryMiB: 4096}, true
-	default:
-		return Size{}, false
-	}
-}
 
 // MAC returns a locally administered unicast address derived from a VM's
 // persistent ID. Placement changes must reuse the same ID and address.
@@ -220,8 +203,8 @@ func (g Guest) waitForStart(ctx context.Context, exited <-chan error) error {
 	}
 }
 
-// Stop completes only once the local QEMU process has lost its writer lock. A
-// guest that fails to act on the power button remains assigned to its writer.
+// Stop completes only once the local QEMU process has lost its writer lock.
+// Repeat ACPI notification to cover guests that ignore it during early boot.
 func (g Guest) Stop(ctx context.Context, force bool) error {
 	return g.withLock(func() error {
 		state, err := g.status(ctx)
@@ -232,19 +215,28 @@ func (g Guest) Stop(ctx context.Context, force bool) error {
 		if force {
 			command = "quit"
 		}
-		if err := Call(ctx, g.socket(), g.name(), command, nil); err != nil {
-			return err
+		var retry <-chan time.Time
+		if !force {
+			button := time.NewTicker(5 * time.Second)
+			defer button.Stop()
+			retry = button.C
 		}
 		ticker := time.NewTicker(200 * time.Millisecond)
 		defer ticker.Stop()
+		requestErr := Call(ctx, g.socket(), g.name(), command, nil)
 		for {
 			active, err := g.hasProcess()
 			if err != nil || !active {
 				return err
 			}
+			if requestErr != nil {
+				return requestErr
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-retry:
+				requestErr = Call(ctx, g.socket(), g.name(), command, nil)
 			case <-ticker.C:
 			}
 		}
@@ -252,7 +244,7 @@ func (g Guest) Stop(ctx context.Context, force bool) error {
 }
 
 func (g Guest) arguments() ([]string, error) {
-	size, ok := HardwareSize(g.Size)
+	size, ok := workload.VirtualMachineSize(g.Size)
 	if !ok || !tapName.MatchString(g.Tap) {
 		return nil, errors.New("invalid KVM hardware profile or TAP interface")
 	}
