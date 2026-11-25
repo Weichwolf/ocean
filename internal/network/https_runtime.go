@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
+	"strings"
 )
 
 const httpsGatewayTable = "ocean_https_gateway"
@@ -96,14 +98,21 @@ func (slot HTTPSGatewaySlot) OwnsAddress(ctx context.Context, address netip.Addr
 }
 
 // Keepalived configures an exclusive public address on the two approved peers.
-func (slot HTTPSGatewaySlot) Keepalived(address netip.Addr, backend netip.AddrPort) (string, error) {
+func (slot HTTPSGatewaySlot) Keepalived(address netip.Addr, backend netip.AddrPort, additional ...netip.AddrPort) (string, error) {
 	if err := slot.validateAddress(address); err != nil {
 		return "", err
 	}
-	if !backend.Addr().Is4() || !backend.Addr().IsPrivate() || backend.Port() == 0 {
-		return "", errors.New("the gateway needs a private IPv4 readiness target")
+	if len(additional) >= MaxHTTPSBackends {
+		return "", errors.New("the gateway readiness pool exceeds its size limit")
 	}
-	check := fmt.Sprintf("/usr/libexec/ocean/https-ready %s %s", address, backend)
+	targets := []string{"/usr/libexec/ocean/https-ready", address.String()}
+	for _, target := range slices.Concat([]netip.AddrPort{backend}, additional) {
+		if !target.Addr().Is4() || !target.Addr().IsPrivate() || target.Port() == 0 {
+			return "", errors.New("the gateway needs private IPv4 readiness targets")
+		}
+		targets = append(targets, target.String())
+	}
+	check := strings.Join(targets, " ")
 	return renderGatewayVRRP(check, slot.PublicInterface, slot.VRRPID, slot.Priority,
 		slot.PublicLink.Addr(), slot.PeerAddress, netip.PrefixFrom(address, slot.PublicLink.Bits())), nil
 }

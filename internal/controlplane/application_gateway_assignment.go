@@ -96,6 +96,7 @@ func (r *Region) HTTPSAssignments(ctx context.Context, id string, certificate []
 				return nil, errors.New("HTTPS gateway certificate envelope could not be opened")
 			}
 			assignment.Hostname, assignment.Backend = record.Hostname, record.Backend
+			assignment.AdditionalBackends = record.AdditionalBackends
 			assignment.BackendSubnet, assignment.CertificateBundle = record.BackendSubnet, bundle
 		}
 		result = append(result, assignment)

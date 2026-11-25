@@ -63,7 +63,12 @@ func verifyHTTPSLinks(ctx context.Context, slot network.HTTPSGatewaySlot, assign
 	}); err != nil {
 		return err
 	}
-	return verifyRoute(assignment.Backend.Addr(), slot.BackendInterface, assignment.BackendSubnet.Contains)
+	for _, backend := range slices.Concat([]netip.AddrPort{assignment.Backend}, assignment.AdditionalBackends) {
+		if err := verifyRoute(backend.Addr(), slot.BackendInterface, assignment.BackendSubnet.Contains); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func startHTTPSGateway(ctx context.Context, name string, slot network.HTTPSGatewaySlot,
@@ -89,13 +94,13 @@ func startHTTPSGateway(ctx context.Context, name string, slot network.HTTPSGatew
 	}
 	ingress := network.HTTPSIngress{
 		PublicIPv4: assignment.PublicIPv4, Hostname: assignment.Hostname, CertificateFile: bundle,
-		Backend: assignment.Backend, BackendSubnet: assignment.BackendSubnet,
+		Backend: assignment.Backend, AdditionalBackends: assignment.AdditionalBackends, BackendSubnet: assignment.BackendSubnet,
 	}
 	proxy, err := ingress.HAProxy()
 	if err != nil {
 		return err
 	}
-	vrrp, err := slot.Keepalived(assignment.PublicIPv4, assignment.Backend)
+	vrrp, err := slot.Keepalived(assignment.PublicIPv4, assignment.Backend, assignment.AdditionalBackends...)
 	if err != nil {
 		return err
 	}
@@ -192,8 +197,11 @@ func httpsGatewayReady(ctx context.Context, name string, slot network.HTTPSGatew
 	if len(units) != len(httpsRoles) || slices.ContainsFunc(units, func(value string) bool { return value != "active" }) {
 		return false, false, nil
 	}
-	if _, err := httpsInNamespace(ctx, slot, "/usr/libexec/ocean/https-ready",
-		assignment.PublicIPv4.String(), assignment.Backend.String()); err != nil {
+	probe := []string{assignment.PublicIPv4.String(), assignment.Backend.String()}
+	for _, backend := range assignment.AdditionalBackends {
+		probe = append(probe, backend.String())
+	}
+	if _, err := httpsInNamespace(ctx, slot, "/usr/libexec/ocean/https-ready", probe...); err != nil {
 		return false, false, nil
 	}
 	active, err := slot.OwnsAddress(ctx, assignment.PublicIPv4)

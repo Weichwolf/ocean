@@ -34,6 +34,7 @@ type PlacementRequest struct {
 	SubnetID              string              `json:"subnetId,omitempty"`
 	NeedsContainerNetwork bool                `json:"needsContainerNetwork,omitempty"`
 	NeedsStorage          bool                `json:"needsStorage,omitempty"`
+	SpreadSet             string              `json:"spreadSet,omitempty"`
 }
 
 type Reservation struct {
@@ -199,6 +200,9 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 		!slices.Contains([]string{"compute", "storage", "gateway"}, wanted.Role) || !validCapacity(wanted.Resources) {
 		return Reservation{}, ErrReservationChanged
 	}
+	if wanted.SpreadSet != "" && (!identifier.MatchString(wanted.SpreadSet) || wanted.Role != "compute" || wanted.NeedsStorage) {
+		return Reservation{}, ErrReservationChanged
+	}
 	if wanted.SubnetID != "" && wanted.Role != "compute" {
 		return Reservation{}, ErrPlacementSubnetUnavailable
 	}
@@ -237,7 +241,7 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 			}
 			return Reservation{}, ErrQuotaExceeded
 		}
-		candidate, err := r.chooseHost(ctx, wanted, policy.Pools)
+		candidate, err := r.chooseHost(ctx, scope, wanted, policy.Pools)
 		if err != nil {
 			if errors.Is(err, ErrNoEligibleHost) {
 				if saved, found, retryErr := r.placementRetry(ctx, key, wanted); found || retryErr != nil {
@@ -276,6 +280,9 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 		writes := append(bindings, clientv3.OpPut(key, string(data)), clientv3.OpPut(cellKey, string(data)),
 			clientv3.OpPut(hostKey, string(assignment)),
 			tenant.write(wanted.Resources), candidate.usage.write(wanted.Resources))
+		if wanted.SpreadSet != "" {
+			writes = append(writes, clientv3.OpPut(r.spreadHostKey(scope, wanted.SpreadSet, candidate.host.HostID), reservation.Generation))
+		}
 		if extra != nil {
 			checks, additional, err := extra(ctx, reservation)
 			if err != nil {
@@ -313,7 +320,11 @@ type placementHost struct {
 	guards []clientv3.Cmp
 }
 
-func (r *Region) chooseHost(ctx context.Context, wanted PlacementRequest, pools []string) (placementHost, error) {
+func (r *Region) spreadHostKey(scope arm.SubscriptionScope, set, host string) string {
+	return r.armPrefix(scope) + "placement-spread/" + set + "/" + host
+}
+
+func (r *Region) chooseHost(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest, pools []string) (placementHost, error) {
 	available, err := r.client.Get(ctx, r.hostKey("live", ""), clientv3.WithPrefix())
 	if err != nil {
 		return placementHost{}, err
@@ -339,10 +350,23 @@ func (r *Region) chooseHost(ctx context.Context, wanted PlacementRequest, pools 
 		if err != nil {
 			return placementHost{}, err
 		}
-		if fits(host.Capacity, used.used, wanted.Resources) {
-			return placementHost{host: host, usage: used, guards: []clientv3.Cmp{used.compare(),
-				clientv3.Compare(clientv3.ModRevision(string(item.Key)), "=", item.ModRevision), clientv3.Compare(clientv3.Version(drainKey), "=", 0)}}, nil
+		if !fits(host.Capacity, used.used, wanted.Resources) {
+			continue
 		}
+		guards := []clientv3.Cmp{used.compare(), clientv3.Compare(clientv3.ModRevision(string(item.Key)), "=", item.ModRevision),
+			clientv3.Compare(clientv3.Version(drainKey), "=", 0)}
+		if wanted.SpreadSet != "" {
+			key := r.spreadHostKey(scope, wanted.SpreadSet, host.HostID)
+			occupied, err := r.client.Get(ctx, key, clientv3.WithCountOnly())
+			if err != nil {
+				return placementHost{}, err
+			}
+			if occupied.Count != 0 {
+				continue
+			}
+			guards = append(guards, clientv3.Compare(clientv3.Version(key), "=", 0))
+		}
+		return placementHost{host: host, usage: used, guards: guards}, nil
 	}
 	return placementHost{}, ErrNoEligibleHost
 }
@@ -392,6 +416,11 @@ func (r *Region) releasePlacement(ctx context.Context, scope arm.SubscriptionSco
 		guards := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision), tenant.compare(), host.compare()}
 		writes := []clientv3.Op{clientv3.OpDelete(key), clientv3.OpDelete(cellKey), clientv3.OpDelete(r.hostReservationKey(scope, saved.HostID, id)),
 			tenant.write(delta), host.write(delta)}
+		if saved.SpreadSet != "" {
+			spread := r.spreadHostKey(scope, saved.SpreadSet, saved.HostID)
+			guards = append(guards, clientv3.Compare(clientv3.Value(spread), "=", generation))
+			writes = append(writes, clientv3.OpDelete(spread))
+		}
 		if saved.SubnetID != "" {
 			parent, name, ok := arm.SubnetParent(scope, saved.SubnetID)
 			if !ok || !saved.PrivateIPv4.Is4() {

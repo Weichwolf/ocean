@@ -14,14 +14,15 @@ import (
 
 // HTTPSAssignment is available to the registered gateway hosts for one slot.
 type HTTPSAssignment struct {
-	Slot              string         `json:"slot"`
-	Generation        string         `json:"generation"`
-	Delete            bool           `json:"delete,omitempty"`
-	PublicIPv4        netip.Addr     `json:"publicIPv4"`
-	Hostname          string         `json:"hostname"`
-	Backend           netip.AddrPort `json:"backend"`
-	BackendSubnet     netip.Prefix   `json:"backendSubnet"`
-	CertificateBundle []byte         `json:"certificateBundle,omitempty"`
+	Slot               string           `json:"slot"`
+	Generation         string           `json:"generation"`
+	Delete             bool             `json:"delete,omitempty"`
+	PublicIPv4         netip.Addr       `json:"publicIPv4"`
+	Hostname           string           `json:"hostname"`
+	Backend            netip.AddrPort   `json:"backend"`
+	AdditionalBackends []netip.AddrPort `json:"additionalBackends,omitempty"`
+	BackendSubnet      netip.Prefix     `json:"backendSubnet"`
+	CertificateBundle  []byte           `json:"certificateBundle,omitempty"`
 }
 
 type WireGuardAssignment struct {

@@ -13,14 +13,20 @@ const (
 	OperationFailed     = "Failed"
 )
 
+type OperationError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 type Operation struct {
-	ID         string     `json:"operationId"`
-	Kind       string     `json:"kind"`
-	Group      string     `json:"group"`
-	Actor      string     `json:"actor"`
-	Status     string     `json:"status"`
-	StartedAt  time.Time  `json:"startTime"`
-	FinishedAt *time.Time `json:"endTime,omitempty"`
+	ID         string          `json:"operationId"`
+	Kind       string          `json:"kind"`
+	Group      string          `json:"group"`
+	Actor      string          `json:"actor"`
+	Status     string          `json:"status"`
+	StartedAt  time.Time       `json:"startTime"`
+	FinishedAt *time.Time      `json:"endTime,omitempty"`
+	Error      *OperationError `json:"error,omitempty"`
 }
 
 type OperationStore interface {
@@ -65,14 +71,16 @@ func (s Server) operation(ctx context.Context, w http.ResponseWriter, r *http.Re
 	if operation.Status == OperationInProgress {
 		w.Header().Set("Retry-After", "1")
 	}
-	const targetChanged = "OperationTargetChanged"
-	const targetChangedMessage = "The operation target changed before completion."
+	failure := operation.Error
+	if failure == nil {
+		failure = &OperationError{Code: "OperationTargetChanged", Message: "The operation target changed before completion."}
+	}
 	if kind == "operationresults" {
 		switch operation.Status {
 		case OperationSucceeded:
 			w.WriteHeader(http.StatusNoContent)
 		case OperationFailed:
-			writeError(w, http.StatusConflict, targetChanged, targetChangedMessage)
+			writeError(w, http.StatusConflict, failure.Code, failure.Message)
 		default:
 			w.WriteHeader(http.StatusAccepted)
 		}
@@ -84,7 +92,7 @@ func (s Server) operation(ctx context.Context, w http.ResponseWriter, r *http.Re
 		status["endTime"] = operation.FinishedAt
 	}
 	if operation.Status == OperationFailed {
-		status["error"] = map[string]string{"code": targetChanged, "message": targetChangedMessage}
+		status["error"] = failure
 	}
 	writeJSON(w, http.StatusOK, status)
 }

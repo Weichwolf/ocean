@@ -30,17 +30,18 @@ var (
 )
 
 type ApplicationGatewayDeployment struct {
-	ResourceAddress ResourceAddress
-	Deployment      ResourceAddress
-	PublicIP        ResourceAddress
-	Subnet          ResourceAddress
-	Backend         netip.AddrPort
-	Location        string
-	Tags            map[string]string
-	CertificateName string
-	Certificate     network.HTTPSCertificate `json:"-"`
-	certificatePFX  []byte
-	password        string
+	ResourceAddress    ResourceAddress
+	Deployment         ResourceAddress
+	PublicIP           ResourceAddress
+	Subnet             ResourceAddress
+	Backend            netip.AddrPort
+	AdditionalBackends []netip.AddrPort
+	Location           string
+	Tags               map[string]string
+	CertificateName    string
+	Certificate        network.HTTPSCertificate `json:"-"`
+	certificatePFX     []byte
+	password           string
 }
 
 type ApplicationGatewayDeploymentStore interface {
@@ -281,9 +282,17 @@ func compileApplicationGateway(scope SubscriptionScope, deployment ResourceAddre
 	backendPort, err := strconv.ParseUint(backend.Properties.Port, 10, 16)
 	if err != nil || backendPort == 0 || strconv.FormatUint(backendPort, 10) != backend.Properties.Port || backend.Properties.Protocol != "Http" ||
 		!strings.EqualFold(backend.Properties.Affinity, "disabled") || backend.Properties.Draining.Enabled ||
-		backend.Properties.Draining.Timeout != 1 || len(pool.Properties.Addresses) != 1 ||
-		!pool.Properties.Addresses[0].IP.Is4() || !pool.Properties.Addresses[0].IP.IsPrivate() {
-		return desired, errors.New("the Application Gateway supports one private IPv4 HTTP backend")
+		backend.Properties.Draining.Timeout != 1 || len(pool.Properties.Addresses) < 1 || len(pool.Properties.Addresses) > network.MaxHTTPSBackends {
+		return desired, errors.New("the Application Gateway requires a bounded private IPv4 HTTP backend pool")
+	}
+	backends := make([]netip.AddrPort, 0, len(pool.Properties.Addresses))
+	distinct := make(map[netip.Addr]bool, len(pool.Properties.Addresses))
+	for _, endpoint := range pool.Properties.Addresses {
+		if !endpoint.IP.Is4() || !endpoint.IP.IsPrivate() || distinct[endpoint.IP] {
+			return desired, errors.New("the Application Gateway requires distinct private IPv4 HTTP backends")
+		}
+		distinct[endpoint.IP] = true
+		backends = append(backends, netip.AddrPortFrom(endpoint.IP, uint16(backendPort)))
 	}
 	publicIP, validPublic := NetworkResourceAddress(scope, public.Properties.PublicIP.ID, network.PublicIPType)
 	subnet, validSubnet := NetworkResourceAddress(scope, gateway.Properties.Subnet.ID, network.SubnetType)
@@ -304,7 +313,7 @@ func compileApplicationGateway(scope SubscriptionScope, deployment ResourceAddre
 	return ApplicationGatewayDeployment{
 		ResourceAddress: ResourceAddress{Group: deployment.Group, Path: applicationGatewayType + "/" + item.Name},
 		Deployment:      deployment, PublicIP: publicIP, Subnet: subnet, Location: location, Tags: item.Tags,
-		Backend:         netip.AddrPortFrom(pool.Properties.Addresses[0].IP, uint16(backendPort)),
+		Backend: backends[0], AdditionalBackends: backends[1:],
 		CertificateName: certificate.Name, certificatePFX: data, password: password,
 	}, nil
 }
