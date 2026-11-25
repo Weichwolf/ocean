@@ -104,6 +104,7 @@ def upload(state, guest, files, destination=DEST, owner="ocean"):
     secrets = [f"{destination}/{name}" for name in files if name.endswith((".key", ".secret"))]
     if secrets:
         scripts.append(shlex.join(["sudo", "chown", owner, *secrets]))
+    scripts.append(shlex.join(["sudo", "sync", "-f", destination]))
     ssh(state, guest, " && ".join(scripts), payload.getvalue())
 
 

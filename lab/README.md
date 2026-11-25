@@ -21,6 +21,10 @@ OCEAN_LAB_IMAGE="$HOME/.cache/ocean/images/debian-13-generic-amd64.qcow2"
 ./bin/ocean-lab down -state "$OCEAN_LAB_STATE"
 ```
 
+Use `ocean-lab shutdown -state "$OCEAN_LAB_STATE"` to stop the lab between
+acceptance profiles. It waits for the guests to flush their data and power
+off before stopping the switches.
+
 ## Profiles and networking
 
 The `single-farm-3` and `scale-16` profiles use the same addresses and hardware identities for the first three nodes. Run `up` with the larger profile in the same state directory to add nodes. The `geo-4x3` and `geo-4x4` profiles work the same way for four farms. Three nodes per farm carry the control-plane role and two carry the gateway role. Each farm also has separate operator and customer clients.

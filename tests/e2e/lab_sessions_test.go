@@ -117,7 +117,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 			return err
 		}
 		if len(names) > 0 {
-			if _, err := sessions.command(ctx, "down", lab.state); err != nil {
+			if _, err := sessions.command(ctx, "shutdown", lab.state); err != nil {
 				return err
 			}
 		}
@@ -139,9 +139,11 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 		readiness += " && curl --fail --silent --max-time 3 --cacert /opt/ocean-region/pki/ingress-ca.pem " +
 			"https://oauth.farm-1.ocean.test/realms/c8c02ae2-b2c9-4762-9bb5-08b660caf0ae/.well-known/openid-configuration"
 	}
+	readyCtx, cancelReady := context.WithTimeout(ctx, 150*time.Second)
+	defer cancelReady()
 	lastErr := errors.New("the management endpoint did not become ready")
-	for attempt := 0; attempt < 60; attempt++ {
-		probe, cancel := context.WithTimeout(ctx, 8*time.Second)
+	for readyCtx.Err() == nil {
+		probe, cancel := context.WithTimeout(readyCtx, 8*time.Second)
 		_, err := sessions.command(probe, "ssh", lab.state, "farm-1-operator", "--", readiness)
 		cancel()
 		if err == nil {
@@ -150,7 +152,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 		}
 		lastErr = err
 		select {
-		case <-ctx.Done():
+		case <-readyCtx.Done():
 			return lastErr
 		case <-time.After(time.Second):
 		}
@@ -159,7 +161,7 @@ func (sessions *labSessions) use(ctx context.Context, state string) error {
 }
 
 func (sessions *labSessions) restore() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	var failure error
 	for _, lab := range sessions.labs {
@@ -172,7 +174,7 @@ func (sessions *labSessions) restore() error {
 			continue
 		}
 		if len(actual) > 0 {
-			if _, err := sessions.command(ctx, "down", lab.state); err != nil {
+			if _, err := sessions.command(ctx, "shutdown", lab.state); err != nil {
 				failure = errors.Join(failure, err)
 				continue
 			}

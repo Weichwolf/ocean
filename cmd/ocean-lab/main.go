@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/lab"
 )
@@ -19,7 +20,8 @@ const usage = `usage: ocean-lab <command> [options]
   status -state DIR
   ssh    -state DIR GUEST [-- COMMAND]
   stop   -state DIR GUEST
-  down   -state DIR`
+  down   -state DIR
+  shutdown -state DIR`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -47,7 +49,7 @@ func run(ctx context.Context, args []string) error {
 	switch operation {
 	case "plan", "up":
 		flags.StringVar(&profilePath, "profile", "", "path to a YAML lab profile")
-	case "status", "ssh", "stop", "down":
+	case "status", "ssh", "stop", "down", "shutdown":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", operation, usage)
 	}
@@ -114,6 +116,10 @@ func run(ctx context.Context, args []string) error {
 		return printJSON(guests)
 	case "down":
 		return workspace.Down()
+	case "shutdown":
+		deadline, cancel := context.WithTimeout(ctx, 150*time.Second)
+		defer cancel()
+		return workspace.Shutdown(deadline)
 	case "stop":
 		return workspace.Stop(flags.Arg(0))
 	case "ssh":
