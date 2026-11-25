@@ -48,6 +48,12 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 
+Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
+disposable endpoint to verify the regional replica fencing transaction,
+cleanup acknowledgement and replacement scheduling. This case uses signed
+fixture power evidence. The physical-host run observes the actual power
+state through the site fencing authority.
+
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
 ## Workload fixtures

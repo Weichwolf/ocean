@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -46,6 +47,7 @@ type regionConfig struct {
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
 	ManagedDirectories  *enrollment.Capacity      `json:"managedDirectories,omitempty"`
+	DirectoryFenceKey   string                    `json:"directoryFencePublicKeyFile,omitempty"`
 }
 
 type etcdConfig struct {
@@ -187,6 +189,7 @@ type Region struct {
 	wireGuard         *wireGuardConfig
 	workloads         *workloadControl
 	directoryCapacity enrollment.Capacity
+	directoryFencer   ed25519.PublicKey
 	storage           *storageControl
 	telemetry         *telemetryControl
 	cell              string
@@ -216,6 +219,13 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
+	directoryFencer, err := loadFencerKey(cfg.DirectoryFenceKey)
+	if err != nil {
+		return nil, err
+	}
+	if directoryFencer != nil && cfg.ManagedDirectories == nil {
+		return nil, errors.New("a directory fencing key requires managed directories")
+	}
 	connection, err := cfg.Etcd.clientConfig()
 	if err != nil {
 		return nil, err
@@ -232,7 +242,8 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, fmt.Errorf("open telemetry backend: %w", err)
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
-		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell}
+		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
+		directoryFencer: directoryFencer}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
@@ -279,6 +290,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapManagedDirectories(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapDirectoryFencing(ctx); err != nil {
 		return err
 	}
 	if err := region.bootstrapStorage(ctx); err != nil {

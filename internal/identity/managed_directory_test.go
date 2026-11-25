@@ -36,6 +36,16 @@ type directoryRequestFixture struct {
 	received *ManagedDirectory
 }
 
+func (f *directoryRequestFixture) RequestDirectoryReplicaReplacement(_ context.Context, _ TenantReservation, fence SignedDirectoryFence) error {
+	if string(fence.Attestation) != "fixture-attestation" || string(fence.Signature) != "fixture-signature" {
+		return ErrDirectoryFenceDenied
+	}
+	if f.received == nil || f.received.ProvisionedAt.IsZero() {
+		return ErrDirectoryFencePending
+	}
+	return nil
+}
+
 func (f *directoryRequestFixture) LookupManagedDirectory(context.Context, TenantReservation) (*ManagedDirectory, error) {
 	return f.received, nil
 }
@@ -114,6 +124,8 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 	path := directoryPath(tenant.TenantID)
 	query := "?api-version=" + directoryAPIVersion
 	input := `{"dnsName":"AD.Example.Test","netbiosName":"office","subnetId":"/fixture"}`
+	replacement := path + "/replaceReplica"
+	fence, _ := json.Marshal(SignedDirectoryFence{Attestation: []byte("fixture-attestation"), Signature: []byte("fixture-signature")})
 	for _, check := range []struct {
 		name, method, path, query, subject, content string
 		status                                      int
@@ -124,6 +136,10 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 		{"unsupported query", http.MethodPut, path, query + "&other=yes", tenant.Administrator, input, http.StatusBadRequest},
 		{"unsupported field", http.MethodPut, path, query, tenant.Administrator, `{"dnsName":"ad.example.test","unknown":true}`, http.StatusBadRequest},
 		{"absent directory", http.MethodGet, path, query, tenant.Administrator, "", http.StatusNotFound},
+		{"replacement member", http.MethodPost, replacement, query, member, string(fence), http.StatusForbidden},
+		{"replacement malformed", http.MethodPost, replacement, query, tenant.Administrator, `{"unknown":true}`, http.StatusBadRequest},
+		{"replacement unsigned", http.MethodPost, replacement, query, tenant.Administrator, `{}`, http.StatusForbidden},
+		{"replacement unavailable", http.MethodPost, replacement, query, tenant.Administrator, string(fence), http.StatusConflict},
 	} {
 		t.Run(check.name, func(t *testing.T) {
 			result := send(check.method, check.path, check.query, check.subject, check.content)
@@ -168,12 +184,12 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 			defer server.Close()
 			compat.cloud.ResourceManager = server.URL
 			close(ready)
-			testManagedDirectoryCLI(t, server, path+query, input, signedToken(server.URL, tenant.Administrator), store.received.ID)
+			testManagedDirectoryCLI(t, server, path+query, input, signedToken(server.URL, tenant.Administrator), store.received.ID, replacement+query, fence)
 		})
 	}
 }
 
-func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, input, token, expectedID string) {
+func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, input, token, expectedID, replacement string, fence []byte) {
 	t.Helper()
 	temp := t.TempDir()
 	ca, body := filepath.Join(temp, "test-ca.pem"), filepath.Join(temp, "directory.json")
@@ -221,4 +237,11 @@ func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, 
 		}
 		t.Logf("Azure CLI %s az rest %s preserved the directory ID and returned two ready controllers", version.CLI, method)
 	}
+	fenceFile := filepath.Join(temp, "fence.json")
+	if err := os.WriteFile(fenceFile, fence, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("rest", "--method", "post", "--url", api.URL+replacement, "--headers", "Authorization=Bearer "+token,
+		"--body", "@"+fenceFile, "--only-show-errors", "-o", "none")
+	t.Logf("Azure CLI %s az rest post submitted the replica fence envelope", version.CLI)
 }

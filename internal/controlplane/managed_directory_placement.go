@@ -24,6 +24,7 @@ type directoryPlacement struct {
 	DirectoryID string                                `json:"directoryId"`
 	Controllers [directoryControllerCount]Reservation `json:"controllers"`
 	Bootstrap   []byte                                `json:"encryptedBootstrap"`
+	Repair      string                                `json:"repair,omitempty"`
 }
 
 func (placement directoryPlacement) bootstrapLabel(key string) []byte {
@@ -100,11 +101,20 @@ func directoryPlacementPending(err error) bool {
 }
 
 func (r *Region) placeManagedDirectory(ctx context.Context, tenantID string) error {
-	// A saved pair represents admitted capacity even while the controllers are still starting.
 	key := r.managedDirectoryPlacementKey(tenantID)
-	existing, err := r.client.Get(ctx, key, clientv3.WithCountOnly())
-	if err != nil || existing.Count != 0 {
+	existing, err := r.client.Get(ctx, key)
+	if err != nil {
 		return err
+	}
+	if existing.Count != 0 {
+		var placement directoryPlacement
+		if json.Unmarshal(existing.Kvs[0].Value, &placement) != nil {
+			return errors.New("invalid managed directory placement")
+		}
+		if placement.Repair != "" {
+			return r.placeDirectoryReplicaReplacement(ctx, tenantID, placement.Repair)
+		}
+		return nil
 	}
 	err = r.reserveDirectoryControllers(ctx, tenantID, key)
 	if !directoryPlacementPending(err) {

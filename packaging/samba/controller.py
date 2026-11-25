@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -29,6 +30,7 @@ NETBIOS = re.compile(r"[A-Z](?:[A-Z0-9-]{0,13}[A-Z0-9])?")
 DIRECTORY_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 DOMAIN_SID = re.compile(r"S-1-5-21(?:-[0-9]{1,10}){3}")
 STARTUP_TOKEN = re.compile(r"[0-9a-f]{32}")
+GENERATION = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 
 
 class DirectoryIdentityError(RuntimeError):
@@ -376,6 +378,48 @@ def local_domain_sid(config):
     return sid
 
 
+def retire_replica(settings, generation):
+    import ldb
+    from samba.auth import system_session
+    from samba.param import LoadParm
+    from samba.remove_dc import remove_dc
+    from samba.samdb import SamDB
+
+    if settings.get("controller") == 2 or not GENERATION.fullmatch(generation):
+        raise DirectoryIdentityError("replica retirement requires the assigned primary")
+    os.umask(0o077)
+    root = read_checkpoint(STATE / "controller.json", settings)
+    expected = os.environ.get("OCEAN_AD_EXPECTED_SID")
+    config = root / "etc/smb.conf"
+    lp = LoadParm()
+    lp.load(str(config))
+    database = SamDB(lp=lp, session_info=system_session())
+    if expected and database.get_domain_sid() != expected:
+        raise DirectoryIdentityError("replica retirement requires the established domain")
+    records = root / "private/replica-retirements"
+    records.mkdir(exist_ok=True)
+    receipt = records / generation
+    with (records / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if receipt.exists():
+            return
+        servers = database.search(base=database.get_config_basedn(), scope=ldb.SCOPE_SUBTREE,
+                                  expression="(&(objectClass=server)(cn=DC02))", attrs=[])
+        if servers:
+            # Samba's removal transaction covers the server, account and DNS records.
+            remove_dc(database, logging.getLogger("ocean-directory"), "DC02")
+        elif database.search(base=database.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                             expression="(&(objectClass=computer)(sAMAccountName=DC02$))", attrs=[]):
+            raise DirectoryIdentityError("the retired replica metadata is inconsistent")
+        pending = receipt.with_suffix(".pending")
+        with pending.open("w") as stream:
+            stream.write(generation + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        pending.replace(receipt)
+        policy.sync_directory(records)
+
+
 def authorize_startup(sid, challenge):
     if (not DOMAIN_SID.fullmatch(sid) or not STARTUP_TOKEN.fullmatch(challenge)
             or (STARTUP / "offer").read_text() != f"{sid} {challenge}\n"):
@@ -566,6 +610,8 @@ if __name__ == "__main__":
             print(offer.read_text(), end="")
         elif len(sys.argv) == 4 and sys.argv[1] == "authorize-startup":
             authorize_startup(sys.argv[2], sys.argv[3])
+        elif len(sys.argv) == 3 and sys.argv[1] == "retire-replica":
+            retire_replica(settings, sys.argv[2])
         elif len(sys.argv) == 1:
             signal.signal(signal.SIGTERM, stop_before_service)
             signal.signal(signal.SIGINT, stop_before_service)

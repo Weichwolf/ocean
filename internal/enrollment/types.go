@@ -104,6 +104,7 @@ type DirectoryAssignment struct {
 	NetBIOSName     string        `json:"netbiosName"`
 	ControllerIndex int           `json:"controllerIndex"`
 	ControllerIPv4  [2]netip.Addr `json:"controllerIPv4"`
+	RetireReplica   string        `json:"retireReplicaGeneration,omitempty"`
 }
 
 type AssignmentPage struct {

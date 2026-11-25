@@ -330,12 +330,45 @@ account GUID and the original domain and employee identities, membership,
 policy version, and ACL. The replacement then serves clients with the primary
 stopped. This recovery run uses controlled Podman stops on one host.
 
+To enable managed replica replacement, configure
+`region.directoryFencePublicKeyFile` with the out-of-band fencing authority's
+Ed25519 public key in PEM format. Configure the same key on every regional
+API replica. The authority signs an attestation after observing the exact
+failed host is powered off and preventing it from restarting outside Ocean.
+The JSON attestation includes `action: ReplaceDirectoryReplica`,
+`tenantId`, `subscriptionId`, `directoryId`, `hostId`, `placementId`,
+`generation`, `observation: PoweredOff`, and an RFC 3339 `observedAt`.
+Encode the original signed bytes and signature as base64 in the envelope
+fields `attestation` and `signature`.
+
+```sh
+replace_url="https://arm.farm-1.ocean.test/ocean/tenants/$TENANT_ID/directory/replaceReplica?api-version=2026-11-01"
+az rest --method post --url "$replace_url" --body @signed-directory-fence.json -o none
+az rest --method get --url "$directory_url"
+```
+
+The initial request requires a matching fence no more than two minutes
+old and an expired or removed host availability record. HTTP 202 means
+Ocean recorded the signed evidence and revoked the failed host's identity.
+The primary removes the retired replica's AD and DNS metadata. Its node
+agent acknowledges cleanup through the current host assignment. The
+regional reconciler then assigns another eligible host, preserving the
+replica's private IP and transferring the capacity reservation. The
+replacement rejoins the existing domain with its established SID and
+the sealed directory join credential. It publishes readiness after the
+data-plane probes pass. Replaying an accepted envelope preserves the
+original replacement.
+
 The same profile runs the `az rest` request and status commands with Azure
 CLI 2.93.0 against a loopback HTTPS contract fixture and a signed fixture
 token. The runtime and CLI probes are independently selectable with
 `OCEAN_E2E_CASES=WORKPLACE-04` or `OCEAN_E2E_CASES=WORKPLACE-05`.
-Placement and fencing for controller replacement across hosts, independent
-backup recovery, and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+Add `WORKPLACE-06` to `OCEAN_E2E_CASES` and set
+`OCEAN_E2E_DIRECTORY_ETCD` to an isolated etcd endpoint to exercise regional
+fencing and placement with simulated host identities and power evidence.
+The replica workflow requires a valid directory join credential. The
+physical-host fencing run, primary replacement, independent backup
+recovery, and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ## Tenant directory users
 

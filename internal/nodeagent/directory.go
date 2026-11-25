@@ -77,6 +77,9 @@ func (j *joinClient) directoryTasks(ctx context.Context) (map[string]enrollment.
 			!assignment.PrivateIPv4.Is4() || assignment.Resources.CPUMillis < 1 || assignment.Resources.MemoryMiB < 1 {
 			return nil, errors.New("invalid directory task in host assignments")
 		}
+		if directory.RetireReplica != "" && (index != 1 || !taskIdentityPattern.MatchString(directory.RetireReplica)) {
+			return nil, errors.New("invalid directory retirement task")
+		}
 		name := containerName(directoryTaskID(assignment))
 		tasks[name] = assignment
 	}
@@ -170,6 +173,30 @@ func (j *joinClient) reportDirectoryHealth(ctx context.Context, assignment enrol
 	return nil
 }
 
+func (j *joinClient) retireDirectoryReplica(ctx context.Context, name string, assignment enrollment.Assignment) error {
+	retired := assignment.Directory.RetireReplica
+	if err := podmanAction(ctx, "exec", name, "/usr/bin/timeout", "12", "/usr/bin/python3",
+		directoryControllerPath, "retire-replica", retired); err != nil {
+		return err
+	}
+	body, _ := json.Marshal(map[string]string{"retiredGeneration": retired})
+	path := j.url() + "/directories/" + assignment.TenantID + "/" + assignment.Generation + "/replica-retired"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := j.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("directory retirement acknowledgement returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
 func directoryControllerHealth(ctx context.Context, name string) enrollment.DirectoryHealth {
 	probe, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
@@ -228,6 +255,9 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 			}
 		}
 		failures = append(failures, j.reportDirectoryHealth(ctx, task, health))
+		if health.Ready && task.Directory.RetireReplica != "" {
+			failures = append(failures, j.retireDirectoryReplica(ctx, name, task))
+		}
 	}
 	return errors.Join(failures...)
 }

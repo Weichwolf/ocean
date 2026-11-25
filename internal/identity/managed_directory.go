@@ -129,6 +129,10 @@ func (c *Compatibility) managedDirectory(w http.ResponseWriter, req *http.Reques
 		armError(w, http.StatusBadRequest, "InvalidApiVersionParameter", "The managed directory requires api-version="+directoryAPIVersion+".")
 		return
 	}
+	if req.Method == http.MethodPost {
+		c.replaceDirectoryReplica(ctx, w, req, *record)
+		return
+	}
 	if req.Method != http.MethodPut {
 		directory, err := c.directories.LookupManagedDirectory(ctx, *record)
 		switch {

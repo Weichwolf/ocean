@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -41,5 +42,11 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	if _, err := exec.LookPath("az"); err != nil {
 		cli.BlockedReason = "Install the pinned Azure CLI 2.93.0 for the managed directory contract probe."
 	}
-	return append(steps, runtime, cli)
+	fencing := harness.Step{Name: "managed-directory-fencing", Cases: []string{"WORKPLACE-06"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestManagedDirectoryReservation$", "./internal/controlplane"}}
+	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
+		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
+	}
+	return append(steps, runtime, cli, fencing)
 }

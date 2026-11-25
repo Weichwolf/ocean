@@ -341,13 +341,19 @@ after=$(proof "$addr" 1 guarded)
 same_policy "$changed" "$after"
 printf 'The primary served Kerberos and SYSVOL with the replica stopped.\n'
 p rm "$replica" >/dev/null
-directory_tool "$name" domain demote --remove-other-dead-server=DC02
+retired_generation=$(cat /proc/sys/kernel/random/uuid)
+retire_replica() {
+    p exec "$name" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py retire-replica "$retired_generation"
+}
+retire_replica
+retire_replica
 p volume create "$replacement" >/dev/null
 replacement_started=$SECONDS
 start "$replacement" "$replica_addr" 2 "$tenant" --env "OCEAN_AD_PRIMARY=$addr" \
     --secret "$secret,target=ocean-directory-bootstrap,mode=0400"
 wait_dns "$replacement" "$replica_addr" 2
 wait_health "$replacement" "$domain_sid"
+retire_replica
 test "$old_account" != "$(directory_tool "$replacement" computer show DC02 | grep '^objectGUID:')"
 test "$original" = "$(account "$replacement")"
 test "$(gpo_version "$replacement")" = 1

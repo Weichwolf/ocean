@@ -13,6 +13,7 @@ IDENTITY-04	role-list	2.93.0	none	2022-04-01+2022-05-01-preview	role assignment 
 IDENTITY-04	role-delete	2.93.0	none	2022-04-01	role assignment delete --ids {id} -o none
 WORKPLACE-05	managed-directory-request	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 --body @{directory_request_json} -o json
 WORKPLACE-05	managed-directory-status	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 -o json
+WORKPLACE-05	managed-directory-replace-replica	2.93.0	none	2026-11-01	rest --method post --url {arm}/ocean/tenants/{tenant}/directory/replaceReplica?api-version=2026-11-01 --body @{signed_directory_fence_json} -o none
 NETWORK-01	vnet-create	2.93.0	none	2025-07-01	network vnet create --resource-group {group} --name {vnet} --location {location} --address-prefixes {vnet_prefix} --subnet-name {subnet} --subnet-prefixes {subnet_prefix} -o json
 NETWORK-01	vnet-show	2.93.0	none	2025-07-01	network vnet show --resource-group {group} --name {vnet} -o json
 NETWORK-01	vnet-list	2.93.0	none	2025-07-01	network vnet list --resource-group {group} -o json
