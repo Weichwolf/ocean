@@ -166,6 +166,50 @@ Shut down the Windows guests from the guest console, then run
 `bin/ocean-lab shutdown -state "$OCEAN_AD_STATE"` to stop the Debian
 guests and their switches.
 
+## Kerberos SMB member
+
+Use a disposable domain-join lab with `dc01.ad.ocean.test`, the joined
+Debian client at `10.232.1.12`, and the separate farm's client. Add
+`farm-1-node-04` with a private `10.232.1.14` workload address and
+`files04.ad.ocean.test` in the lab directory DNS. Install Debian's
+Samba member server, Winbind, Kerberos, ACL utilities, and cryptsetup in
+the member guest. Install `smbclient` and MIT Kerberos on the joined client.
+
+Install `bin/ocean-smb-member` from `make build` on the member. Write a
+root-owned `/etc/ocean-smb/member.json` with `dnsDomain`, `netbiosDomain`,
+`domainSid`, `serverName`, `address`, and an empty `shares` array.
+Use the native domain SID from the controller and the member name
+`FILES04`. Run `ocean-smb-member` as root to prepare `/etc/samba/smb.conf`,
+join the member using the lab directory's Kerberos credentials, and
+start Winbind. Use the selected writable controller for initial enrollment
+so the machine password is visible immediately to the join and trust checks.
+
+Mount a dedicated LUKS2-backed ext4 filesystem at
+`/srv/ocean-smb/volumes/<volume-id>` with `rw,nodev,nosuid,noexec` and
+a root-owned mount directory. The volume ID begins with `vol-`. Add
+`company-files` to `shares` with that `volumeId` and the native domain
+group SIDs in `readerSids` and `writerSids`. Add only the disposable
+`smbreader` user to `OceanShareReaders` and `smbwriter` to
+`OceanShareWriters`. The valid `smbdenied` account has neither grant.
+Rerun `ocean-smb-member` and start `smbd`. It must listen only on the
+private workload address at TCP 445. The member verifies the mounted
+device and Winbind mapping before it publishes the configuration.
+
+Keep the three account passwords in owner-only files named for their users
+inside a separate owner-only fixture directory. Run the test on disposable
+accounts because it removes and restores `smbwriter` group membership.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-25 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" OCEAN_E2E_SMB_MEMBER_FIXTURE="$OCEAN_SMB_FIXTURE" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+The case writes `kerberos-smb-member.json` with the content checksum,
+audited principals, observed group change delay, and its local test bound.
+The 20-second bound is measured with a fresh TGT and new SMB connection
+against the writable controller.
+
 ## KVM tenant guest runtime probe
 
 The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`

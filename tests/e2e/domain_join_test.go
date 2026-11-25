@@ -221,7 +221,16 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	packaged = requireFile(packaged, filepath.Join(packagedState, "state.json"), "the packaged directory KVM lab")
 	packaged = requireFile(packaged, options.packageDeb, "OCEAN_E2E_PACKAGE with the installed agent package")
+	smbFixture := os.Getenv("OCEAN_E2E_SMB_MEMBER_FIXTURE")
+	smb := probe("kerberos-smb-member", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-25"},
+		[]string{"kerberos-smb-member.json"}, "--fixture", smbFixture)
+	if smb.BlockedReason == "" && smbFixture == "" {
+		smb.BlockedReason = "Provide OCEAN_E2E_SMB_MEMBER_FIXTURE with the private credentials for the disposable share."
+	}
+	for _, user := range []string{"smbwriter", "smbreader", "smbdenied"} {
+		smb = requireFile(smb, filepath.Join(smbFixture, user), "the disposable credential for "+user)
+	}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb)
 }

@@ -127,6 +127,14 @@ describes the package and image inputs.
 
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 
+Select `WORKPLACE-25` for the native SMB member check. The joined Debian
+guest requests personal CIFS tickets and exercises the read-write, read-only,
+and denied grants with encryption required by the client. The isolated
+foreign guest checks TCP reachability. The verifier checks native user
+identities in the audit journal and measures the delay from group removal
+to denial with a newly issued TGT from the writable controller. Prepare the
+fixture with the [SMB member lab guide](../../lab/README.md#kerberos-smb-member).
+
 ## Workload fixtures
 
 Resolve public images as `repository@digest` using [images.lock.yaml](testdata/images.lock.yaml). The stored tags identify the upstream sources for refreshing the lock. Record the digests of the built artifacts and the platform used by the test run.
