@@ -75,6 +75,97 @@ The deployment uses Debian PostgreSQL 17 and Patroni. The PostgreSQL replication
 
 Patroni requires a watchdog before promoting a writer. The KVM control-plane guests expose an Intel 6300ESB watchdog and QEMU resets the guest on expiry. Strict synchronous replication requires one standby for a commit. The failover check writes a marker, stalls Patroni's main process, and observes the watchdog reset over QMP. It requires promotion within 45 seconds, preservation of the acknowledged marker, and replay of a new commit after the former writer rejoins as a standby. It temporarily disables the stalled service at boot to represent a member that remains down after reset. Use this check on the dedicated lab. The virtual watchdog validates guest-process failure. Production fencing also requires independent host-level controls. [Patroni watchdog behavior](https://patroni.readthedocs.io/en/latest/watchdog.html)
 
+## Samba AD domain join lab
+
+Use a new owner-only state directory. This interoperability fixture installs
+Samba AD in a Debian guest and configures another Debian guest to use its
+private DNS and time service. A guest on the second farm probes isolation.
+The Windows guests use the first farm's same workload switch.
+
+```sh
+make build
+OCEAN_AD_STATE=$(mktemp -d /tmp/ocean-ad.XXXXXXXX)
+python3 lab/verify_domain_join.py --state "$OCEAN_AD_STATE" \
+  --debian-image "$HOME/.cache/ocean/images/debian-13-generic-amd64.qcow2"
+```
+
+The verifier checks the LDAP SRV record and time source, rejects invalid
+credentials on the initial join, and checks machine membership, PAM sign-in,
+group resolution and a Kerberos ticket after reboot. The foreign fixture
+checks that LDAP, Kerberos and directory DNS are unreachable. The sanitized
+result is in `evidence/debian-domain-join.json` under the state directory.
+Keep the generated credentials in `identity/domain-join.secret` local to
+this disposable lab.
+
+Use official Server 2025 installation media and select Server Core. Use
+licensed Windows 11 Pro media or the official Windows 11 Enterprise Evaluation
+for the workstation. Keep both media files outside the repository. The launcher
+needs OVMF and `genisoimage`. The Windows 11 profile also needs a host `swtpm`
+executable. [Server evaluation](https://www.microsoft.com/en-us/evalcenter/download-windows-server-2025) · [Workstation evaluation](https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise)
+
+```sh
+python3 lab/start_windows_domain_fixture.py --state "$OCEAN_AD_STATE" \
+  --iso "$WINDOWS_SERVER_ISO" --profile server-core
+
+python3 lab/start_windows_domain_fixture.py --state "$OCEAN_AD_STATE" \
+  --iso "$WINDOWS_11_ISO" --profile windows-11
+```
+
+Run each launcher in its own terminal. Connect a VNC viewer to the private
+Unix socket `<state>/<profile>/vnc`. The probe script is on the
+`OCEAN_PROBE` optical volume. The launcher records the installation
+media digest in `<state>/<profile>/media.json`.
+
+An optional private `Autounattend.xml` can be attached with `--answer-file`.
+Use a local account name of 20 characters or fewer and set the same name
+for autologon when enabled. [Windows account name limit](https://learn.microsoft.com/en-us/windows/win32/api/lmaccess/nf-lmaccess-netuseradd)
+
+After a fixture has booted from its installed disk, resume a stopped guest
+with `--resume`, the same `--state` and `--profile`, and the original `--iso`.
+The launcher checks the media digest and retains the disk, firmware state,
+probe ISO, and serial log.
+
+In each disposable Windows guest, set the Ethernet interface to
+`10.232.1.20/24` (Server Core) or `10.232.1.21/24` (Windows 11), with
+DNS at `10.232.1.11` and without a default gateway. Set the correct time
+before domain join and use the fixture controller as the time source.
+Run the following from the probe volume, selecting `ServerCore` or
+`Windows11` as the profile. Use the disposable lab administrator
+for the join. Reboot each guest before running the machine check. Sign in
+as `OCEANLAB\employee` before running the identity check.
+
+```powershell
+.\verify_windows_domain_join.ps1 -Profile ServerCore -Action Join -SendToLab
+Restart-Computer
+# After reboot, with administrator rights
+.\verify_windows_domain_join.ps1 -Profile ServerCore -Action VerifyMachine -SendToLab
+# In a domain employee session
+.\verify_windows_domain_join.ps1 -Profile ServerCore -Action VerifyIdentity -SendToLab
+```
+
+Export the three guest records from the launcher serial capture. Run
+`python3 lab/verify_domain_join.py --state "$OCEAN_AD_STATE" --windows-profile server-core`
+after the three actions. Use `windows-11` for the second guest. The
+export validates the media digest, machine identity, edition, reboot and
+user evidence before writing the records in each profile's state
+subdirectory. The same verifier accepts the three UTF-8 JSON records
+copied from the guest as `join.json`, `machine.json`, and `identity.json`.
+
+Run the local acceptance profile after preparing the guests and collecting
+their proof. The harness writes a Markdown report and TSV. Missing Windows
+records produce a blocked case. To rerun the live Debian probe alone, add
+`OCEAN_E2E_CASES=WORKPLACE-01` to the command.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" \
+  OCEAN_E2E_DEBIAN_IMAGE="$HOME/.cache/ocean/images/debian-13-generic-amd64.qcow2" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
+Shut down the Windows guests from the guest console, then run
+`bin/ocean-lab shutdown -state "$OCEAN_AD_STATE"` to stop the Debian
+guests and their switches.
+
 ## Azure CLI identity compatibility
 
 After starting the regional stack and the replicated database, deploy two Keycloak instances and run the sign-in fault check. The verification uses the isolated operator VM and the unmodified Microsoft Debian AMD64 package for Azure CLI 2.93.0. Use the package argument to install it if it is absent. The deploy and verification scripts check the SHA-256 of the supplied artifacts. [Keycloak 26.8.2](https://github.com/keycloak/keycloak/releases/tag/26.8.2) · [Microsoft Azure CLI packages](https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/)
