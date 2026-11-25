@@ -51,6 +51,7 @@ def restore_region(state, namespace, capsule, archive):
     node = next(iter(NODES))
     source = json.loads(ssh(state, node, f"cat {DEST}/api.json"))
     source["identity"].pop("onboarding", None)
+    source["region"].pop("telemetry", None)
     source["tls"].pop("certificateFile", None)
     source["tls"].pop("keyFile", None)
     paths = set()

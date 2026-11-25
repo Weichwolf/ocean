@@ -77,12 +77,13 @@ class Browser:
 
 
 class AzureCLI:
-    def __init__(self, config, cache):
+    def __init__(self, config, cache, *, register=True):
         self.config = config
         self.env = dict(os.environ, AZURE_CONFIG_DIR=cache, AZURE_CORE_INSTANCE_DISCOVERY="false",
                         AZURE_CORE_COLLECT_TELEMETRY="0", REQUESTS_CA_BUNDLE=config["ca"])
-        self.run("cloud", "register", "--name", "ocean", "--endpoint-resource-manager", config["arm"], "-o", "none")
-        self.run("cloud", "set", "--name", "ocean", "-o", "none")
+        if register:
+            self.run("cloud", "register", "--name", "ocean", "--endpoint-resource-manager", config["arm"], "-o", "none")
+            self.run("cloud", "set", "--name", "ocean", "-o", "none")
 
     def run(self, *args, reject=False):
         try:

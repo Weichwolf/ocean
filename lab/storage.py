@@ -69,6 +69,10 @@ fi
             raise RuntimeError(f"the existing cluster setup differs from {name}")
         material[name] = data
     addresses = ",".join(f"[v2:{address}:3300]" for address in NODES.values())
+    machines = json.loads((state / "state.json").read_text())["machines"]
+    storage_ram = min(machine["guest"]["resources"]["memoryMiB"] for machine in machines
+                      if machine["guest"]["name"] in NODES)
+    memory_target = min(1024, storage_ram // 2) << 20
     material["ceph.conf"] = f"""[global]
 fsid = {fsid}
 mon initial members = {','.join(NODES)}
@@ -85,7 +89,7 @@ auth client required = cephx
 osd pool default size = 3
 osd pool default min size = 2
 osd crush chooseleaf type = 1
-osd memory target = 1073741824
+osd memory target = {memory_target}
 mon clock drift allowed = 0.1
 mon warn on pool no redundancy = true
 """.encode()

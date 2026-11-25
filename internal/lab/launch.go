@@ -20,7 +20,13 @@ import (
 )
 
 // Up starts a plan. Existing guests keep their disks and configuration.
-func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint, enrollmentFile string) error {
+func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint, enrollmentFiles ...string) error {
+	return lab.UpSelected(ctx, plan, image, reserveMiB, nil, enrollmentFiles...)
+}
+
+// UpSelected starts only the selected guests while preserving the full plan.
+func (lab *Lab) UpSelected(ctx context.Context, plan Plan, image string, reserveMiB uint,
+	selected []string, enrollmentFiles ...string) error {
 	lock, err := lab.lock()
 	if err != nil {
 		return err
@@ -57,12 +63,26 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 	for _, guest := range plan.Guests {
 		wanted[guest.Name] = guest
 	}
-	var enrollment *bootstrapSeed
-	if enrollmentFile != "" {
-		enrollment, err = loadBootstrapSeed(enrollmentFile, wanted)
+	start := make(map[string]bool, len(selected))
+	for _, name := range selected {
+		if _, exists := wanted[name]; !exists || start[name] {
+			return fmt.Errorf("unknown or duplicate selected guest %q", name)
+		}
+		start[name] = true
+	}
+	enrollments := make(map[string]*bootstrapSeed, len(enrollmentFiles))
+	for _, manifest := range enrollmentFiles {
+		if manifest == "" {
+			continue
+		}
+		seed, err := loadBootstrapSeed(manifest, wanted)
 		if err != nil {
 			return err
 		}
+		if enrollments[seed.host] != nil || len(start) > 0 && !start[seed.host] {
+			return fmt.Errorf("duplicate or unselected bootstrap manifest for host %s", seed.host)
+		}
+		enrollments[seed.host] = seed
 	}
 	machines := make(map[string]Machine)
 	for _, machine := range current.Machines {
@@ -71,9 +91,9 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 		}
 		machines[machine.Guest.Name] = machine
 	}
-	if enrollment != nil {
-		if machine, exists := machines[enrollment.host]; exists && machine.EnrollmentSeed != enrollment.digest {
-			return fmt.Errorf("host %s already exists with a different provisioning seed", enrollment.host)
+	for host, seed := range enrollments {
+		if machine, exists := machines[host]; exists && machine.EnrollmentSeed != seed.digest {
+			return fmt.Errorf("host %s already exists with a different provisioning seed", host)
 		}
 	}
 	memory, err := hostMemoryMiB()
@@ -85,6 +105,9 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 	}
 	budget := memory - reserveMiB
 	for _, guest := range plan.Guests {
+		if len(start) > 0 && !start[guest.Name] {
+			continue
+		}
 		running, err := lab.running(guest.Name)
 		if err != nil {
 			return err
@@ -120,6 +143,9 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 		}
 	}
 	for _, guest := range plan.Guests {
+		if len(start) > 0 && !start[guest.Name] {
+			continue
+		}
 		running, err := lab.running(guest.Name)
 		if err != nil {
 			return err
@@ -133,10 +159,9 @@ func (lab *Lab) Up(ctx context.Context, plan Plan, image string, reserveMiB uint
 		}
 		machine := Machine{Guest: guest, SSHPort: port}
 		machine.EnrollmentSeed = machines[guest.Name].EnrollmentSeed
-		var seed *bootstrapSeed
-		if enrollment != nil && enrollment.host == guest.Name {
-			seed = enrollment
-			machine.EnrollmentSeed = enrollment.digest
+		seed := enrollments[guest.Name]
+		if seed != nil {
+			machine.EnrollmentSeed = seed.digest
 		}
 		index := slices.IndexFunc(current.Machines, func(record Machine) bool { return record.Guest.Name == guest.Name })
 		if index == -1 {

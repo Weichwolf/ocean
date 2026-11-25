@@ -104,6 +104,11 @@ def exercise(settings, matrix, fixture, program, phase, image):
                 raise RuntimeError("file share metadata did not round-trip")
             return {"azureCLI": contract.version["azure-cli"], "shareId": vol_id, "checksum": saved["checksum"],
                     "tenant": tenant["tenant"], "subscription": tenant["subscription"], "group": ids["group"]}
+        if phase == "cache-arm-token":
+            saved["armToken"] = contract.token
+            with fixture.open("w") as state:
+                json.dump(saved, state)
+            return {"cachedARMToken": True}
         if phase == "cleanup":
             for name in ("first-writer", "replacement-writer"):
                 command("container-delete", values={"name": name})
@@ -168,7 +173,7 @@ def main():
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--program", type=Path, required=True)
     parser.add_argument("--image")
-    parser.add_argument("--phase", required=True, choices=("setup", "cleanup", "write", "stop-writer", "recover", "deny-foreign", "deny-second", "metadata-check"))
+    parser.add_argument("--phase", required=True, choices=("setup", "cleanup", "write", "stop-writer", "recover", "deny-foreign", "deny-second", "metadata-check", "cache-arm-token"))
     args = parser.parse_args()
     result = exercise(json.loads(args.settings.read_text()), args.matrix, args.fixture, args.program, args.phase, args.image)
     print(json.dumps(result, sort_keys=True))
