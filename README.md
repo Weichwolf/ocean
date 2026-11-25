@@ -149,10 +149,23 @@ az functionapp function list --resource-group "$OCEAN_GROUP" \
 
 ## Develop locally
 
-Use the Go version pinned in `go.mod`. Run `make check` for formatting, `go vet`,
-race-enabled unit tests, compilation of the `e2e` suite, and static analysis.
-Run `make lint` for the pinned Staticcheck and errcheck passes alone. Both
-analyze application code and `e2e` sources. Go downloads the tools on first use.
+Use the Go version pinned in `go.mod` and a C compiler for the race detector.
+Run `make check` locally before opening a pull request. It checks formatting,
+verifies that the dependency manifests are tidy and cached modules are intact,
+links every command with the release build flags in a temporary directory, and
+runs `go vet` in both the default and `e2e` build configurations. It runs unit
+tests with the race detector and shuffles their order. To reproduce an
+order-dependent failure, pass `-shuffle=<seed>` to `go test -race` with the seed
+printed by the failing package. The gate compiles the tagged E2E suite for
+separate execution in the lab.
+
+`make lint` runs version-pinned Staticcheck and errcheck on application and
+E2E sources. `make vuln` uses a version-pinned govulncheck to look for known
+vulnerabilities reachable from the production Go commands and their
+dependencies, including the Go standard library. Go downloads missing modules
+and tools on first use. The vulnerability scan queries the Go vulnerability
+database and requires network access.
+
 Handle returned errors and check type assertions. Use explicit error discards
 for intentional best-effort operations such as closing a read-only response body.
 Run `make build` to build the binaries in `bin/`.
