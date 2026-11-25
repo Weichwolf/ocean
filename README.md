@@ -159,8 +159,10 @@ order-dependent failure, pass `-shuffle=<seed>` to `go test -race` with the seed
 printed by the failing package. The gate compiles the tagged E2E suite for
 separate execution in the lab.
 
-`make lint` runs version-pinned Staticcheck and errcheck on application and
-E2E sources. `make vuln` uses a version-pinned govulncheck to look for known
+`make lint` runs version-pinned Staticcheck, errcheck, errorlint and nilness on
+application and E2E sources. Errorlint checks that wrapped causes remain
+detectable, and nilness reports provable nil dereferences and impossible nil
+comparisons. `make vuln` uses a version-pinned govulncheck to look for known
 vulnerabilities reachable from the production Go commands and their
 dependencies, including the Go standard library. Go downloads missing modules
 and tools on first use. The vulnerability scan queries the Go vulnerability
@@ -168,6 +170,13 @@ database and requires network access.
 
 Handle returned errors and check type assertions. Use explicit error discards
 for intentional best-effort operations such as closing a read-only response body.
+Use `errors.Is` and `errors.As` when checking wrapped errors.
+
+The ordinary tests run the server configuration fuzz seeds. Run `make fuzz`
+to generate inputs and exercise the strict JSON parser and listener TLS
+invariants locally. It uses two workers for ten seconds by default. Adjust
+the budget with `make fuzz FUZZ_TIME=30s FUZZ_WORKERS=2`.
+
 Run `make build` to build the binaries in `bin/`.
 
 For a local process check, run `./bin/ocean-control-plane` and

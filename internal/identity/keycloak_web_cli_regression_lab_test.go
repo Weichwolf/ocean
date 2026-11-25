@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -144,7 +145,8 @@ func checkWebCLICaches(t *testing.T, ctx context.Context, config map[string]any,
 	command := exec.CommandContext(ctx, "python3", script, "--settings", settings, "--web-regression")
 	output, err := command.Output()
 	if err != nil {
-		if failure, ok := err.(*exec.ExitError); ok {
+		var failure *exec.ExitError
+		if errors.As(err, &failure) {
 			t.Fatalf("CLI regression: %v\n%s", failure, failure.Stderr)
 		}
 		t.Fatal(err)

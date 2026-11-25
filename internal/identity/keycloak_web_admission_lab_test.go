@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html"
 	"io"
 	"net/http"
@@ -261,7 +262,8 @@ func externalMFABrowser(t *testing.T, ctx context.Context, issuer, origin string
 	command := exec.CommandContext(probe, "node", filepath.Join("..", "..", "tests", "e2e", "web_mfa_browser.mjs"))
 	command.Stdin = bytes.NewReader(config)
 	output, err := command.Output()
-	if failure, ok := err.(*exec.ExitError); ok {
+	var failure *exec.ExitError
+	if errors.As(err, &failure) {
 		t.Fatalf("external browser MFA: %v\n%s", failure, failure.Stderr)
 	}
 	if err != nil {

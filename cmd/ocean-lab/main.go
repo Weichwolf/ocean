@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -75,7 +76,7 @@ func run(ctx context.Context, args []string) error {
 		})
 	}
 	if err := flags.Parse(args[1:]); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err

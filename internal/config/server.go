@@ -44,9 +44,12 @@ func Load[T any](path string, defaults T) (T, error) {
 		return defaults, err
 	}
 	defer func() { _ = file.Close() }()
+	return decode(file, defaults)
+}
 
+func decode[T any](input io.Reader, defaults T) (T, error) {
 	settings := &defaults
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(input)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&settings); err != nil {
 		return defaults, fmt.Errorf("decode configuration: %w", err)

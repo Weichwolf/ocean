@@ -1,9 +1,13 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -41,6 +45,56 @@ func TestLoadServerRejectsInvalidSettings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzLoadServerConfig(f *testing.F) {
+	for _, input := range []string{
+		`{}`,
+		`{"listenAddress":"[::1]:8080","logLevel":"DEBUG"}`,
+		`{"listenAddress":"0.0.0.0:8443","tls":{"certificateFile":"cert.pem","keyFile":"key.pem"}}`,
+		`{"listenAddress":"[::]:8080"}`,
+		`{"tls":{"certificateFile":"cert.pem","keyFile":"key.pem","optionalClientCA":true}}`,
+		`{"tls":{"unknown":true}}`,
+		`{"listenAddress":`,
+		`{} null`,
+		`null`,
+		`[]`,
+	} {
+		f.Add([]byte(input))
+	}
+	f.Fuzz(func(t *testing.T, input []byte) {
+		defaults := Server{ListenAddress: "127.0.0.1:8081"}
+		settings, err := decode(bytes.NewReader(input), defaults)
+		if err != nil {
+			return
+		}
+		trimmed := bytes.TrimSpace(input)
+		if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(input) {
+			t.Fatal("decoder accepted input other than a single JSON object")
+		}
+		if settings.Validate() != nil {
+			return
+		}
+		addr, err := netip.ParseAddrPort(settings.ListenAddress)
+		if err != nil {
+			t.Fatalf("accepted invalid listener address: %v", err)
+		}
+		if settings.TLS == nil && !addr.Addr().Unmap().IsLoopback() {
+			t.Fatal("accepted a plaintext non-loopback listener")
+		}
+		if settings.TLS != nil && (settings.TLS.CertificateFile == "" || settings.TLS.KeyFile == "" ||
+			(settings.TLS.OptionalClientCA && settings.TLS.ClientCAFile == "")) {
+			t.Fatal("accepted incomplete TLS settings")
+		}
+		encoded, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := decode(bytes.NewReader(encoded), defaults)
+		if err != nil || !reflect.DeepEqual(settings, restored) {
+			t.Fatalf("configuration changed after re-encoding: %v", err)
+		}
+	})
 }
 
 func writeSettings(t *testing.T, text string) string {
