@@ -45,7 +45,7 @@ def deploy(state, node, public_ips=None):
     publish(state, public_ips)
 
 
-def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None):
+def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
@@ -60,6 +60,12 @@ def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wiregu
             extra["pki/application-gateway.key"] = gateway_key.read_bytes()
         if wireguard is not None:
             config["region"]["wireGuard"] = wireguard
+        if storage is not None:
+            config["region"]["storage"] = {**storage, "keyFile": f"{DEST}/pki/storage-envelope.key"}
+            extra["pki/storage-envelope.key"] = storage_key.read_bytes()
+            if fence_public is not None:
+                config["region"]["storage"]["fencePublicKeyFile"] = f"{DEST}/pki/storage-fencer.pub"
+                extra["pki/storage-fencer.pub"] = fence_public.read_bytes()
         if workloads is not None:
             config["region"]["workloads"] = {**workloads, "secretsKeyFile": f"{DEST}/pki/workload-secrets.key"}
             extra["pki/workload-secrets.key"] = workload_key.read_bytes()

@@ -237,6 +237,8 @@ func (s Server) containerLogs(ctx context.Context, w http.ResponseWriter, r *htt
 
 func containerError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrStorageAccess), errors.Is(err, ErrStorageBusy), errors.Is(err, ErrStorageMissing):
+		storageError(w, err)
 	case errors.Is(err, workload.ErrInvalidContainer):
 		writeError(w, http.StatusBadRequest, "InvalidRequestContent", workload.ErrInvalidContainer.Error())
 	case errors.Is(err, ErrContainerMissing):

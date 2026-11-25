@@ -226,6 +226,9 @@ func openCrypt(ctx context.Context, id, device string, key []byte) (string, erro
 	name := mapperName(id)
 	mapped := filepath.Join("/dev/mapper", name)
 	if _, err := os.Stat(mapped); err == nil {
+		if err := action(withKey(ctx, key, "open", "--test-passphrase", "--type", "luks2", "--key-file", "-", device), "verify existing encrypted volume key"); err != nil {
+			return "", err
+		}
 		return mapped, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err

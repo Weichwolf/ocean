@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Weichwolf/ocean/internal/network"
+	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
 )
 
@@ -47,6 +48,16 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 			{ResourceType: "networkSecurityGroups/securityRules", Locations: []string{s.Location}, APIVersions: []string{network.SecurityGroupAPIVersion}},
 			{ResourceType: "publicIPAddresses", Locations: []string{s.Location}, APIVersions: []string{network.PublicIPAPIVersion}},
 			{ResourceType: "natGateways", Locations: []string{s.Location}, APIVersions: []string{network.NATAPIVersion}},
+		}
+	case "microsoft.storage":
+		if s.Storage == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = "Microsoft.Storage"
+		types = []providerResourceType{
+			{ResourceType: "storageAccounts", Locations: []string{s.Location}, APIVersions: []string{storage.AccountAPIVersion}},
+			{ResourceType: "storageAccounts/fileServices/shares", Locations: []string{s.Location}, APIVersions: []string{storage.ShareAPIVersion}},
 		}
 	case "microsoft.containerinstance":
 		if s.Containers == nil {

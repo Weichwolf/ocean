@@ -53,10 +53,11 @@ sudo ceph-authtool {FILES}/mon.key --import-keyring {FILES}/osd-bootstrap.key
 sudo chmod 0600 {FILES}/admin.key {FILES}/mon.key {FILES}/osd-bootstrap.key
 sudo chown ceph:ceph {FILES}/admin.key {FILES}/mon.key {FILES}/osd-bootstrap.key
 if ! sudo test -s {FILES}/monmap; then
-    sudo monmaptool --create --fsid {fsid} {FILES}/monmap
-    {'; '.join(f"sudo monmaptool --addv {name} '[v2:{ip}:3300]' {FILES}/monmap" for name, ip in NODES.items())}
+    sudo monmaptool --create --clobber --fsid {fsid} {FILES}/monmap.pending
+    {'; '.join(f"sudo monmaptool --addv {name} '[v2:{ip}:3300]' {FILES}/monmap.pending" for name, ip in NODES.items())}
+    sudo chown ceph:ceph {FILES}/monmap.pending
+    sudo mv {FILES}/monmap.pending {FILES}/monmap
 fi
-sudo chown ceph:ceph {FILES}/monmap
 """)
     material = {}
     for name in (*KEYS, "monmap"):

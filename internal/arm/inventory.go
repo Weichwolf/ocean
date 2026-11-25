@@ -69,6 +69,7 @@ type InventoryResource struct {
 	Address           ResourceAddress   `json:"address"`
 	APIVersion        string            `json:"apiVersion"`
 	Location          string            `json:"location"`
+	Kind              string            `json:"kind,omitempty"`
 	Tags              map[string]string `json:"tags,omitempty"`
 	SKU               ResourceSKU       `json:"sku,omitzero"`
 	Properties        json.RawMessage   `json:"properties,omitempty"`
@@ -104,6 +105,9 @@ func (r InventoryResource) view(scope SubscriptionScope) map[string]any {
 	view := map[string]any{"id": r.Address.ID(scope), "name": name, "type": kind, "location": r.Location}
 	if r.Tags != nil {
 		view["tags"] = r.Tags
+	}
+	if r.Kind != "" {
+		view["kind"] = r.Kind
 	}
 	if r.SKU.Name != "" {
 		view["sku"] = r.SKU

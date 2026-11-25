@@ -65,8 +65,11 @@ func (r *Region) HostContainerTasks(ctx context.Context, host string, certificat
 				return workload.Page{}, err
 			}
 		}
+		if !networkOnly && record.Volume != nil {
+			task.VolumeID = record.Volume.ID
+		}
 		if !networkOnly && record.Desired != workload.Removed {
-			op, err := r.containerOperationAt(ctx, scope, record.Operation, snapshot.Header.Revision)
+			op, err := r.operationAt(ctx, scope, record.Operation, snapshot.Header.Revision)
 			if err != nil {
 				return workload.Page{}, err
 			}
@@ -125,7 +128,7 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 			if report.State != workload.Removed {
 				return enrollment.ErrWorkloadChanged
 			}
-			return r.finishContainerDeletion(ctx, scope, record, *op, hostKey, checks)
+			return r.finishContainerDeletion(ctx, scope, record, *op, hostKey, checks, nil, false)
 		}
 		if report.State != record.Desired && report.State != workload.Failed && !(record.Desired == workload.Running && report.State == workload.Stopped) {
 			return enrollment.ErrWorkloadChanged
@@ -175,7 +178,7 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 }
 
 func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.SubscriptionScope, record containerRecord, op arm.Operation,
-	hostKey string, checks []clientv3.Cmp) error {
+	hostKey string, checks []clientv3.Cmp, finalWrites []clientv3.Op, fenced bool) error {
 	res := record.Reservation
 	key := r.containerKey(scope, record.Address)
 	now := time.Now().UTC()
@@ -185,6 +188,26 @@ func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.Subscrip
 		writes := []clientv3.Op{clientv3.OpDelete(hostKey), clientv3.OpDelete(key), clientv3.OpDelete(key + "/logs"),
 			clientv3.OpDelete(r.inventoryPrefix(scope) + record.Address.Key()), putJSON(r.operationKey(scope, op.ID), op),
 			r.containerAudit(scope, record, op, "delete", now)}
+		writes = append(writes, finalWrites...)
+		if record.Volume != nil && !fenced {
+			receipt := r.unmountReceiptKey(scope, record.Volume.ID, record.Reservation.Generation, record.Operation)
+			proof, err := r.client.Get(ctx, receipt)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(proof.Kvs) != 1 || string(proof.Kvs[0].Value) != record.Reservation.HostID {
+				return nil, nil, enrollment.ErrWorkloadChanged
+			}
+			conditions = append(conditions, clientv3.Compare(clientv3.Value(receipt), "=", record.Reservation.HostID))
+			writes = append(writes, clientv3.OpDelete(receipt))
+		}
+		if record.Volume != nil {
+			guard, update, err := r.releaseVolume(ctx, scope, record)
+			if err != nil {
+				return nil, nil, err
+			}
+			conditions, writes = append(conditions, guard), append(writes, update)
+		}
 		if record.PublicIP.IsValid() {
 			pool, revision, err := r.readPublicIPPool(ctx, 0)
 			if err != nil {

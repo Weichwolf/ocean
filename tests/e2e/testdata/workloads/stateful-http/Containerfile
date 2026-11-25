@@ -1,0 +1,5 @@
+ARG BASE_IMAGE=docker.io/library/busybox@sha256:5624bb6777cf469b1fb50ae3f981b15d2715ee2fffaf20b9998cfb7843726835
+FROM ${BASE_IMAGE}
+COPY --chmod=0755 checkpoint.sh /usr/local/bin/checkpoint-http
+EXPOSE 8080/tcp
+ENTRYPOINT ["/usr/local/bin/checkpoint-http"]
