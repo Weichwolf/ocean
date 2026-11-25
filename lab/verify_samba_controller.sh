@@ -537,14 +537,22 @@ if [[ ${2:-} == --promote-writer ]]; then
     mkdir "$probe/member"
     machine_trust "$addr" dc01.ad.runtime.test join
     machine=$(directory_tool "$name" computer show OCEANMEMBER | grep '^objectGUID:')
-    for _ in $(seq 1 30); do
-        if machine_trust "$replica_addr" dc02.ad.runtime.test test >"$probe/member.log" 2>&1; then
+    member_replicated=false
+    started=$SECONDS
+    while (( SECONDS - started < 45 )); do
+        # The member's DC locator can still find DC01 while it is up. Check
+        # the actual DC02 database before relying on the client's result.
+        if [[ "$machine" == "$(directory_tool "$replica" computer show OCEANMEMBER 2>/dev/null | grep '^objectGUID:')" ]] &&
+                machine_trust "$replica_addr" dc02.ad.runtime.test test; then
+            member_replicated=true
             break
         fi
         sleep 1
     done
-    grep -F 'Join is OK' "$probe/member.log"
-    test "$machine" = "$(directory_tool "$replica" computer show OCEANMEMBER | grep '^objectGUID:')"
+    if [[ "$member_replicated" != true ]]; then
+        printf 'The existing member did not replicate to DC02 within 45 seconds.\n' >&2
+        exit 1
+    fi
     retired_generation=$(cat /proc/sys/kernel/random/uuid)
     old_account=$(directory_tool "$name" computer show DC01 | grep '^objectGUID:')
     p stop --time 15 "$name" >/dev/null
