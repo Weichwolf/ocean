@@ -7,7 +7,9 @@ import re
 import secrets
 import shlex
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
 
 from region import ROOT, eventually, ssh
 from verify_domain_join import CLIENT, DC, DOMAIN, FOREIGN, REALM, write_evidence
@@ -83,6 +85,11 @@ case "$mode" in
         ;;
     checkpoint)
         "${smb[@]}" -c "put $private/payload $file"
+        ;;
+    windows-read)
+        "${smb[@]}" -c "get $file $private/downloaded"
+        nonce=${file#ocean-windows-}
+        printf '%s' "${nonce%.txt}" | cmp - "$private/downloaded"
         ;;
     cleanup)
         "${smb[@]}" -c "get $file $private/downloaded; del $file"
@@ -207,6 +214,50 @@ def verify_quota(state, fixture):
     return {"volumeId": volume, "encryption": "LUKS2", "blockDevice": device[1], **result}
 
 
+def verify_windows(state, fixture, run_id, share):
+    profile = state / "server-core"
+    recorded_machine = json.loads((profile / "machine.json").read_text())
+    expected_member = json.loads((fixture / "member-rbd.json").read_text())
+    serial = "OCEAN-KERBEROS-SMB "
+    records = {}
+    for line in (profile / "guest-serial.log").read_text(errors="replace").splitlines():
+        if not line.startswith(serial):
+            continue
+        proof = json.loads(line[len(serial):])
+        if proof["runId"] == str(run_id):
+            records[proof["action"]] = proof
+    for action, user, flags in (
+        ("Write", "smbwriter", ("writeAcknowledged", "readVerified")),
+        ("ReadOnly", "smbreader", ("readVerified", "writeDenied")),
+        ("Denied", "smbdenied", ("readDenied",)),
+    ):
+        proof = records.get(action)
+        if not proof:
+            raise RuntimeError(f"The Windows guest has not produced its {action} evidence")
+        when = datetime.fromisoformat(proof["timestamp"])
+        if (
+            abs((datetime.now(timezone.utc) - when).total_seconds()) > 900
+            or proof["machine"] != recorded_machine["guest"]
+            or proof["edition"] != recorded_machine["edition"]
+            or proof["server"] != MEMBER_NAME or proof["share"] != share
+            or proof["user"].lower() != f"{user}@{DOMAIN}"
+            or not re.fullmatch(re.escape(expected_member["domainSid"]) + r"-[1-9][0-9]{0,9}", proof["userSid"])
+            or proof["kerberos"] is not True
+            or any(proof.get(flag) is not True for flag in flags)
+        ):
+            raise RuntimeError(f"The Windows guest supplied inconsistent {action} evidence")
+    marker = f"ocean-windows-{run_id}.txt"
+    probe_client(state, share, "smbwriter", "windows-read", marker, private_password(fixture / "smbwriter"))
+    audit = ssh(state, MEMBER, "sudo journalctl --no-pager -t smbd_audit -o cat -n 250", timeout=10).decode().splitlines()
+    for user, address, operation in (("smbwriter", "10.232.1.20", "fsync_recv"),
+                                     ("smbreader", "10.232.1.20", "create_file"),
+                                     ("smbwriter", "10.232.1.12", "create_file")):
+        if not any(line.startswith(f"OCEANLAB|{user}|{address}|{share}|{operation}|ok|")
+                   and line.endswith("/" + marker) for line in audit):
+            raise RuntimeError(f"The Samba journal lacks the {operation} from {user} at {address}")
+    return {"windows": records, "debianSamePrincipalRead": True, "sambaAuditCorrelated": True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
@@ -216,6 +267,7 @@ def main():
     variants.add_argument("--rbd-quota", action="store_true")
     variants.add_argument("--reader-denied", action="store_true")
     variants.add_argument("--checkpoint", choices=("write", "verify"))
+    variants.add_argument("--windows-run-id", type=UUID)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", args.share):
         parser.error("--share must be a simple SMB share name")
@@ -235,6 +287,10 @@ def main():
         probe_client(args.state, args.share, "smbwriter", mode, "ocean-managed-checkpoint.bin",
                      private_password(args.fixture / "smbwriter"))
         print(f"Completed the SMB data checkpoint action {args.checkpoint}.")
+    elif args.windows_run_id:
+        result = verify_windows(args.state, args.fixture, args.windows_run_id, args.share)
+        write_evidence(args.state, "kerberos-smb-windows.json", result)
+        print("Verified native Windows and Debian SMB access for the same domain principal.")
     else:
         write_evidence(args.state, "kerberos-smb-member.json", verify(args.state, args.fixture, args.share))
         print("Verified the native Debian Kerberos SMB session and fresh-ticket group revocation.")

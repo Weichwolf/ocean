@@ -241,7 +241,16 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		smbManaged.BlockedReason = "Provide the prepared SMB member lab, a disposable etcd endpoint and the pinned Azure CLI."
 	}
 	smbManaged = requireFile(smbManaged, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB member identity and native group grants")
+	smbWindowsRun := os.Getenv("OCEAN_E2E_SMB_WINDOWS_RUN_ID")
+	smbWindows := probe("kerberos-smb-windows", options.domain, stateVariable, "verify_smb_member.py", []string{"WORKPLACE-28"},
+		[]string{"kerberos-smb-windows.json"}, "--fixture", smbFixture, "--windows-run-id", smbWindowsRun)
+	if smbWindows.BlockedReason == "" && (smbFixture == "" || smbWindowsRun == "") {
+		smbWindows.BlockedReason = "Capture a fresh Windows SMB run with a lab nonce and provide the fixture credentials."
+	}
+	smbWindows = requireFile(smbWindows, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows SMB serial capture")
+	smbWindows = requireFile(smbWindows, filepath.Join(options.domain, "server-core", "machine.json"), "the joined Windows Server Core identity record")
+	smbWindows = requireFile(smbWindows, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB domain identity")
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows)
 }

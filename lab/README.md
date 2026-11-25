@@ -302,6 +302,30 @@ principals. The Debian node goes through real mTLS enrollment and applies
 the actual RBD and Samba operations. The joined client checks Kerberos data
 access and reads an acknowledged file after the ACL update.
 
+### Windows and Debian SMB access
+
+For `WORKPLACE-28`, start the joined Server Core fixture on the same
+private network as `company-files` and Debian. Attach
+`lab/verify_windows_smb_member.ps1` to its probe media. Run the following
+from the media in a local Windows administrator session. The script opens a
+separate domain logon with the fixture credential entered at its prompt.
+Use a new GUID for each run and keep the same GUID across the three actions.
+
+```powershell
+$run = [Guid]::NewGuid()
+.\verify_windows_smb_member.ps1 -RunId $run -Action Write -Account smbwriter -AsFixtureUser
+.\verify_windows_smb_member.ps1 -RunId $run -Action ReadOnly -Account smbreader -AsFixtureUser
+.\verify_windows_smb_member.ps1 -RunId $run -Action Denied -Account smbdenied -AsFixtureUser
+$run
+```
+
+Run the harness with `OCEAN_E2E_CASES=WORKPLACE-28` and
+`OCEAN_E2E_SMB_WINDOWS_RUN_ID` set to that GUID. The harness reads the
+recent guest serial evidence and obtains a separate Kerberos ticket from
+Debian for `smbwriter`. It checks the Windows file content and the member
+journal for both source addresses. Keep the nonce file until its Debian
+and journal checks have completed.
+
 ## KVM tenant guest runtime probe
 
 The Server Core runtime uses Debian 13 QEMU/KVM with the `pc-q35-10.0`

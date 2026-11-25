@@ -150,6 +150,11 @@ published access and retain an acknowledged file after an ACL update.
 The withdrawal check confirms that the resource, SMB listener, filesystem
 mount and RBD image have been removed.
 
+Select `WORKPLACE-28` to correlate a fresh Windows Server Core write with
+a Debian read using the same Kerberos principal. Windows also verifies
+reader-only and denied grants. The runner checks the supplied nonce
+against the live share and the Samba audit back to each client address.
+
 ## Workload fixtures
 
 Resolve public images as `repository@digest` using [images.lock.yaml](testdata/images.lock.yaml). The stored tags identify the upstream sources for refreshing the lock. Record the digests of the built artifacts and the platform used by the test run.
