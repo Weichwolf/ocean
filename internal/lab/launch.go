@@ -206,13 +206,25 @@ func (lab *Lab) startGuest(ctx context.Context, machine Machine, image string, s
 	if !slices.Contains(guest.Roles, "compute") {
 		bootstrap += ",restrict=on"
 	}
+	rootDrive := "file=" + escapeQEMU(overlay) + ",format=qcow2,if=virtio"
+	if guest.Resources.DataDiskMiB != 0 {
+		rootDrive = "file=" + escapeQEMU(overlay) + ",format=qcow2,if=none,id=system"
+	}
 	args := []string{"-n", "10", "qemu-system-x86_64", "-accel", "kvm", "-cpu", "host", "-machine", "q35",
 		"-name", "ocean-" + guest.Name, "-m", strconv.FormatUint(uint64(guest.Resources.MemoryMiB), 10),
 		"-smp", strconv.FormatUint(uint64(guest.Resources.VCPUs), 10), "-display", "none", "-monitor", "none", "-daemonize",
 		"-qmp", "unix:" + socket + ",server=on,wait=off", "-serial", "file:" + filepath.Join(directory, "serial.log"),
-		"-drive", "file=" + escapeQEMU(overlay) + ",format=qcow2,if=virtio",
+		"-drive", rootDrive,
 		"-drive", "file=" + escapeQEMU(filepath.Join(directory, "seed.iso")) + ",format=raw,media=cdrom,readonly=on",
 		"-netdev", bootstrap, "-device", "virtio-net-pci,netdev=boot,mac=" + bootstrapMAC(guest),
+	}
+	if size := guest.Resources.DataDiskMiB; size != 0 {
+		path := filepath.Join(directory, "data.qcow2")
+		if err := createDataDisk(ctx, path, size); err != nil {
+			return fmt.Errorf("prepare storage disk for %s: %w", guest.Name, err)
+		}
+		args = append(args, "-device", "virtio-blk-pci,drive=system,bootindex=1", "-drive", "file="+escapeQEMU(path)+",format=qcow2,if=none,id=storage",
+			"-device", "virtio-blk-pci,drive=storage,serial=ocean-storage")
 	}
 	if slices.Contains(guest.Roles, "control-plane") {
 		args = append(args, "-device", "i6300esb", "-action", "watchdog=reset")
@@ -386,4 +398,28 @@ func command(ctx context.Context, name string, args ...string) error {
 		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// createDataDisk publishes a separate, sparse storage-device image once and
+// reuses it when the guest restarts.
+func createDataDisk(ctx context.Context, path string, size uint) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("the existing data disk is not a regular file")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	partial := path + ".partial"
+	defer os.Remove(partial)
+	if err := command(ctx, "qemu-img", "create", "-f", "qcow2", partial, strconv.FormatUint(uint64(size), 10)+"M"); err != nil {
+		return err
+	}
+	if err := os.Chmod(partial, 0600); err != nil {
+		return err
+	}
+	return os.Rename(partial, path)
 }

@@ -94,7 +94,7 @@ func TestProfileOverridesNodeResourcesIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, want := range []Resources{{1536, 1}, {1024, 1}, {1024, 2}} {
+	for index, want := range []Resources{{MemoryMiB: 1536, VCPUs: 1}, {MemoryMiB: 1024, VCPUs: 1}, {MemoryMiB: 1024, VCPUs: 2}} {
 		if plan.Guests[index].Resources != want {
 			t.Errorf("guest %s = %+v, want %+v", plan.Guests[index].Name, plan.Guests[index].Resources, want)
 		}
