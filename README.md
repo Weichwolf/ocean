@@ -5,6 +5,9 @@ Functions. Tenants can provision resources with the standard Azure CLI against
 an ocean region. The first release profile has passed the end-to-end acceptance
 tests in the Debian KVM lab.
 
+See the [architecture and capabilities](ARCHITECTURE.md) for the regional
+topology, workload paths, and availability profiles.
+
 ## Available in phase one
 
 - **Identity and access.** Onboard customer tenants and subscriptions, manage
