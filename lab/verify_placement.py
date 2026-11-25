@@ -55,7 +55,7 @@ def verify_host_endpoint(state, small, large):
         raise RuntimeError("the host assignment endpoint did not enforce certificate scope")
 
 
-def verify(state, small, large):
+def verify(state, small, large, storage_workers=False):
     with tempfile.TemporaryDirectory(prefix="ocean-placement-check-") as directory:
         binary = Path(directory) / "placement.test"
         subprocess.run(["go", "test", "-mod=readonly", "-tags=e2e", "-trimpath", "-c", "-o", str(binary), "./internal/controlplane"],
@@ -66,8 +66,10 @@ def verify(state, small, large):
         endpoints = ",".join(f"https://{address}:2379" for address in NODES.values())
         command = ["env", f"OCEAN_E2E_ETCD_ENDPOINTS={endpoints}", f"OCEAN_E2E_ETCD_PKI={DEST}/pki",
                    f"OCEAN_E2E_PLACEMENT={stage}", f"OCEAN_E2E_TENANT={TENANT}", f"OCEAN_E2E_SUBSCRIPTION={SUBSCRIPTION}",
-                   f"OCEAN_E2E_SMALL_HOST={small}", f"OCEAN_E2E_LARGE_HOST={large}", f"{DEST}/bin/placement.test", "-test.run=^TestRegionalPlacement$", "-test.v"]
-        result = ssh(state, OPERATOR, shlex.join(command))
+                   f"OCEAN_E2E_SMALL_HOST={small}", f"OCEAN_E2E_LARGE_HOST={large}",
+                   f"OCEAN_E2E_USE_STORAGE_WORKERS={int(storage_workers)}", f"{DEST}/bin/placement.test", "-test.run=^TestRegionalPlacement$", "-test.v"]
+        shell = shlex.join(command)
+        result = ssh(state, OPERATOR, f"rc=0; output=$({shell}) || rc=$?; if test $rc -ne 0; then printf '%s\\n' \"$output\" >&2; exit $rc; fi; printf '%s\\n' \"$output\"")
         if b"--- PASS: TestRegionalPlacement" not in result:
             raise RuntimeError("the placement checks did not run")
 
@@ -99,9 +101,16 @@ def verify(state, small, large):
     finally:
         agent_command(state, large, "systemctl", "--user", "start", "ocean-agent.service")
         wait_ready(state, large)
-    restored, new_lease, current = record_capacity(state, large)
-    if (new_lease == old_lease or current != revision or restored != large_capacity):
-        raise RuntimeError("the reconnected host changed its registered identity or capacity")
+    def reconnected():
+        restored, new_lease, current = record_capacity(state, large)
+        stable = ("hostId", "cell", "pool", "roles", "capacity")
+        differences = [field for field in stable if restored.get(field) != large_capacity.get(field)]
+        if new_lease == old_lease or current != revision or differences:
+            raise RuntimeError(f"the reconnected host changed its lease, identity, or capacity: {differences}")
+        if large_capacity.get("containerNetwork") and not restored.get("containerNetwork"):
+            raise RuntimeError("the reconnected host has not restored its workload network qualification")
+
+    eventually(reconnected, 45)
     evidence = {"activeHosts": [small_capacity, large_capacity], "leaseExpiredAfterSeconds": expired_in,
                 "disconnectedHostExcluded": True, "sameIdentityAfterReconnect": True, "anonymousHeartbeatDenied": True,
                 "crossPoolDenied": True, "oversizedRequestDenied": True, "sameRequestSingleReservation": True,
@@ -119,8 +128,9 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--small", required=True)
     parser.add_argument("--large", required=True)
+    parser.add_argument("--storage-workers", action="store_true")
     args = parser.parse_args()
-    verify(args.state.resolve(), args.small, args.large)
+    verify(args.state.resolve(), args.small, args.large, args.storage_workers)
 
 
 if __name__ == "__main__":

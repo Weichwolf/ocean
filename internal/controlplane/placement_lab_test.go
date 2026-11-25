@@ -26,11 +26,21 @@ func TestRegionalPlacement(t *testing.T) {
 	defer cancel()
 	scope := arm.SubscriptionScope{TenantID: os.Getenv("OCEAN_E2E_TENANT"), SubscriptionID: os.Getenv("OCEAN_E2E_SUBSCRIPTION")}
 	small, large := os.Getenv("OCEAN_E2E_SMALL_HOST"), os.Getenv("OCEAN_E2E_LARGE_HOST")
+	storageWorkers := os.Getenv("OCEAN_E2E_USE_STORAGE_WORKERS") == "1"
+	if storageWorkers {
+		config, err := region.client.Get(ctx, region.root+"/storage/config")
+		var storage struct{ Workers []string }
+		if err != nil || len(config.Kvs) != 1 || json.Unmarshal(config.Kvs[0].Value, &storage) != nil ||
+			len(storage.Workers) != 2 || storage.Workers[0] != small || storage.Workers[1] != large {
+			t.Fatalf("the mixed lab requires its two approved storage workers: %v", err)
+		}
+		region.storage = &storageControl{workers: storage.Workers}
+	}
 	capacity := func(cpu, memory int64) enrollment.Capacity {
 		return enrollment.Capacity{CPUMillis: cpu, MemoryMiB: memory}
 	}
 	request := func(id string, cpu, memory int64) PlacementRequest {
-		return PlacementRequest{ID: id, Cell: "cell-1", Role: "compute", Resources: capacity(cpu, memory)}
+		return PlacementRequest{ID: id, Cell: "cell-1", Role: "compute", Resources: capacity(cpu, memory), NeedsStorage: storageWorkers}
 	}
 	policy := func(pool string, quota enrollment.Capacity) {
 		t.Helper()
@@ -43,12 +53,23 @@ func TestRegionalPlacement(t *testing.T) {
 		defer cancel()
 		_, _ = region.client.Delete(cleanup, region.armPrefix(scope)+"placement-policy")
 	})
+	track := func(result Reservation) {
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			defer cancel()
+			if err := region.ReleasePlacement(cleanup, scope, result.Cell, result.ID, result.Generation); err != nil &&
+				!errors.Is(err, ErrReservationChanged) {
+				t.Errorf("release fixture reservation %s: %v", result.ID, err)
+			}
+		})
+	}
 	reserve := func(wanted PlacementRequest) Reservation {
 		t.Helper()
 		result, err := region.ReservePlacement(ctx, scope, wanted)
 		if err != nil {
 			t.Fatal(err)
 		}
+		track(result)
 		return result
 	}
 	release := func(result Reservation) {
@@ -59,7 +80,11 @@ func TestRegionalPlacement(t *testing.T) {
 	}
 	denied := func(wanted PlacementRequest, expected error) {
 		t.Helper()
-		if _, err := region.ReservePlacement(ctx, scope, wanted); !errors.Is(err, expected) {
+		result, err := region.ReservePlacement(ctx, scope, wanted)
+		if err == nil {
+			track(result)
+		}
+		if !errors.Is(err, expected) {
 			t.Fatalf("placement returned %v, want %v", err, expected)
 		}
 	}
@@ -107,6 +132,11 @@ func TestRegionalPlacement(t *testing.T) {
 	policy("lab-default", capacity(700, 384))
 	wanted := request("same-request", 700, 384)
 	results, errs := placementRace(ctx, region, scope, wanted, wanted)
+	for i, result := range results {
+		if errs[i] == nil {
+			track(result)
+		}
+	}
 	if errs[0] != nil || errs[1] != nil || results[0] != results[1] || results[0].HostID != small {
 		t.Fatalf("a concurrent retry did not preserve its sole allocation: %v %v", results, errs)
 	}
@@ -138,6 +168,7 @@ func TestRegionalPlacement(t *testing.T) {
 	for index, err := range errs {
 		switch {
 		case err == nil:
+			track(results[index])
 			accepted = index
 		case errors.Is(err, ErrQuotaExceeded):
 			rejected = index
