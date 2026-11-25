@@ -106,7 +106,7 @@ func (r *Region) readApplicationGatewayNetwork(ctx context.Context, scope arm.Su
 		return result, err
 	}
 	for _, prefix := range prefixes {
-		if network.IsUsableSubnetAddress(prefix, desired.Backend.Addr()) && !prefix.Contains(publicIPv4) {
+		if network.ValidHTTPSBackends(prefix, desired.Backend, desired.AdditionalBackends) && !prefix.Contains(publicIPv4) {
 			return applicationGatewayNetwork{PublicIPv4: publicIPv4, Subnet: prefix, VNet: vnet, Group: current.Name,
 				SubnetLock: r.subnetNetworkPlacements(scope, vnet, subnetName) + "_application-gateway",
 				Revision:   read.Header.Revision, Guards: []clientv3.Cmp{
@@ -116,5 +116,5 @@ func (r *Region) readApplicationGatewayNetwork(ctx context.Context, scope arm.Su
 				}}, nil
 		}
 	}
-	return result, arm.InvalidDeployment{Cause: errors.New("the private backend address is outside the selected subnet")}
+	return result, arm.InvalidDeployment{Cause: errors.New("the private backend pool must use one selected subnet")}
 }

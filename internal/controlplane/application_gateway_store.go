@@ -34,6 +34,7 @@ type gatewayRecord struct {
 	Hostname             string                `json:"hostname"`
 	PublicIPv4           netip.Addr            `json:"publicIPv4"`
 	Backend              netip.AddrPort        `json:"backend"`
+	AdditionalBackends   []netip.AddrPort      `json:"additionalBackends,omitempty"`
 	BackendSubnet        netip.Prefix          `json:"backendSubnet"`
 	EncryptedCertificate []byte                `json:"encryptedCertificate"`
 	Site                 *wireGuardDesired     `json:"site,omitempty"`
@@ -110,7 +111,7 @@ func (r *Region) beginApplicationGateway(ctx context.Context, scope arm.Subscrip
 		Scope: scope, Resource: desired.ResourceAddress, Deployment: desired.Deployment, PublicIP: desired.PublicIP,
 		Subnet: desired.Subnet, SubnetLock: target.SubnetLock, Slot: slot.Name, Hosts: slot.Hosts,
 		OperationID: op.ID, RequestDigest: requestDigest, Hostname: desired.Certificate.Hostname,
-		PublicIPv4: target.PublicIPv4, Backend: desired.Backend, BackendSubnet: target.Subnet,
+		PublicIPv4: target.PublicIPv4, Backend: desired.Backend, AdditionalBackends: desired.AdditionalBackends, BackendSubnet: target.Subnet,
 		EncryptedCertificate: r.gatewayControl.sealer.Seal(nil, nil, desired.Certificate.Bundle, []byte(recordKey+"/"+op.ID)),
 	}
 	resource, deployment := buildApplicationGatewayResources(scope, desired, target)
@@ -226,9 +227,10 @@ func applicationGatewayDigest(desired arm.ApplicationGatewayDeployment) (string,
 		Resource, Subnet, PublicIP, Certificate, Hostname string
 		Backend                                           netip.AddrPort
 		Tags                                              map[string]string
+		AdditionalBackends                                []netip.AddrPort `json:"AdditionalBackends,omitempty"`
 	}{
 		desired.ResourceAddress.Key(), desired.Subnet.Key(), desired.PublicIP.Key(), fmt.Sprintf("%x", certificateDigest),
-		desired.Certificate.Hostname, desired.Backend, desired.Tags,
+		desired.Certificate.Hostname, desired.Backend, desired.Tags, desired.AdditionalBackends,
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -239,6 +241,10 @@ func applicationGatewayDigest(desired arm.ApplicationGatewayDeployment) (string,
 
 func buildApplicationGatewayResources(scope arm.SubscriptionScope, desired arm.ApplicationGatewayDeployment,
 	target applicationGatewayNetwork) (arm.InventoryResource, arm.InventoryResource) {
+	addresses := make([]map[string]string, 0, 1+len(desired.AdditionalBackends))
+	for _, backend := range slices.Concat([]netip.AddrPort{desired.Backend}, desired.AdditionalBackends) {
+		addresses = append(addresses, map[string]string{"ipAddress": backend.Addr().String()})
+	}
 	properties, _ := json.Marshal(map[string]any{
 		"provisioningState": "Updating", "operationalState": "Stopped", "hostname": desired.Certificate.Hostname,
 		"sku": map[string]any{"name": "Standard_v2", "tier": "Standard_v2", "capacity": 2},
@@ -247,7 +253,7 @@ func buildApplicationGatewayResources(scope arm.SubscriptionScope, desired arm.A
 		"gatewayIPConfigurations": []any{map[string]any{"name": "appGatewayFrontendIP", "properties": map[string]any{
 			"subnet": map[string]string{"id": desired.Subnet.ID(scope)}}}},
 		"backendAddressPools": []any{map[string]any{"name": "appGatewayBackendPool", "properties": map[string]any{
-			"backendAddresses": []any{map[string]string{"ipAddress": desired.Backend.Addr().String()}}}}},
+			"backendAddresses": addresses}}},
 		"sslCertificates": []any{map[string]any{"name": desired.CertificateName, "properties": map[string]any{
 			"publicCertData": desired.Certificate.PublicCertificate}}},
 	})

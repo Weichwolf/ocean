@@ -530,3 +530,43 @@ replacement before restarting the telemetry cluster. It checks a 4 KiB
 worker buffer across a process restart and then compares reported gaps with
 worker loss and resumed usage series. The acceptance evidence records the
 measured delays and the profile's numeric limits.
+
+### Local placement and autoscaling
+
+The `Ocean.Compute/replicaSets` API version `2026-11-01` manages stateless
+private Linux container groups on the same firewall, Podman and placement
+paths as individual ACI groups. Use `az rest` with the regional ARM audience.
+The subnet uses the `Microsoft.ContainerInstance/containerGroups` delegation.
+The tenant reads the assigned slots and their health through the replica set.
+The set reconciler owns the lifecycle of its member groups.
+
+Set `availabilityTier` to `NonRedundant` or `LocallyRedundant`. The local
+tier requires two live replicas on different hosts and reserves an additional
+host's capacity and address for replacement. All slots, including cold
+reservations up to the maximum replica count plus the local spare, consume
+tenant quota. The workload profile and reserved maximum stay fixed over the
+set's lifetime. Update the policy to change the target or enable autoscaling.
+
+The `Fixed` policy keeps its desired replica count. A `Local` policy uses
+a window of fresh CPU measurements, distinct increase and decrease
+thresholds, and a cooldown. Scaling stays between the configured minimum and
+maximum. An unavailable telemetry store preserves the last desired count.
+Host replacement uses the same reconciliation path and remains independent of
+telemetry.
+
+The Azure Application Gateway workflow accepts a pool of up to four private
+IPv4 HTTP backends in one selected subnet. Use the replica set's reserved
+addresses to keep the HTTPS endpoint stable as slots start and stop. Both
+gateway peers probe the pool and HAProxy distributes traffic among healthy
+backends. Delete the application's ingress before releasing the reserved
+addresses.
+
+Run `python3 lab/verify_replica_sets.py --state "$LAB_STATE"` against the
+enrolled regional lab with four compute hosts, the redundant HTTPS gateway,
+telemetry, and the package built from this revision. The probe checks fixed
+and local policies, reserved tenant quota, tier validation and scoped access.
+It powers off one serving KVM node, observes replacement on a reserved host,
+and continues external requests using fresh and cached DNS. It measures
+scale-out and scale-in under controlled HTTP load. The probe writes
+`evidence/replica-sets.json` with outcomes and individual request attempts.
+[CLI command matrix](../tests/e2e/testdata/arm-contract.tsv)

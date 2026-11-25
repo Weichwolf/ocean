@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"net/url"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
 )
 
 type settings struct {
@@ -111,7 +113,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			}
 		}
 		if cfg.Region.OperationController == nil || *cfg.Region.OperationController {
-			hooks.Reconcile = region.reconcileOperations
+			hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
+				if region.workloads != nil {
+					go region.reconcileReplicaSets(ctx, logger)
+				}
+				region.reconcileOperations(ctx, logger)
+			}
 		}
 		if compatibility != nil {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
@@ -128,6 +135,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					GatewayDeployments: region, SiteConnections: region, FunctionPlans: cfg.Region.FunctionPlans, PrincipalExists: compatibility.RolePrincipalExists}
 				if region.workloads != nil {
 					resources.Containers = region
+					resources.ReplicaSets = region
 				}
 				if region.storage != nil {
 					resources.Storage = region
@@ -155,6 +163,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 // own key prefixes for operations and reservations under the same region root.
 type Region struct {
 	client         *clientv3.Client
+	name           string
 	root           string
 	keys           [2]string
 	values         [2]string
@@ -206,7 +215,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("open telemetry backend: %w", err)
 	}
-	return &Region{client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
+	return &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell}, nil
 }
 
@@ -301,6 +310,7 @@ func (cfg etcdConfig) clientConfig() (clientv3.Config, error) {
 	return clientv3.Config{
 		Endpoints:   cfg.Endpoints,
 		DialTimeout: 3 * time.Second,
+		DialOptions: []grpc.DialOption{grpc.WithContextDialer(dialEtcd)},
 		TLS: &tls.Config{
 			RootCAs:      pool,
 			Certificates: []tls.Certificate{certificate},

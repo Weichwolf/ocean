@@ -80,6 +80,13 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		}
 		namespace = "Microsoft.ContainerInstance"
 		types = []providerResourceType{{ResourceType: "containerGroups", Locations: []string{s.Location}, APIVersions: []string{workload.ContainerGroupAPIVersion}}}
+	case "ocean.compute":
+		if s.ReplicaSets == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = "Ocean.Compute"
+		types = []providerResourceType{{ResourceType: "replicaSets", Locations: []string{s.Location}, APIVersions: []string{workload.ReplicaSetAPIVersion}}}
 	case "microsoft.authorization":
 		namespace = "Microsoft.Authorization"
 		types = []providerResourceType{

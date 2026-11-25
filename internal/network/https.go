@@ -8,17 +8,21 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 )
 
-// HTTPSIngress describes one public HTTPS listener and its private HTTP backend.
+const MaxHTTPSBackends = 4
+
+// HTTPSIngress describes one public HTTPS listener and its private HTTP backends.
 type HTTPSIngress struct {
-	PublicIPv4      netip.Addr     `json:"publicIPv4"`
-	Hostname        string         `json:"hostname"`
-	CertificateFile string         `json:"certificateFile"`
-	Backend         netip.AddrPort `json:"backend"`
-	BackendSubnet   netip.Prefix   `json:"backendSubnet"`
+	PublicIPv4         netip.Addr       `json:"publicIPv4"`
+	Hostname           string           `json:"hostname"`
+	CertificateFile    string           `json:"certificateFile"`
+	Backend            netip.AddrPort   `json:"backend"`
+	BackendSubnet      netip.Prefix     `json:"backendSubnet"`
+	AdditionalBackends []netip.AddrPort `json:"additionalBackends,omitempty"`
 }
 
 var (
@@ -26,11 +30,26 @@ var (
 	hostLabel       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
+func ValidHTTPSBackends(subnet netip.Prefix, primary netip.AddrPort, additional []netip.AddrPort) bool {
+	if len(additional) >= MaxHTTPSBackends {
+		return false
+	}
+	seen := make(map[netip.Addr]bool, MaxHTTPSBackends)
+	for _, backend := range slices.Concat([]netip.AddrPort{primary}, additional) {
+		addr := backend.Addr()
+		if backend.Port() == 0 || !addr.Is4() || !addr.IsPrivate() || !IsUsableSubnetAddress(subnet, addr) || seen[addr] {
+			return false
+		}
+		seen[addr] = true
+	}
+	return true
+}
+
 func (ingress HTTPSIngress) validate() error {
 	if !ingress.PublicIPv4.Is4() || !ingress.PublicIPv4.IsGlobalUnicast() ||
-		ingress.BackendSubnet.Contains(ingress.PublicIPv4) || ingress.Backend.Port() == 0 ||
-		!ingress.Backend.Addr().IsPrivate() || !IsUsableSubnetAddress(ingress.BackendSubnet, ingress.Backend.Addr()) {
-		return errors.New("HTTPS ingress requires a public IPv4 listener and a usable private subnet backend")
+		ingress.BackendSubnet.Contains(ingress.PublicIPv4) ||
+		!ValidHTTPSBackends(ingress.BackendSubnet, ingress.Backend, ingress.AdditionalBackends) {
+		return errors.New("HTTPS ingress requires a public IPv4 listener and usable private subnet backends")
 	}
 	if !validIngressHostname(ingress.Hostname) {
 		return errors.New("HTTPS ingress requires a canonical DNS hostname")
@@ -88,6 +107,10 @@ func (ingress HTTPSIngress) HAProxy() (string, error) {
 	if err := ingress.validate(); err != nil {
 		return "", err
 	}
+	var servers strings.Builder
+	for i, backend := range slices.Concat([]netip.AddrPort{ingress.Backend}, ingress.AdditionalBackends) {
+		fmt.Fprintf(&servers, "  server workload%d %s check inter 500ms fall 2 rise 1\n", i+1, backend)
+	}
 	return fmt.Sprintf(`global
   nbthread 1
   user haproxy
@@ -115,6 +138,8 @@ frontend ingress
   http-request set-header X-Forwarded-Port 443
   default_backend workload
 backend workload
-  server workload %[4]s check inter 500ms fall 2 rise 1
-`, ingress.PublicIPv4, ingress.CertificateFile, ingress.Hostname, ingress.Backend), nil
+  balance roundrobin
+  option redispatch
+  retries 2
+%[4]s`, ingress.PublicIPv4, ingress.CertificateFile, ingress.Hostname, servers.String()), nil
 }

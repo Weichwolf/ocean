@@ -27,10 +27,11 @@ def prepare_slot(state, node, index, package, token):
         "install haproxy dnsmasq-base keepalived curl && sudo apt-get clean")
     ssh(state, node, INSTALL, package)
     ssh(state, node, "sudo apt-get clean")
-    agent = {"listenAddress": "127.0.0.1:8081", "enrollment": {
+    agent = json.loads(ssh(state, node, "cat /etc/ocean-agent/config.json"))
+    agent.setdefault("enrollment", {}).update({
         "origin": f"https://{ARM}", "hostId": node, "managementInterface": "mgmt0",
         "caFile": f"{DEST}/pki/ingress-ca.pem", "tokenFile": "/etc/ocean-agent/enrollment.secret",
-        "stateDirectory": "/var/lib/ocean-agent/host-enrollment"}}
+        "stateDirectory": "/var/lib/ocean-agent/host-enrollment"})
     slot = {"namespace": NAMESPACE, "publicInterface": "public0", "backendInterface": "backend0",
             "publicLink": public(index) + "/24", "peerAddress": public(1 - index),
             "peerMac": external_mac(1 - index), "priority": 150 if index == 0 else 100, "vrrpId": 99}
@@ -38,15 +39,45 @@ def prepare_slot(state, node, index, package, token):
                          "https.json": json.dumps({"slots": {SLOT: slot}}).encode()}, "/etc/ocean-agent", "ocean-agent")
     agent_command(state, node, "systemctl", "--user", "restart", "ocean-agent.service")
     wait_ready(state, node)
-    ssh(state, node, f"""set -eu
-if sudo test ! -e /run/netns/{NAMESPACE}; then
-    sudo ip netns add {NAMESPACE}
-    sudo ip -n {NAMESPACE} link set lo up
-    {macvlan(NAMESPACE, "customer0", "public0", public(index) + "/24", external_mac(index))}
-    {macvlan(NAMESPACE, "work0", "backend0", f"10.89.1.{index + 1}/24")}
+    configure_slot_links(state, node, index)
+
+
+def configure_slot_links(state, node, index):
+    directory = "/opt/ocean-lab-https"
+    script = f"""#!/bin/sh
+set -eu
+if sudo ip -n {NAMESPACE} link show public0 >/dev/null 2>&1 &&
+   sudo ip -n {NAMESPACE} link show backend0 >/dev/null 2>&1; then
+    exit 0
 fi
+if sudo test -e /run/netns/{NAMESPACE}; then
+    sudo ip netns delete {NAMESPACE}
+fi
+sudo ip netns add {NAMESPACE}
+sudo ip -n {NAMESPACE} link set lo up
+{macvlan(NAMESPACE, "customer0", "public0", public(index) + "/24", external_mac(index))}
+{macvlan(NAMESPACE, "work0", "backend0", f"10.89.1.{index + 1}/24")}
+"""
+    unit = f"""[Unit]
+Wants=network-online.target
+After=network-online.target
+Before=ocean-https-agent.service
+
+[Service]
+Type=oneshot
+ExecStart={directory}/bin/prepare-slot
+RemainAfterExit=yes
+"""
+    drop_in = "[Unit]\nRequires=ocean-lab-https-slot.service\nAfter=ocean-lab-https-slot.service\n"
+    upload(state, node, {"bin/prepare-slot": script.encode(), "ocean-lab-https-slot.service": unit.encode(),
+                         "lab-slot.conf": drop_in.encode()}, directory, "root")
+    ssh(state, node, f"""set -eu
+sudo install -m 0644 {directory}/ocean-lab-https-slot.service /etc/systemd/system/
+sudo install -D -m 0644 {directory}/lab-slot.conf /etc/systemd/system/ocean-https-agent.service.d/lab-slot.conf
+sudo systemctl daemon-reload
 sudo systemctl reset-failed ocean-https-agent.service 2>/dev/null || true
-sudo systemctl restart ocean-https-agent.service
+sudo systemctl enable ocean-https-agent.service
+sudo systemctl restart ocean-lab-https-slot.service ocean-https-agent.service
 sudo systemctl is-active --quiet ocean-https-agent.service
 """)
 

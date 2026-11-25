@@ -78,10 +78,23 @@ func (r *Region) decryptContainer(scope arm.SubscriptionScope, record containerR
 	return input, nil
 }
 
+const replicaControllerActor = "ocean-replica-controller"
+
+type replicaAdmission struct {
+	spreadSet string
+	key       string
+	revision  int64
+}
+
 func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress,
 	wanted workload.ContainerGroup) (arm.InventoryResource, *arm.Operation, bool, error) {
+	return r.createContainerGroup(ctx, scope, actor, address, wanted, replicaAdmission{})
+}
+
+func (r *Region) createContainerGroup(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress,
+	wanted workload.ContainerGroup, replica replicaAdmission) (arm.InventoryResource, *arm.Operation, bool, error) {
 	key := r.containerKey(scope, address)
-	if resource, op, found, err := r.retryContainerCreate(ctx, scope, address, wanted); found || err != nil {
+	if resource, op, found, err := r.retryContainerCreate(ctx, scope, address, wanted, replica.spreadSet); found || err != nil {
 		return resource, op, false, err
 	}
 	cpu, memory, ok := wanted.Properties.Containers[0].Properties.Resources.Requests.Limits()
@@ -89,7 +102,7 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 		return arm.InventoryResource{}, nil, false, workload.ErrInvalidContainer
 	}
 	request := PlacementRequest{ID: fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:48], Cell: r.cell, Role: "compute", NeedsContainerNetwork: true,
-		Resources: enrollment.Capacity{CPUMillis: cpu, MemoryMiB: memory}}
+		Resources: enrollment.Capacity{CPUMillis: cpu, MemoryMiB: memory}, SpreadSet: replica.spreadSet}
 	if len(wanted.Properties.Volumes) != 0 {
 		if r.storage == nil {
 			return arm.InventoryResource{}, nil, false, arm.ErrStorageAccess
@@ -127,6 +140,9 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 		op := arm.Operation{ID: operationID(), Kind: createContainer, Group: group.Name, Actor: actor, Status: arm.OperationInProgress, StartedAt: now}
 		record := containerRecord{Address: address, Reservation: res, Port: wanted.Properties.IPAddress.Ports[0].Port,
 			Desired: workload.Running, Operation: op.ID}
+		if replica.spreadSet != "" {
+			record.Desired = workload.Stopped
+		}
 		record.Config = r.workloads.sealer.Seal(nil, nil, data, r.containerBinding(scope, record))
 		invKey := r.inventoryPrefix(scope) + address.Key()
 		hostKey := r.hostContainerKey(scope, res.HostID, res.ID)
@@ -134,6 +150,9 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Version(key), "=", 0), clientv3.Compare(clientv3.Version(invKey), "=", 0),
 			clientv3.Compare(clientv3.Version(hostKey), "=", 0), clientv3.Compare(clientv3.Version(opKey), "=", 0)}
+		if replica.key != "" {
+			checks = append(checks, clientv3.Compare(clientv3.ModRevision(replica.key), "=", replica.revision))
+		}
 		var writes []clientv3.Op
 		if res.SubnetID == "" {
 			pool, revision, err := r.readPublicIPPool(ctx, 0)
@@ -192,7 +211,7 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 	}
 	// Load the committed revision, which may have been written by a replica
 	// racing this request or completed by the worker during this request.
-	resource, op, found, err := r.retryContainerCreate(ctx, scope, address, wanted)
+	resource, op, found, err := r.retryContainerCreate(ctx, scope, address, wanted, replica.spreadSet)
 	if !found && err == nil {
 		err = arm.ErrContainerMissing
 	}
@@ -200,10 +219,13 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 }
 
 func (r *Region) retryContainerCreate(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress,
-	wanted workload.ContainerGroup) (arm.InventoryResource, *arm.Operation, bool, error) {
+	wanted workload.ContainerGroup, spreadSet string) (arm.InventoryResource, *arm.Operation, bool, error) {
 	resource, record, op, _, err := r.readContainer(ctx, scope, address)
 	if err != nil || op == nil {
 		return resource, op, op != nil, err
+	}
+	if record.Reservation.SpreadSet != spreadSet {
+		return resource, op, true, arm.ErrContainerChanged
 	}
 	prior, err := r.decryptContainer(scope, record)
 	if err != nil {
@@ -296,6 +318,11 @@ func (r *Region) operationAt(ctx context.Context, scope arm.SubscriptionScope, o
 }
 
 func (r *Region) MutateContainerGroup(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress, action string) (*arm.Operation, error) {
+	return r.mutateContainerGroup(ctx, scope, actor, address, action, replicaAdmission{})
+}
+
+func (r *Region) mutateContainerGroup(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress,
+	action string, replica replicaAdmission) (*arm.Operation, error) {
 	kind, desired := "", workload.Running
 	switch action {
 	case "start":
@@ -320,6 +347,9 @@ func (r *Region) MutateContainerGroup(ctx context.Context, scope arm.Subscriptio
 				return nil, nil
 			}
 			return nil, arm.ErrContainerMissing
+		}
+		if record.Reservation.SpreadSet != replica.spreadSet {
+			return nil, arm.ErrContainerChanged
 		}
 		if op.Status == arm.OperationInProgress {
 			if op.Kind == kind {
@@ -350,8 +380,12 @@ func (r *Region) MutateContainerGroup(ctx context.Context, scope arm.Subscriptio
 			op.Status, op.FinishedAt = arm.OperationFailed, &now
 			writes = append(writes, putJSON(r.operationKey(scope, op.ID), op))
 		}
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", revision),
-			clientv3.Compare(clientv3.Version(newKey), "=", 0)).Then(writes...).Commit()
+		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", revision),
+			clientv3.Compare(clientv3.Version(newKey), "=", 0)}
+		if replica.key != "" {
+			checks = append(checks, clientv3.Compare(clientv3.ModRevision(replica.key), "=", replica.revision))
+		}
+		result, err := r.client.Txn(ctx).If(checks...).Then(writes...).Commit()
 		if err != nil || result.Succeeded {
 			return &job, err
 		}

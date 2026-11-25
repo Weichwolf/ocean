@@ -88,6 +88,23 @@ restoring the store. The recovery limit is 45 seconds and the profile allows at
 most 160 evicted observations on the monitored worker. Capture worker buffer
 sizes, tenant-visible gaps and measurements both before and after recovery.
 
+## Local availability and scaling profile
+
+Reserve four slots on separate worker hosts for the local replica fixture.
+Use two initial live replicas, a maximum of three and one accounted spare.
+An HTTPS Application Gateway publishes the reserved backend pool. Verify the
+fixed policy with varying HTTP demand, actual KVM host power-off, replacement
+on a different reserved host and fresh CLI authentication during the fault.
+The external client retries requests at most four times within eight seconds.
+Capture duration, individual attempts and the response's replica identity for
+both DNS lookups and a previously resolved address.
+
+Exercise local CPU scaling with a 12-second observation window, a 14-second
+cooldown and bounds of two and three live replicas. Increase above 45 percent
+CPU utilization and decrease below 15 percent. Require each adjustment to
+reach its observed replica count within 65 seconds. Confirm that the serving
+set keeps the local minimum after scaling in.
+
 ## Execution and evidence
 
 1. Record the source revision, platform and CLI versions, API versions, selected cases, image digests, topology, resource budgets, and pass limits before running the suite. Give the run its own Azure CLI configuration directory and its own test resources.

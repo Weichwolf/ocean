@@ -41,11 +41,13 @@ func (r *Region) DeleteGroup(ctx context.Context, scope arm.SubscriptionScope, n
 	bindings := r.groupNetworkPlacements(scope, name)
 	containers := r.containerPrefix(scope, name)
 	accounts := r.storageAccountsPrefix(scope, name)
+	replicaSets := r.replicaSetsPrefix(scope, name)
 	for range 8 {
 		snapshot, err := r.client.Txn(ctx).Then(clientv3.OpGet(groupKey), clientv3.OpGet(deletionKey),
 			clientv3.OpGet(bindings, clientv3.WithPrefix(), clientv3.WithLimit(1), clientv3.WithKeysOnly()),
 			clientv3.OpGet(containers, clientv3.WithPrefix(), clientv3.WithLimit(1), clientv3.WithKeysOnly()),
-			clientv3.OpGet(accounts, clientv3.WithPrefix(), clientv3.WithLimit(1), clientv3.WithKeysOnly())).Commit()
+			clientv3.OpGet(accounts, clientv3.WithPrefix(), clientv3.WithLimit(1), clientv3.WithKeysOnly()),
+			clientv3.OpGet(replicaSets, clientv3.WithPrefix(), clientv3.WithLimit(1), clientv3.WithKeysOnly())).Commit()
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +68,7 @@ func (r *Region) DeleteGroup(ctx context.Context, scope arm.SubscriptionScope, n
 			return nil, nil
 		}
 		if len(snapshot.Responses[2].GetResponseRange().Kvs) != 0 || len(snapshot.Responses[3].GetResponseRange().Kvs) != 0 ||
-			len(snapshot.Responses[4].GetResponseRange().Kvs) != 0 {
+			len(snapshot.Responses[4].GetResponseRange().Kvs) != 0 || len(snapshot.Responses[5].GetResponseRange().Kvs) != 0 {
 			return nil, arm.ErrGroupInUse
 		}
 		item := groups[0]
@@ -87,7 +89,7 @@ func (r *Region) DeleteGroup(ctx context.Context, scope arm.SubscriptionScope, n
 		queueKey := r.pendingPrefix() + op.ID
 		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(groupKey), "=", item.ModRevision),
 			clientv3.Compare(clientv3.Version(bindings), "=", 0).WithPrefix(), clientv3.Compare(clientv3.Version(containers), "=", 0).WithPrefix(),
-			clientv3.Compare(clientv3.Version(accounts), "=", 0).WithPrefix(),
+			clientv3.Compare(clientv3.Version(accounts), "=", 0).WithPrefix(), clientv3.Compare(clientv3.Version(replicaSets), "=", 0).WithPrefix(),
 			clientv3.Compare(clientv3.Version(deletionKey), "=", 0), clientv3.Compare(clientv3.Version(opKey), "=", 0),
 			clientv3.Compare(clientv3.Version(queueKey), "=", 0)).Then(clientv3.OpPut(groupKey, string(groupData)),
 			clientv3.OpPut(deletionKey, op.ID), clientv3.OpPut(opKey, string(opData)), clientv3.OpPut(queueKey, string(queueData))).Commit()
@@ -175,7 +177,8 @@ func (r *Region) completeGroupDeletion(ctx context.Context, scope arm.Subscripti
 		if group.DeleteOperation == op.ID {
 			conditions = append(conditions, clientv3.Compare(clientv3.Version(r.groupNetworkPlacements(scope, op.Group)), "=", 0).WithPrefix(),
 				clientv3.Compare(clientv3.Version(r.containerPrefix(scope, op.Group)), "=", 0).WithPrefix(),
-				clientv3.Compare(clientv3.Version(r.storageAccountsPrefix(scope, op.Group)), "=", 0).WithPrefix())
+				clientv3.Compare(clientv3.Version(r.storageAccountsPrefix(scope, op.Group)), "=", 0).WithPrefix(),
+				clientv3.Compare(clientv3.Version(r.replicaSetsPrefix(scope, op.Group)), "=", 0).WithPrefix())
 			poolConditions, poolChanges, err := r.releaseGroupPublicIPs(ctx, scope, op.Group)
 			if err != nil {
 				return err
@@ -211,7 +214,7 @@ func decodeOperation(data []byte, id string) (*arm.Operation, error) {
 	switch operation.Kind {
 	case deleteResourceGroup, createApplicationGateway, deleteApplicationGateway, createSiteConnection, deleteSiteConnection,
 		createContainer, startContainer, stopContainer, restartContainer, deleteContainer, createFileShare, deleteFileShare, fenceContainer,
-		updateFunction, integrateFunction:
+		updateFunction, integrateFunction, configureReplicaSet, deleteReplicaSet:
 	default:
 		return nil, errors.New("invalid ARM operation kind")
 	}
