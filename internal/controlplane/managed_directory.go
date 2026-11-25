@@ -8,12 +8,15 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/identity"
-	"github.com/Weichwolf/ocean/internal/network"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func (r *Region) managedDirectoryKey(tenant string) string {
 	return r.root + "/managed-directories/" + tenant
+}
+
+func (r *Region) managedDirectorySubnetLock(scope arm.SubscriptionScope, parent arm.ResourceAddress, subnet string) string {
+	return r.subnetNetworkPlacements(scope, parent, subnet) + "_managed-directory"
 }
 
 func (r *Region) managedDirectorySnapshot(ctx context.Context, tenant identity.TenantReservation) (*identity.ManagedDirectory, []clientv3.Cmp, error) {
@@ -40,18 +43,18 @@ func (r *Region) managedDirectorySnapshot(ctx context.Context, tenant identity.T
 		return nil, nil, identity.ErrDirectoryTenant
 	}
 	items := read.Responses[2].GetResponseRange().Kvs
+	guards := []clientv3.Cmp{
+		clientv3.Compare(clientv3.ModRevision(registration), "=", registrations[0].ModRevision),
+		clientv3.Compare(clientv3.ModRevision(subscription), "=", subscriptions[0].ModRevision),
+	}
 	if len(items) == 0 {
-		return nil, []clientv3.Cmp{
-			clientv3.Compare(clientv3.ModRevision(registration), "=", registrations[0].ModRevision),
-			clientv3.Compare(clientv3.ModRevision(subscription), "=", subscriptions[0].ModRevision),
-			clientv3.Compare(clientv3.Version(key), "=", 0),
-		}, nil
+		return nil, append(guards, clientv3.Compare(clientv3.Version(key), "=", 0)), nil
 	}
 	var directory identity.ManagedDirectory
 	if json.Unmarshal(items[0].Value, &directory) != nil || !directory.Valid(tenant) {
 		return nil, nil, errors.New("invalid managed directory record")
 	}
-	return &directory, nil, nil
+	return &directory, append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", items[0].ModRevision)), nil
 }
 
 func (r *Region) LookupManagedDirectory(ctx context.Context, tenant identity.TenantReservation) (*identity.ManagedDirectory, error) {
@@ -66,10 +69,12 @@ func (r *Region) RequestManagedDirectory(ctx context.Context, tenant identity.Te
 	if !ok {
 		return empty, errors.New("invalid managed directory configuration")
 	}
-	if _, ok := arm.NetworkResourceAddress(scope, spec.SubnetID, network.SubnetType); !ok {
+	parent, name, ok := arm.SubnetParent(scope, spec.SubnetID)
+	if !ok {
 		return empty, identity.ErrDirectorySubnet
 	}
 	key := r.managedDirectoryKey(tenant.TenantID)
+	lock := r.managedDirectorySubnetLock(scope, parent, name)
 	for range 8 {
 		existing, guards, err := r.managedDirectorySnapshot(ctx, tenant)
 		if err != nil {
@@ -103,7 +108,8 @@ func (r *Region) RequestManagedDirectory(ctx context.Context, tenant identity.Te
 		directory := identity.ManagedDirectory{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID,
 			ID: operationID(), Spec: spec, RequestedAt: now}
 		data, _ := json.Marshal(directory)
-		result, err := r.client.Txn(ctx).If(append(guards, subnet.guards...)...).Then(clientv3.OpPut(key, string(data)),
+		guards = append(append(guards, subnet.guards...), clientv3.Compare(clientv3.Version(lock), "=", 0))
+		result, err := r.client.Txn(ctx).If(guards...).Then(clientv3.OpPut(key, string(data)), clientv3.OpPut(lock, directory.ID),
 			r.auditOp(scope, arm.AuditEvent{Time: now, Actor: tenant.Administrator, Action: "Ocean.Identity/directories/write",
 				Target: directory.ID, Outcome: "Accepted"})).Commit()
 		if err != nil {

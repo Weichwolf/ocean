@@ -45,7 +45,7 @@ type regionConfig struct {
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
-	ManagedDirectories  bool                      `json:"managedDirectories,omitempty"`
+	ManagedDirectories  *enrollment.Capacity      `json:"managedDirectories,omitempty"`
 }
 
 type etcdConfig struct {
@@ -69,9 +69,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
 		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
 	}
-	if cfg.Region != nil && cfg.Region.ManagedDirectories &&
-		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil) {
-		return config.Server{}, service.Hooks{}, errors.New("managed directories require tenant onboarding and ARM identity")
+	if cfg.Region != nil && cfg.Region.ManagedDirectories != nil &&
+		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil ||
+			cfg.Region.Workloads == nil || !validCapacity(*cfg.Region.ManagedDirectories)) {
+		return config.Server{}, service.Hooks{}, errors.New("managed directories require tenant onboarding, workload placement and positive controller capacity")
 	}
 	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil || cfg.Region.Storage != nil || cfg.Region.Telemetry != nil) && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("gateway and workload execution require enrolled hosts")
@@ -122,6 +123,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				if region.workloads != nil {
 					go region.reconcileReplicaSets(ctx, logger)
 				}
+				if cfg.Region.ManagedDirectories != nil {
+					go region.reconcileManagedDirectories(ctx, logger)
+				}
 				region.reconcileOperations(ctx, logger)
 			}
 		}
@@ -133,7 +137,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					return config.Server{}, service.Hooks{}, err
 				}
 			}
-			if cfg.Region.ManagedDirectories {
+			if cfg.Region.ManagedDirectories != nil {
 				if err := compatibility.EnableManagedDirectories(region); err != nil {
 					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
@@ -173,18 +177,19 @@ func Load(path string) (config.Server, service.Hooks, error) {
 // Region owns the initial metadata for one region. Resource providers use their
 // own key prefixes for operations and reservations under the same region root.
 type Region struct {
-	client         *clientv3.Client
-	name           string
-	root           string
-	keys           [2]string
-	values         [2]string
-	publicIPv4     []netip.Addr
-	gatewayControl *gatewayControl
-	wireGuard      *wireGuardConfig
-	workloads      *workloadControl
-	storage        *storageControl
-	telemetry      *telemetryControl
-	cell           string
+	client            *clientv3.Client
+	name              string
+	root              string
+	keys              [2]string
+	values            [2]string
+	publicIPv4        []netip.Addr
+	gatewayControl    *gatewayControl
+	wireGuard         *wireGuardConfig
+	workloads         *workloadControl
+	directoryCapacity enrollment.Capacity
+	storage           *storageControl
+	telemetry         *telemetryControl
+	cell              string
 }
 
 func openRegion(cfg regionConfig) (*Region, error) {
@@ -226,8 +231,12 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("open telemetry backend: %w", err)
 	}
-	return &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
-		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell}, nil
+	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
+		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell}
+	if cfg.ManagedDirectories != nil {
+		region.directoryCapacity = *cfg.ManagedDirectories
+	}
+	return region, nil
 }
 
 func initialRecords(root, name, cell string) ([2]string, [2]string) {
@@ -267,6 +276,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapWorkloads(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapManagedDirectories(ctx); err != nil {
 		return err
 	}
 	if err := region.bootstrapStorage(ctx); err != nil {

@@ -229,7 +229,8 @@ Run `python3 lab/verify_onboarding.py --state "$OCEAN_LAB_STATE"` after the iden
 ### Managed directory request
 
 The development profile exposes directory requests when `region.managedDirectories`
-is enabled with tenant onboarding. Sign in as the initial tenant administrator.
+sets `cpuMillis` and `memoryMiB` per controller. Enable tenant onboarding and
+workload placement in the region. Sign in as the initial tenant administrator.
 Submit `dnsName`, `netbiosName`, and `subnetId` in a JSON file. Use a private
 subnet in the tenant subscription. DNS names use ASCII labels, and NetBIOS
 names use up to 15 ASCII characters.
@@ -244,8 +245,12 @@ HTTP 202 means the region saved the request. The response contains an opaque
 `directoryId`, a polling URL in the `Location` header, and
 `provisioningState: Creating`. Identical requests return the same ID,
 including after an interrupted response. A different configuration for the
-same tenant returns HTTP 409. Controller provisioning and health reporting
-are pending in this development profile.
+same tenant returns HTTP 409. Ocean holds the target subnet while the
+directory exists. It reserves CPU, memory, and private IPv4 addresses for
+both controllers in one transaction, using distinct live compute hosts in
+permitted pools. An incomplete placement leaves the request in
+`Creating` for a later attempt. Samba startup and health reporting are
+pending in this development profile.
 
 ## Tenant directory users
 

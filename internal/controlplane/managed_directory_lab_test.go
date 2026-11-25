@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/network"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -138,5 +142,192 @@ func TestManagedDirectoryReservation(t *testing.T) {
 	}
 	if changes != 1 {
 		t.Fatalf("concurrent directory requests produced %d audit events", changes)
+	}
+
+	t.Run("controller pair", func(t *testing.T) {
+		testManagedDirectoryPlacement(t, ctx, region, first, requested[0], second, foreign)
+	})
+}
+
+func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region, tenant identity.TenantReservation,
+	directory identity.ManagedDirectory, second identity.TenantReservation, secondSpec identity.DirectorySpec) {
+	t.Helper()
+	r.cell = "cell-1"
+	r.directoryCapacity = enrollment.Capacity{CPUMillis: 400, MemoryMiB: 384}
+	if err := r.bootstrapManagedDirectories(ctx); err != nil {
+		t.Fatal(err)
+	}
+	configured := r.directoryCapacity
+	r.directoryCapacity.MemoryMiB++
+	if err := r.bootstrapManagedDirectories(ctx); err == nil {
+		t.Fatal("another replica accepted conflicting directory settings")
+	}
+	r.directoryCapacity = configured
+	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
+	if _, err := r.DeleteGroup(ctx, scope, "lab", tenant.Administrator); !errors.Is(err, arm.ErrGroupInUse) {
+		t.Fatalf("the directory subnet hold did not protect its group: %v", err)
+	}
+	setPolicy := func(scope arm.SubscriptionScope, quota enrollment.Capacity) {
+		t.Helper()
+		if err := r.SetPlacementPolicy(ctx, scope, PlacementPolicy{Pools: []string{"approved"}, Quota: quota}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client := r.client
+	lease, err := client.Grant(ctx, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = client.Revoke(cleanup, lease.ID)
+	}()
+	seedHost := func(id, pool string, networked bool) {
+		t.Helper()
+		host := enrollment.Host{HostID: id, Cell: r.cell, Pool: pool, Roles: []string{"compute"}, Certificate: []byte(id)}
+		live := enrollment.Availability{HostID: host.HostID, Cell: host.Cell, Pool: host.Pool, Roles: host.Roles,
+			ContainerNetwork: networked, Capacity: enrollment.Capacity{CPUMillis: 2000, MemoryMiB: 2048}}
+		registration, _ := json.Marshal(host)
+		report, _ := json.Marshal(live)
+		if _, err := client.Txn(ctx).Then(clientv3.OpPut(r.hostKey("registered", id), string(registration)),
+			clientv3.OpPut(r.hostKey("live", id), string(report), clientv3.WithLease(lease.ID))).Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertUnplaced := func(scope arm.SubscriptionScope) {
+		t.Helper()
+		placement, err := client.Get(ctx, r.managedDirectoryPlacementKey(scope.TenantID), clientv3.WithCountOnly())
+		if err != nil || placement.Count != 0 {
+			t.Fatalf("a failed attempt published a pair: %v", err)
+		}
+		used, err := r.counter(ctx, r.armPrefix(scope)+"placement-usage")
+		if err != nil || used.used != (enrollment.Capacity{}) {
+			t.Fatalf("a failed attempt billed tenant capacity: %+v %v", used, err)
+		}
+	}
+	setPolicy(scope, configured)
+	if err := r.placeManagedDirectory(ctx, tenant.TenantID); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("one controller of quota returned %v", err)
+	}
+	assertUnplaced(scope)
+	pairCapacity := addCapacity(configured, configured)
+	setPolicy(scope, pairCapacity)
+	seedHost("host-a", "approved", true)
+	seedHost("host-b", "approved", false)
+	seedHost("host-c", "outside", true)
+	seedHost("host-d", "approved", true)
+	if err := r.SetHostDraining(ctx, "host-d", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.placeManagedDirectory(ctx, tenant.TenantID); !errors.Is(err, ErrNoEligibleHost) {
+		t.Fatalf("one eligible controller host returned %v", err)
+	}
+	assertUnplaced(scope)
+	if used, err := r.counter(ctx, r.hostKey("placement-usage", "host-a")); err != nil || used.used != (enrollment.Capacity{}) {
+		t.Fatalf("a failed attempt billed host capacity: %+v %v", used, err)
+	}
+	seedHost("host-b", "approved", true)
+	var placementErrs [8]error
+	var workers sync.WaitGroup
+	for i := range placementErrs {
+		workers.Go(func() { placementErrs[i] = r.placeManagedDirectory(ctx, tenant.TenantID) })
+	}
+	workers.Wait()
+	for i, err := range placementErrs {
+		if err != nil {
+			t.Fatalf("reconciler %d returned %v", i, err)
+		}
+	}
+	result, err := client.Get(ctx, r.managedDirectoryPlacementKey(tenant.TenantID))
+	var latest directoryPlacement
+	if err != nil || len(result.Kvs) != 1 || json.Unmarshal(result.Kvs[0].Value, &latest) != nil || latest.DirectoryID != directory.ID {
+		t.Fatalf("no controller pair matching the directory: %+v %v", latest, err)
+	}
+	left, right := latest.Controllers[0], latest.Controllers[1]
+	if left.HostID != "host-a" || right.HostID != "host-b" || left.PrivateIPv4 == right.PrivateIPv4 ||
+		!left.PrivateIPv4.Is4() || !right.PrivateIPv4.Is4() || left.Generation == right.Generation {
+		t.Fatalf("invalid distinct placements %+v", latest.Controllers)
+	}
+	if used, err := r.counter(ctx, r.armPrefix(scope)+"placement-usage"); err != nil || used.used != pairCapacity {
+		t.Fatalf("tenant capacity was not charged exactly once: %+v %v", used.used, err)
+	}
+	for i, reservation := range latest.Controllers {
+		if used, err := r.counter(ctx, r.hostKey("placement-usage", reservation.HostID)); err != nil || used.used != configured {
+			t.Fatalf("host capacity was not charged exactly once: %+v %v", used.used, err)
+		}
+		page, err := r.HostAssignments(ctx, reservation.HostID, []byte(reservation.HostID), "")
+		if err != nil || len(page.Assignments) != 1 {
+			t.Fatalf("controller assignment could not be read by its host: %+v %v", page, err)
+		}
+		assignment := page.Assignments[0]
+		if assignment.Generation != reservation.Generation || assignment.PrivateIPv4 != reservation.PrivateIPv4 ||
+			assignment.NetworkUnavailable || assignment.Network == nil || assignment.TenantID != tenant.TenantID {
+			t.Fatalf("the assigned host received the wrong tenant network or generation: %+v", assignment)
+		}
+		controller := assignment.Directory
+		if controller == nil || controller.DirectoryID != directory.ID || controller.ControllerIndex != i+1 ||
+			controller.ControllerIPv4[0] != left.PrivateIPv4 || controller.ControllerIPv4[1] != right.PrivateIPv4 ||
+			controller.DNSName != directory.Spec.DNSName || controller.NetBIOSName != directory.Spec.NetBIOSName {
+			t.Fatalf("the host can not identify its own directory controller and peer: %+v", controller)
+		}
+		if _, err := r.HostAssignments(ctx, reservation.HostID, []byte("foreign-cert"), ""); !errors.Is(err, enrollment.ErrHostDenied) {
+			t.Fatalf("a mismatched production certificate could read the assignment: %v", err)
+		}
+	}
+	other := arm.SubscriptionScope{TenantID: second.TenantID, SubscriptionID: second.SubscriptionID}
+	setPolicy(other, pairCapacity)
+	parent, name, _ := arm.SubnetParent(other, secondSpec.SubnetID)
+	for i := 4; i < 14; i++ {
+		key := r.subnetNetworkPlacements(other, parent, name) + fmt.Sprintf("10.86.0.%d", i)
+		if _, err := client.Put(ctx, key, "used"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.placeManagedDirectory(ctx, second.TenantID); !errors.Is(err, ErrSubnetAddressExhausted) {
+		t.Fatalf("a subnet with only one available address returned %v", err)
+	}
+	assertUnplaced(other)
+	request := PlacementRequest{ID: "ordinary-placement", Cell: r.cell, Role: "compute", Resources: configured,
+		SubnetID: secondSpec.SubnetID, NeedsContainerNetwork: true}
+	ordinary, err := r.ReservePlacement(ctx, other, request)
+	if err != nil || ordinary.PrivateIPv4.String() != "10.86.0.14" {
+		t.Fatalf("a failed pair consumed the final address or broke single placement: %+v %v", ordinary, err)
+	}
+	if err := r.ReleasePlacement(ctx, other, ordinary.Cell, ordinary.ID, ordinary.Generation); err != nil {
+		t.Fatal(err)
+	}
+	assertUnplaced(other)
+	// Make a second address available. The background controller must pick
+	// up the pending request without another client submission.
+	key := r.subnetNetworkPlacements(other, parent, name) + "10.86.0.13"
+	if _, err := client.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	reconcile, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.reconcileManagedDirectories(reconcile, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	timer := time.NewTicker(20 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		placed, err := client.Get(ctx, r.managedDirectoryPlacementKey(other.TenantID), clientv3.WithCountOnly())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if placed.Count == 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("the background controller did not place the pending directory")
+		case <-timer.C:
+		}
 	}
 }

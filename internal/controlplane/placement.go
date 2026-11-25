@@ -132,6 +132,14 @@ func (r *Region) HostAssignments(ctx context.Context, id string, certificate []b
 			string(item.Key) != r.hostReservationKey(scope, id, assignment.ID) {
 			return enrollment.AssignmentPage{}, errors.New("host assignment does not match its key")
 		}
+		if directory := assignment.Directory; directory != nil {
+			index, ips := directory.ControllerIndex, directory.ControllerIPv4
+			if !identifier.MatchString(directory.DirectoryID) || assignment.Role != "compute" || assignment.SubnetID == "" ||
+				index < 1 || index > len(ips) || ips[index-1] != assignment.PrivateIPv4 ||
+				!ips[0].Is4() || !ips[1].Is4() || ips[0] == ips[1] {
+				return enrollment.AssignmentPage{}, errors.New("invalid directory controller assignment")
+			}
+		}
 		if assignment.SubnetID != "" {
 			policy, err := r.assignedNetworkPolicy(ctx, scope, assignment, snapshot.Header.Revision)
 			if err != nil && !errors.Is(err, ErrPlacementSubnetUnavailable) {
@@ -191,6 +199,24 @@ func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionS
 // accounting. A lost response can be retried with the same placement request.
 type placementMutation func(context.Context, Reservation) ([]clientv3.Cmp, []clientv3.Op, error)
 
+func (r *Region) placementPolicy(ctx context.Context, key string, managed bool) (PlacementPolicy, int64, error) {
+	value, err := r.client.Get(ctx, key)
+	if err != nil {
+		return PlacementPolicy{}, 0, err
+	}
+	if len(value.Kvs) == 1 {
+		var policy PlacementPolicy
+		if json.Unmarshal(value.Kvs[0].Value, &policy) != nil {
+			return PlacementPolicy{}, 0, ErrPlacementPolicy
+		}
+		return policy, value.Kvs[0].ModRevision, nil
+	}
+	if managed && r.workloads != nil {
+		return r.workloads.defaultPlacement, 0, nil
+	}
+	return PlacementPolicy{}, 0, ErrPlacementPolicy
+}
+
 func (r *Region) ReservePlacement(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest) (Reservation, error) {
 	return r.reservePlacement(ctx, scope, wanted, nil)
 }
@@ -208,28 +234,15 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 	}
 	base := r.armPrefix(scope)
 	key := base + "placement-requests/" + wanted.ID
-	cellKey := r.reservationKey(scope, wanted.Cell, wanted.ID)
 	var groupGeneration int64
 	for range 12 {
 		if saved, found, err := r.placementRetry(ctx, key, wanted); found || err != nil {
 			return saved, err
 		}
 		policyKey := base + "placement-policy"
-		policies, err := r.client.Get(ctx, policyKey)
+		policy, policyRevision, err := r.placementPolicy(ctx, policyKey, extra != nil)
 		if err != nil {
 			return Reservation{}, err
-		}
-		var policy PlacementPolicy
-		var policyRevision int64
-		if len(policies.Kvs) == 1 {
-			if json.Unmarshal(policies.Kvs[0].Value, &policy) != nil {
-				return Reservation{}, ErrPlacementPolicy
-			}
-			policyRevision = policies.Kvs[0].ModRevision
-		} else if extra != nil && r.workloads != nil {
-			policy = r.workloads.defaultPlacement
-		} else {
-			return Reservation{}, ErrPlacementPolicy
 		}
 		tenant, err := r.counter(ctx, base+"placement-usage")
 		if err != nil {
@@ -241,7 +254,7 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 			}
 			return Reservation{}, ErrQuotaExceeded
 		}
-		candidate, err := r.chooseHost(ctx, scope, wanted, policy.Pools)
+		candidates, err := r.chooseHosts(ctx, scope, wanted, policy.Pools, 1)
 		if err != nil {
 			if errors.Is(err, ErrNoEligibleHost) {
 				if saved, found, retryErr := r.placementRetry(ctx, key, wanted); found || retryErr != nil {
@@ -250,13 +263,10 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 			}
 			return Reservation{}, err
 		}
-		expected := append(candidate.guards, tenant.compare(), clientv3.Compare(clientv3.Version(key), "=", 0),
-			clientv3.Compare(clientv3.Version(cellKey), "=", 0),
-			clientv3.Compare(clientv3.ModRevision(policyKey), "=", policyRevision))
+		candidate := candidates[0]
+		expected := []clientv3.Cmp{tenant.compare(), clientv3.Compare(clientv3.ModRevision(policyKey), "=", policyRevision)}
 		reservation := Reservation{PlacementRequest: wanted, Generation: operationID(), HostID: candidate.host.HostID, Pool: candidate.host.Pool}
-		hostKey := r.hostReservationKey(scope, reservation.HostID, reservation.ID)
-		expected = append(expected, clientv3.Compare(clientv3.Version(hostKey), "=", 0))
-		var bindings []clientv3.Op
+		var writes []clientv3.Op
 		if wanted.SubnetID != "" {
 			allocation, err := r.allocateSubnet(ctx, scope, wanted.SubnetID)
 			if err != nil {
@@ -271,18 +281,11 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 			groupGeneration = allocation.groupGeneration
 			reservation.PrivateIPv4 = allocation.address
 			expected = append(expected, allocation.guards...)
-			bindings = append(bindings, clientv3.OpPut(allocation.key, reservation.Generation))
+			writes = append(writes, clientv3.OpPut(allocation.key, reservation.Generation))
 		}
-		data, _ := json.Marshal(reservation)
-		assignment, _ := json.Marshal(enrollment.Assignment{ID: reservation.ID, Generation: reservation.Generation, Cell: reservation.Cell,
-			TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources,
-			SubnetID: wanted.SubnetID, PrivateIPv4: reservation.PrivateIPv4})
-		writes := append(bindings, clientv3.OpPut(key, string(data)), clientv3.OpPut(cellKey, string(data)),
-			clientv3.OpPut(hostKey, string(assignment)),
-			tenant.write(wanted.Resources), candidate.usage.write(wanted.Resources))
-		if wanted.SpreadSet != "" {
-			writes = append(writes, clientv3.OpPut(r.spreadHostKey(scope, wanted.SpreadSet, candidate.host.HostID), reservation.Generation))
-		}
+		hostGuards, hostWrites := r.placementWrites(scope, reservation, candidate, nil)
+		expected = append(expected, hostGuards...)
+		writes = append(append(writes, hostWrites...), tenant.write(wanted.Resources))
 		if extra != nil {
 			checks, additional, err := extra(ctx, reservation)
 			if err != nil {
@@ -300,6 +303,25 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 		}
 	}
 	return Reservation{}, errors.New("placement changed concurrently")
+}
+
+func (r *Region) placementWrites(scope arm.SubscriptionScope, reservation Reservation, candidate placementHost,
+	directory *enrollment.DirectoryAssignment) ([]clientv3.Cmp, []clientv3.Op) {
+	key := r.armPrefix(scope) + "placement-requests/" + reservation.ID
+	cell := r.reservationKey(scope, reservation.Cell, reservation.ID)
+	host := r.hostReservationKey(scope, reservation.HostID, reservation.ID)
+	data, _ := json.Marshal(reservation)
+	assignment, _ := json.Marshal(enrollment.Assignment{ID: reservation.ID, Generation: reservation.Generation, Cell: reservation.Cell,
+		TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: reservation.Role, Resources: reservation.Resources,
+		SubnetID: reservation.SubnetID, PrivateIPv4: reservation.PrivateIPv4, Directory: directory})
+	guards := append(candidate.guards, clientv3.Compare(clientv3.Version(key), "=", 0),
+		clientv3.Compare(clientv3.Version(cell), "=", 0), clientv3.Compare(clientv3.Version(host), "=", 0))
+	writes := []clientv3.Op{clientv3.OpPut(key, string(data)), clientv3.OpPut(cell, string(data)),
+		clientv3.OpPut(host, string(assignment)), candidate.usage.write(reservation.Resources)}
+	if reservation.SpreadSet != "" {
+		writes = append(writes, clientv3.OpPut(r.spreadHostKey(scope, reservation.SpreadSet, reservation.HostID), reservation.Generation))
+	}
+	return guards, writes
 }
 
 func (r *Region) placementRetry(ctx context.Context, key string, wanted PlacementRequest) (Reservation, bool, error) {
@@ -324,15 +346,16 @@ func (r *Region) spreadHostKey(scope arm.SubscriptionScope, set, host string) st
 	return r.armPrefix(scope) + "placement-spread/" + set + "/" + host
 }
 
-func (r *Region) chooseHost(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest, pools []string) (placementHost, error) {
+func (r *Region) chooseHosts(ctx context.Context, scope arm.SubscriptionScope, wanted PlacementRequest, pools []string, count int) ([]placementHost, error) {
 	available, err := r.client.Get(ctx, r.hostKey("live", ""), clientv3.WithPrefix())
 	if err != nil {
-		return placementHost{}, err
+		return nil, err
 	}
+	selected := make([]placementHost, 0, count)
 	for _, item := range available.Kvs {
 		var host enrollment.Availability
 		if json.Unmarshal(item.Value, &host) != nil || !identifier.MatchString(host.HostID) || string(item.Key) != r.hostKey("live", host.HostID) || item.Lease == 0 {
-			return placementHost{}, errors.New("invalid available host record")
+			return nil, errors.New("invalid available host record")
 		}
 		if host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) ||
 			wanted.NeedsContainerNetwork && !host.ContainerNetwork || wanted.NeedsStorage && (r.storage == nil || !slices.Contains(r.storage.workers, host.HostID)) {
@@ -341,14 +364,14 @@ func (r *Region) chooseHost(ctx context.Context, scope arm.SubscriptionScope, wa
 		drainKey := r.hostKey("drain", host.HostID)
 		drain, err := r.client.Get(ctx, drainKey, clientv3.WithCountOnly())
 		if err != nil {
-			return placementHost{}, err
+			return nil, err
 		}
 		if drain.Count != 0 {
 			continue
 		}
 		used, err := r.counter(ctx, r.hostKey("placement-usage", host.HostID))
 		if err != nil {
-			return placementHost{}, err
+			return nil, err
 		}
 		if !fits(host.Capacity, used.used, wanted.Resources) {
 			continue
@@ -359,16 +382,19 @@ func (r *Region) chooseHost(ctx context.Context, scope arm.SubscriptionScope, wa
 			key := r.spreadHostKey(scope, wanted.SpreadSet, host.HostID)
 			occupied, err := r.client.Get(ctx, key, clientv3.WithCountOnly())
 			if err != nil {
-				return placementHost{}, err
+				return nil, err
 			}
 			if occupied.Count != 0 {
 				continue
 			}
 			guards = append(guards, clientv3.Compare(clientv3.Version(key), "=", 0))
 		}
-		return placementHost{host: host, usage: used, guards: guards}, nil
+		selected = append(selected, placementHost{host: host, usage: used, guards: guards})
+		if len(selected) == count {
+			return selected, nil
+		}
 	}
-	return placementHost{}, ErrNoEligibleHost
+	return nil, ErrNoEligibleHost
 }
 
 // ReleasePlacement returns capacity after the caller has stopped the placement.

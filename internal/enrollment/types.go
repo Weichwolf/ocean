@@ -93,6 +93,16 @@ type Assignment struct {
 	PrivateIPv4        netip.Addr            `json:"privateIPv4,omitzero"`
 	Network            *network.SubnetPolicy `json:"network,omitempty"`
 	NetworkUnavailable bool                  `json:"networkUnavailable,omitempty"`
+	Directory          *DirectoryAssignment  `json:"directory,omitempty"`
+}
+
+// DirectoryAssignment identifies one controller and its peers in a private AD domain.
+type DirectoryAssignment struct {
+	DirectoryID     string        `json:"directoryId"`
+	DNSName         string        `json:"dnsName"`
+	NetBIOSName     string        `json:"netbiosName"`
+	ControllerIndex int           `json:"controllerIndex"`
+	ControllerIPv4  [2]netip.Addr `json:"controllerIPv4"`
 }
 
 type AssignmentPage struct {
