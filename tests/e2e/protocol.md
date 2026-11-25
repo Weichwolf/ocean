@@ -49,10 +49,10 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 
 Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
-disposable endpoint to verify the regional replica fencing transaction,
-cleanup acknowledgement and replacement scheduling. This case uses signed
-fixture power evidence. The physical-host run observes the actual power
-state through the site fencing authority.
+disposable endpoint to verify regional replica and writer fencing,
+acknowledgement, and replacement scheduling. This case uses signed fixture
+power evidence. The physical-host run observes the actual power state
+through the site fencing authority.
 
 Select `WORKPLACE-07` explicitly with `OCEAN_E2E_SAMBA_IMAGE` set to
 exercise encrypted backup recovery. The isolated probe deletes both original
@@ -81,6 +81,12 @@ security groups. The pinned CLI creates and finds the native group, adds and
 removes a workforce user, and verifies the actual membership. A Debian SMB
 client opens a fresh Kerberos session at each step and checks its access
 to a share restricted to the AD group.
+
+Select `WORKPLACE-12` with `OCEAN_E2E_SAMBA_IMAGE` set to verify actual
+Samba writer promotion on one host. The probe stops the first controller,
+promotes the second, tests Kerberos, existing member trust and writable
+policy, then joins a fresh read-only replica in the retired slot and verifies
+the updated policy and ACL.
 
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 

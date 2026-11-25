@@ -25,6 +25,15 @@ type directoryPlacement struct {
 	Controllers [directoryControllerCount]Reservation `json:"controllers"`
 	Bootstrap   []byte                                `json:"encryptedBootstrap"`
 	Repair      string                                `json:"repair,omitempty"`
+	WriterIndex int                                   `json:"writerIndex,omitempty"`
+	Promoting   bool                                  `json:"promoting,omitempty"`
+}
+
+func (placement directoryPlacement) writerSlot() int {
+	if placement.WriterIndex == 2 {
+		return 1
+	}
+	return 0
 }
 
 func (placement directoryPlacement) bootstrapLabel(key string) []byte {

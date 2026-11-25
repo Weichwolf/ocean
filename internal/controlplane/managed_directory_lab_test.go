@@ -456,11 +456,18 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	}
 	cancel()
 	<-done
-	testDirectoryReplicaReplacement(t, ctx, r, tenant, directory.ID, left, right, ready)
-	assertHealth(true, true, true)
-	if err := r.RevokeHost(ctx, left.HostID); err != nil {
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	r.directoryFencer = public
+	if err := r.bootstrapDirectoryFencing(ctx); err != nil {
+		t.Fatal(err)
+	}
+	right = testDirectoryReplicaReplacement(t, ctx, r, tenant, directory.ID, left, right, ready, private)
+	assertHealth(true, true, true)
+	seedHost("host-f", "approved", true)
+	testDirectoryPrimaryReplacement(t, ctx, r, tenant, directory, left, right, ready, private)
 	if bootstrap, err := r.HostDirectoryBootstrap(ctx, left.HostID, []byte(left.HostID), tenant.TenantID, left.Generation); bootstrap.Credential != nil || !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatal("a revoked primary could recover the bootstrap credential")
 	}
@@ -470,20 +477,12 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 	if err := commit(left, domainSID); !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatal("a revoked primary confirmed startup")
 	}
-	assertHealth(false, true, true)
+	assertHealth(true, true, true)
 }
 
 func testDirectoryReplicaReplacement(t *testing.T, ctx context.Context, r *Region, tenant identity.TenantReservation,
-	directoryID string, primary, retired Reservation, ready enrollment.DirectoryHealth) {
+	directoryID string, primary, retired Reservation, ready enrollment.DirectoryHealth, private ed25519.PrivateKey) Reservation {
 	t.Helper()
-	public, private, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.directoryFencer = public
-	if err := r.bootstrapDirectoryFencing(ctx); err != nil {
-		t.Fatal(err)
-	}
 	proof := identity.DirectoryReplicaFence{Action: identity.ReplaceDirectoryReplica, TenantID: tenant.TenantID,
 		SubscriptionID: tenant.SubscriptionID, DirectoryID: directoryID, HostID: retired.HostID, PlacementID: retired.ID,
 		Generation: retired.Generation, Observation: "PoweredOff", ObservedAt: time.Now().UTC()}
@@ -583,7 +582,7 @@ func testDirectoryReplicaReplacement(t *testing.T, ctx context.Context, r *Regio
 	var repair directoryReplicaRepair
 	if err != nil || len(receipt.Kvs) != 1 || json.Unmarshal(receipt.Kvs[0].Value, &repair) != nil ||
 		repair.ReplacementGeneration == "" || repair.ReplacementGeneration == retired.Generation ||
-		!ed25519.Verify(public, repair.SignedFence.Attestation, repair.SignedFence.Signature) {
+		!ed25519.Verify(r.directoryFencer, repair.SignedFence.Attestation, repair.SignedFence.Signature) {
 		t.Fatalf("no durable replacement receipt: %v", err)
 	}
 	replacement := assertPlacement(repair.ReplacementGeneration, "").Controllers[1]
@@ -618,4 +617,124 @@ func testDirectoryReplicaReplacement(t *testing.T, ctx context.Context, r *Regio
 	}
 	t.Logf("Rejected invalid power evidence and withheld placement until survivor acknowledgement. Transferred %s from %s to %s with a new generation and unchanged tenant capacity.",
 		replacement.PrivateIPv4, retired.HostID, replacement.HostID)
+	return replacement
+}
+
+func testDirectoryPrimaryReplacement(t *testing.T, ctx context.Context, r *Region, tenant identity.TenantReservation,
+	directory identity.ManagedDirectory, failed, survivor Reservation, ready enrollment.DirectoryHealth, key ed25519.PrivateKey) {
+	t.Helper()
+	proof := identity.DirectoryReplicaFence{Action: identity.ReplaceDirectoryPrimary, TenantID: tenant.TenantID,
+		SubscriptionID: tenant.SubscriptionID, DirectoryID: directory.ID, HostID: failed.HostID, PlacementID: failed.ID,
+		Generation: failed.Generation, Observation: "PoweredOff", ObservedAt: time.Now().UTC()}
+	data, _ := json.Marshal(proof)
+	signed := identity.SignedDirectoryFence{Attestation: data, Signature: ed25519.Sign(key, data)}
+	admit := func() error { return r.RequestDirectoryPrimaryReplacement(ctx, tenant, signed) }
+	if err := admit(); !errors.Is(err, identity.ErrDirectoryFencePending) {
+		t.Fatalf("the still-live primary could be replaced: %v", err)
+	}
+	if err := r.RequestDirectoryReplicaReplacement(ctx, tenant, signed); !errors.Is(err, identity.ErrDirectoryFenceDenied) {
+		t.Fatalf("a primary attestation was accepted for ordinary replica replacement: %v", err)
+	}
+	if _, err := r.client.Delete(ctx, r.hostKey("live", failed.HostID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.client.Delete(ctx, r.directoryObservationKey(tenant.TenantID, survivor.Generation)); err != nil {
+		t.Fatal(err)
+	}
+	if err := admit(); !errors.Is(err, identity.ErrDirectoryFencePending) {
+		t.Fatalf("promotion accepted a survivor with no recent observation: %v", err)
+	}
+	report := func(controller Reservation) {
+		t.Helper()
+		if err := r.ReportDirectoryHealth(ctx, controller.HostID, []byte(controller.HostID), tenant.TenantID, controller.Generation, ready); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(survivor)
+	if err := admit(); err != nil {
+		t.Fatal(err)
+	}
+	confirm := func(host Reservation, certificate []byte) error {
+		return r.ConfirmDirectoryReplicaRetirement(ctx, host.HostID, certificate, tenant.TenantID, host.Generation, failed.Generation)
+	}
+	if err := confirm(failed, []byte(failed.HostID)); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatalf("the fenced writer was able to acknowledge its own replacement: %v", err)
+	}
+	if err := confirm(survivor, []byte(failed.HostID)); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatalf("a foreign certificate acknowledged promotion: %v", err)
+	}
+	if err := confirm(survivor, []byte(survivor.HostID)); !errors.Is(err, enrollment.ErrDirectoryAssignmentChanged) {
+		t.Fatalf("the survivor's pre-promotion health was reused: %v", err)
+	}
+	placementKey := r.managedDirectoryPlacementKey(tenant.TenantID)
+	readPlacement := func() (directoryPlacement, int64) {
+		t.Helper()
+		rows, err := r.client.Get(ctx, placementKey)
+		var state directoryPlacement
+		if err != nil || rows.Count != 1 || json.Unmarshal(rows.Kvs[0].Value, &state) != nil {
+			t.Fatalf("could not inspect promotion placement: %v", err)
+		}
+		return state, rows.Header.Revision
+	}
+	if err := r.placeManagedDirectory(ctx, tenant.TenantID); err != nil {
+		t.Fatal(err)
+	}
+	pending, rev := readPlacement()
+	if !pending.Promoting || pending.writerSlot() != 1 || pending.Controllers != [2]Reservation{failed, survivor} {
+		t.Fatalf("replacement moved a reservation before promotion: %+v", pending)
+	}
+	if _, _, err := r.readyDirectoryWriter(ctx, directory, rev); !errors.Is(err, identity.ErrDirectoryJoinUnavailable) {
+		t.Fatalf("a directory mutation could choose a writer during promotion: %v", err)
+	}
+	if _, err := r.HostDirectoryGraphTask(ctx, survivor.HostID, []byte(survivor.HostID), tenant.TenantID, survivor.Generation); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatalf("the prospective writer could read an unconfirmed Graph task: %v", err)
+	}
+	assignment := func(controller Reservation) enrollment.DirectoryAssignment {
+		t.Helper()
+		page, err := r.HostAssignments(ctx, controller.HostID, []byte(controller.HostID), "")
+		if err == nil {
+			for _, a := range page.Assignments {
+				if a.Generation == controller.Generation && a.Directory != nil {
+					return *a.Directory
+				}
+			}
+		}
+		t.Fatalf("missing controller assignment: %v", err)
+		return enrollment.DirectoryAssignment{}
+	}
+	job := assignment(survivor)
+	if !job.IsWriter() || job.PromoteFrom != failed.Generation || job.ControllerIndex != 2 {
+		t.Fatalf("missing promotion authorization: %+v", job)
+	}
+	bootstrap, err := r.HostDirectoryBootstrap(ctx, survivor.HostID, []byte(survivor.HostID), tenant.TenantID, survivor.Generation)
+	if err != nil || bootstrap.DomainSID != ready.DomainSID || len(bootstrap.Credential) != 0 {
+		t.Fatalf("the promoted writer did not receive the established SID without a bootstrap credential: %v", err)
+	}
+	report(survivor)
+	if err := confirm(survivor, []byte(survivor.HostID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.placeManagedDirectory(ctx, tenant.TenantID); err != nil {
+		t.Fatal(err)
+	}
+	current, rev := readPlacement()
+	newReplica := current.Controllers[0]
+	if current.Promoting || current.Repair != "" || current.Controllers[1] != survivor || newReplica.HostID != "host-f" ||
+		newReplica.Generation == failed.Generation || newReplica.PrivateIPv4 != failed.PrivateIPv4 {
+		t.Fatalf("bad slot-one replacement: %+v", current)
+	}
+	if a := assignment(newReplica); a.IsWriter() || a.ControllerIndex != 1 || a.WriterIndex != 2 || a.ControllerIPv4 != job.ControllerIPv4 {
+		t.Fatalf("new DC01 was not assigned as the replica: %+v", a)
+	}
+	if a := assignment(survivor); !a.IsWriter() || a.PromoteFrom != "" {
+		t.Fatalf("promotion was not cleared after replacement: %+v", a)
+	}
+	if writer, _, err := r.readyDirectoryWriter(ctx, directory, rev); err != nil || writer != survivor {
+		t.Fatalf("the region did not route updates to the surviving writer: %v", err)
+	}
+	if err := admit(); err != nil {
+		t.Fatalf("accepted primary fence did not replay after replacement: %v", err)
+	}
+	report(newReplica)
+	t.Log("Primary fencing required fresh survivor health, withheld writer work and placement pending acknowledgement, then routed updates to DC02 and reserved a new read-only DC01.")
 }

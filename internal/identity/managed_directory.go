@@ -70,6 +70,7 @@ type DirectoryControllerReadiness struct {
 	DNSName     string     `json:"dnsName"`
 	PrivateIPv4 netip.Addr `json:"privateIPv4"`
 	Ready       bool       `json:"ready"`
+	Writer      bool       `json:"writer"`
 }
 
 func (d ManagedDirectory) Valid(tenant TenantReservation) bool {
@@ -134,7 +135,7 @@ func (c *Compatibility) managedDirectory(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	if req.Method == http.MethodPost {
-		c.replaceDirectoryReplica(ctx, w, req, *record)
+		c.replaceDirectoryController(ctx, w, req, *record, strings.HasSuffix(req.URL.Path, "/replacePrimary"))
 		return
 	}
 	if req.Method != http.MethodPut {

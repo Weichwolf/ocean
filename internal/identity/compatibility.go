@@ -128,6 +128,7 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory", c.managedDirectory)
 		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory", c.managedDirectory)
 		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/replaceReplica", c.managedDirectory)
+		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/replacePrimary", c.managedDirectory)
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}", c.managedDirectory)
 		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}", c.managedDirectory)
 		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}/close", c.managedDirectory)

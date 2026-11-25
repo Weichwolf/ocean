@@ -10,6 +10,7 @@ import (
 )
 
 const ReplaceDirectoryReplica = "ReplaceDirectoryReplica"
+const ReplaceDirectoryPrimary = "ReplaceDirectoryPrimary"
 
 // DirectoryReplicaFence binds a power-off observation to the exact assignment
 // being retired. The authority signs the serialized attestation.
@@ -39,9 +40,22 @@ type directoryReplacementStore interface {
 	RequestDirectoryReplicaReplacement(context.Context, TenantReservation, SignedDirectoryFence) error
 }
 
-func (c *Compatibility) replaceDirectoryReplica(ctx context.Context, w http.ResponseWriter, req *http.Request, tenant TenantReservation) {
-	store, enabled := c.directories.(directoryReplacementStore)
-	if !enabled {
+type directoryPrimaryReplacementStore interface {
+	RequestDirectoryPrimaryReplacement(context.Context, TenantReservation, SignedDirectoryFence) error
+}
+
+func (c *Compatibility) replaceDirectoryController(ctx context.Context, w http.ResponseWriter, req *http.Request, tenant TenantReservation, primary bool) {
+	var replace func(context.Context, TenantReservation, SignedDirectoryFence) error
+	code, pending := "DirectoryReplicaUnavailable", ErrDirectoryFencePending.Error()
+	if primary {
+		if store, enabled := c.directories.(directoryPrimaryReplacementStore); enabled {
+			replace = store.RequestDirectoryPrimaryReplacement
+		}
+		code, pending = "DirectoryPrimaryUnavailable", "The directory primary is unavailable for fenced replacement."
+	} else if store, enabled := c.directories.(directoryReplacementStore); enabled {
+		replace = store.RequestDirectoryReplicaReplacement
+	}
+	if replace == nil {
 		http.NotFound(w, req)
 		return
 	}
@@ -52,11 +66,11 @@ func (c *Compatibility) replaceDirectoryReplica(ctx context.Context, w http.Resp
 		armError(w, http.StatusBadRequest, "InvalidRequest", "Submit one signed directory fence attestation.")
 		return
 	}
-	switch err := store.RequestDirectoryReplicaReplacement(ctx, tenant, fence); {
+	switch err := replace(ctx, tenant, fence); {
 	case errors.Is(err, ErrDirectoryFenceDenied):
 		armError(w, http.StatusForbidden, "InvalidDirectoryFence", ErrDirectoryFenceDenied.Error())
 	case errors.Is(err, ErrDirectoryFencePending):
-		armError(w, http.StatusConflict, "DirectoryReplicaUnavailable", ErrDirectoryFencePending.Error())
+		armError(w, http.StatusConflict, code, pending)
 	case err != nil:
 		directoryError(w, err)
 	default:

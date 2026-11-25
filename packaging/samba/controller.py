@@ -54,16 +54,20 @@ def directory_settings():
         raise ValueError("invalid directory configuration")
     settings = {"directoryId": ident, "domain": domain, "netbios": netbios, "address": str(address)}
     index = os.environ.get("OCEAN_AD_CONTROLLER", "1")
+    writer = os.environ.get("OCEAN_AD_WRITER", "1")
+    if index not in ("1", "2") or writer not in ("1", "2"):
+        raise ValueError("invalid directory controller index")
     if index == "2":
+        settings["controller"] = 2
+    settings["writer"] = int(writer)
+    if index != writer:
         primary = ipaddress.IPv4Address(os.environ["OCEAN_AD_PRIMARY"])
         if primary == address or primary.is_loopback or primary.is_multicast or primary.is_unspecified:
             raise ValueError("invalid primary directory address")
-        settings.update(controller=2, primary=str(primary))
-    elif index != "1":
-        raise ValueError("invalid controller index")
+        settings["primary"] = str(primary)
     recovery_name = os.environ.get("OCEAN_AD_RECOVERY_NAME")
     if recovery_name:
-        if index != "1" or len(recovery_name) > 15 or recovery_name in ("dc01", "dc02") or not DNS_LABEL.fullmatch(recovery_name):
+        if index != "1" or writer != "1" or len(recovery_name) > 15 or recovery_name in ("dc01", "dc02") or not DNS_LABEL.fullmatch(recovery_name):
             raise ValueError("invalid standalone recovery controller name")
         settings["recoveryName"] = recovery_name
     return settings
@@ -71,6 +75,14 @@ def directory_settings():
 
 def controller_name(settings):
     return settings.get("recoveryName", f"dc0{settings.get('controller', 1)}")
+
+
+def is_writer(settings):
+    return settings.get("controller", 1) == settings.get("writer", 1)
+
+
+def peer_name(settings):
+    return f"dc0{3 - settings.get('controller', 1)}"
 
 
 def bootstrap_password():
@@ -147,7 +159,7 @@ def join_replica(root, settings):
     with tempfile.TemporaryDirectory() as private:
         cache = primary_ticket(Path(private), settings)
         code = samba_tool(
-            "domain", "join", settings["domain"], "DC", "--server=dc01." + settings["domain"],
+            "domain", "join", settings["domain"], "DC", "--server=" + peer_name(settings) + "." + settings["domain"],
             "--dns-backend=SAMBA_INTERNAL", "--targetdir=" + str(root),
             "--use-kerberos=required", "--use-krb5-ccache=" + cache,
             "--option=dns forwarder =", "--option=vfs objects = dfs_samba4 acl_xattr xattr_tdb",
@@ -275,7 +287,7 @@ def download_policy(config, settings, directory):
     archive = directory / policy.ARCHIVE
     target_kerberos(directory, settings, settings["primary"])
     subprocess.run([
-        "/usr/bin/smbclient", f"//dc01.{settings['domain']}/{policy.SHARE}", "-s", str(config),
+        "/usr/bin/smbclient", f"//{peer_name(settings)}.{settings['domain']}/{policy.SHARE}", "-s", str(config),
         "-P", "--use-kerberos=required", "--client-protection=encrypt",
         "-c", f"get {policy.ARCHIVE} {archive}",
     ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
@@ -309,9 +321,17 @@ def refresh_policy(config, settings, previous):
         return digest
 
 
+def checkpoint_identity(settings):
+    # Writer and peer are placement decisions. The directory, slot and local
+    # address identify the keys and database held in this volume.
+    return {key: value for key, value in settings.items() if key not in ("writer", "primary")}
+
+
 def read_checkpoint(checkpoint, settings):
     record = json.loads(checkpoint.read_text())
-    if record.get("settings") != settings or not re.fullmatch(r"controller-[a-f0-9]{16}", record.get("root", "")):
+    saved = record.get("settings")
+    if (not isinstance(saved, dict) or checkpoint_identity(saved) != checkpoint_identity(settings)
+            or not re.fullmatch(r"controller-[a-f0-9]{16}", record.get("root", ""))):
         raise ValueError("the persistent directory belongs to another controller")
     root = STATE / record["root"]
     if not (root / "etc/smb.conf").is_file():
@@ -322,7 +342,7 @@ def read_checkpoint(checkpoint, settings):
 def write_checkpoint(checkpoint, root, settings):
     temporary = checkpoint.with_suffix(".pending")
     with temporary.open("w") as stream:
-        json.dump({"settings": settings, "root": root.name}, stream)
+        json.dump({"settings": checkpoint_identity(settings), "root": root.name}, stream)
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(checkpoint)
@@ -343,8 +363,8 @@ def initialize(settings, expected_sid):
     checkpoint = STATE / "controller.json"
     if checkpoint.exists():
         return read_checkpoint(checkpoint, settings) / "etc/smb.conf"
-    replica = settings.get("controller") == 2
-    if settings.get("recoveryName") or (expected_sid and not replica):
+    replica = not is_writer(settings)
+    if settings.get("recoveryName") or (not replica and (expected_sid or settings.get("controller") == 2)):
         raise DirectoryIdentityError("the established primary requires its existing directory volume")
     joined = STATE / "replica-joined.json"
     if joined.exists():
@@ -398,7 +418,7 @@ def backup_identity(settings, sid):
 
 
 def authorize_join(settings, stage):
-    if settings.get("controller") == 2:
+    if not is_writer(settings):
         raise DirectoryIdentityError("manage join authorizations on the designated directory writer")
     config = read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf"
     database = domain_join.open_directory(config)
@@ -416,7 +436,7 @@ def authorize_join(settings, stage):
 
 def backup_domain(settings):
     os.umask(0o077)
-    if settings.get("controller") == 2:
+    if not is_writer(settings):
         raise DirectoryIdentityError("back up the designated SYSVOL writer")
     config = read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf"
     sid = local_domain_sid(config)
@@ -506,13 +526,52 @@ def restore_domain(settings, checksum):
                     shutil.rmtree(root)
 
 
-def retire_replica(settings, generation):
+def verify_promotion_sysvol(config):
+    # An AD policy version can replicate ahead of its files. A mismatched
+    # snapshot must never become the authoritative SYSVOL.
+    with open(os.devnull, "wb") as output:
+        policy.capture(config, output, verify_directory=True)
+
+
+def promote_writer(config, database):
+    from samba import dn_from_dns_name
+    from samba.netcmd.fsmo import get_fsmo_roleowner
+
+    verify_promotion_sysvol(config)
+    subprocess.run(["/usr/bin/samba-tool", "fsmo", "seize", "--role=all", "--force", "-s", str(config)],
+                   timeout=30, check=True, stdout=subprocess.DEVNULL)
+    domain = database.domain_dn()
+    forest = dn_from_dns_name(database.forest_dns_name())
+    roles = {
+        "rid": "CN=RID Manager$,CN=System," + domain,
+        "pdc": domain,
+        "infrastructure": "CN=Infrastructure," + domain,
+        "naming": "CN=Partitions," + str(database.get_config_basedn()),
+        "schema": database.get_schema_basedn(),
+        "domaindns": "CN=Infrastructure,DC=DomainDnsZones," + domain,
+        "forestdns": "CN=Infrastructure,DC=ForestDnsZones," + forest,
+    }
+    owner = ldb.Dn(database, database.get_dsServiceName())
+    if any(get_fsmo_roleowner(database, str(dn), role) != owner for role, dn in roles.items()):
+        raise DirectoryIdentityError("the local controller does not own every FSMO role")
+
+
+def require_promoted_volume(config):
+    root = config.parent.parent
+    if (STATE / "replica-joined.json").is_file():
+        records = root / "private/replica-retirements"
+        if not any(GENERATION.fullmatch(record.stem) and record.read_text() == record.stem + "\n"
+                   for record in records.glob("*.promotion")):
+            raise DirectoryIdentityError("a former replica requires a completed local promotion")
+
+
+def retire_replica(settings, generation, *, promotion=False, status=False):
     from samba.auth import system_session
     from samba.param import LoadParm
     from samba.remove_dc import remove_dc
     from samba.samdb import SamDB
 
-    if settings.get("controller") == 2 or not GENERATION.fullmatch(generation):
+    if not is_writer(settings) or not GENERATION.fullmatch(generation):
         raise DirectoryIdentityError("replica retirement requires the assigned primary")
     os.umask(0o077)
     root = read_checkpoint(STATE / "controller.json", settings)
@@ -521,24 +580,31 @@ def retire_replica(settings, generation):
     lp = LoadParm()
     lp.load(str(config))
     database = SamDB(lp=lp, session_info=system_session())
-    if expected and database.get_domain_sid() != expected:
+    if (promotion and not expected) or (expected and database.get_domain_sid() != expected):
         raise DirectoryIdentityError("replica retirement requires the established domain")
     records = root / "private/replica-retirements"
     records.mkdir(exist_ok=True)
-    receipt = records / generation
+    receipt = records / (generation + (".promotion" if promotion else ""))
+    peer = peer_name(settings).upper()
     with (records / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if receipt.exists():
+            if receipt.read_text() != generation + "\n":
+                raise DirectoryIdentityError("the local retirement receipt is invalid")
             return
+        if status:
+            raise DirectoryIdentityError("the local writer promotion has not finished")
+        if promotion:
+            promote_writer(config, database)
         servers = database.search(base=database.get_config_basedn(), scope=ldb.SCOPE_SUBTREE,
-                                  expression="(&(objectClass=server)(cn=DC02))", attrs=[])
+                                  expression=f"(&(objectClass=server)(cn={peer}))", attrs=[])
         if servers:
             # Samba's removal transaction covers the server, account and DNS records.
-            remove_dc(database, logging.getLogger("ocean-directory"), "DC02")
+            remove_dc(database, logging.getLogger("ocean-directory"), peer)
         elif database.search(base=database.domain_dn(), scope=ldb.SCOPE_SUBTREE,
-                             expression="(&(objectClass=computer)(sAMAccountName=DC02$))", attrs=[]):
+                             expression=f"(&(objectClass=computer)(sAMAccountName={peer}$))", attrs=[]):
             raise DirectoryIdentityError("the retired replica metadata is inconsistent")
-        pending = receipt.with_suffix(".pending")
+        pending = records / (receipt.name + ".pending")
         with pending.open("w") as stream:
             stream.write(generation + "\n")
             stream.flush()
@@ -630,8 +696,8 @@ def serve(settings):
     with (STATE / "owner.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         wait_for_address(settings["address"])
-        if settings.get("controller") == 2:
-            primary = f"\n{settings['primary']} dc01.{settings['domain']}\n"
+        if not is_writer(settings):
+            primary = f"\n{settings['primary']} {peer_name(settings)}.{settings['domain']}\n"
             hosts = Path("/etc/hosts")
             if primary.strip() not in hosts.read_text().splitlines():
                 with hosts.open("a") as stream:
@@ -642,6 +708,9 @@ def serve(settings):
         require_authorization = os.environ.get("OCEAN_AD_REQUIRE_AUTHORIZATION") == "1"
         if settings.get("recoveryName") and (not expected_sid or not require_authorization):
             raise DirectoryIdentityError("the recovered controller requires SID authorization")
+        promotion = os.environ.get("OCEAN_AD_PROMOTE")
+        if promotion and (not is_writer(settings) or not expected_sid or not require_authorization):
+            raise DirectoryIdentityError("writer promotion requires regional SID authorization")
         config = initialize(settings, expected_sid)
         if expected_sid or require_authorization:
             sid = local_domain_sid(config)
@@ -649,19 +718,22 @@ def serve(settings):
                 raise DirectoryIdentityError("the local directory SID differs from the established SID")
             if require_authorization:
                 wait_for_startup_authorization(sid)
+        if promotion:
+            retire_replica(settings, promotion, promotion=True)
+        if is_writer(settings):
+            require_promoted_volume(config)
+        content = config.read_text()
+        configured = policy.set_share_read_only(content, not is_writer(settings))
+        if content != configured:
+            policy.replace_config(config, configured)
         maintain_policy = True
-        if settings.get("controller") == 2:
-            content = config.read_text()
-            configured = policy.set_share_read_only(content, True)
-            if content != configured:
-                policy.replace_config(config, configured)
-        else:
+        if is_writer(settings):
             replica = os.environ.get("OCEAN_AD_REPLICA")
             if replica:
                 address = ipaddress.IPv4Address(replica)
                 if address.is_loopback or address.is_multicast or address.is_unspecified or replica == settings["address"]:
                     raise ValueError("invalid replica policy address")
-            policy.configure_export(config, settings, replica)
+            policy.configure_export(config, settings, replica, peer_name(settings).upper())
             maintain_policy = bool(replica)
         # Samba performs authenticated dynamic registration against its own
         # DNS server. The container never uses a host or public resolver.
@@ -679,7 +751,7 @@ def serve(settings):
         if maintain_policy:
             workers.append(subprocess.Popen([sys.executable, str(SCRIPT), "sync-policy", str(config)],
                                             stdin=subprocess.DEVNULL))
-        if settings.get("controller") != 2:
+        if is_writer(settings):
             workers.append(subprocess.Popen([sys.executable, str(SCRIPT), "expire-joins", str(config)],
                                             stdin=subprocess.DEVNULL))
         stopping = False
@@ -707,7 +779,7 @@ def sync_policy(config, settings):
     digest = None
     while True:
         try:
-            if settings.get("controller") == 2:
+            if not is_writer(settings):
                 digest = refresh_policy(config, settings, digest)
             else:
                 policy.publish(config)
@@ -735,13 +807,13 @@ if __name__ == "__main__":
         settings = directory_settings()
         if len(sys.argv) == 3 and sys.argv[1] == "provision":
             provision(Path(sys.argv[2]), settings)
-        elif len(sys.argv) == 3 and sys.argv[1] == "join" and settings.get("controller") == 2:
+        elif len(sys.argv) == 3 and sys.argv[1] == "join" and not is_writer(settings):
             join_replica(Path(sys.argv[2]), settings)
-        elif len(sys.argv) == 3 and sys.argv[1] == "seed" and settings.get("controller") == 2:
+        elif len(sys.argv) == 3 and sys.argv[1] == "seed" and not is_writer(settings):
             seed_replica(Path(sys.argv[2]), settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "sync-policy":
             sync_policy(Path(sys.argv[2]), settings)
-        elif len(sys.argv) == 3 and sys.argv[1] == "expire-joins" and settings.get("controller") != 2:
+        elif len(sys.argv) == 3 and sys.argv[1] == "expire-joins" and is_writer(settings):
             expire_joins(Path(sys.argv[2]))
         elif len(sys.argv) == 2 and sys.argv[1] == "health":
             health(settings)
@@ -754,6 +826,10 @@ if __name__ == "__main__":
             authorize_startup(sys.argv[2], sys.argv[3])
         elif len(sys.argv) == 3 and sys.argv[1] == "retire-replica":
             retire_replica(settings, sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == "promotion-status":
+            retire_replica(settings, sys.argv[2], promotion=True, status=True)
+        elif len(sys.argv) == 2 and sys.argv[1] == "promotion-preflight" and not is_writer(settings):
+            verify_promotion_sysvol(read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf")
         elif len(sys.argv) == 2 and sys.argv[1] == "backup-domain":
             backup_domain(settings)
         elif len(sys.argv) == 3 and sys.argv[1] == "restore-domain":
@@ -761,7 +837,7 @@ if __name__ == "__main__":
         elif len(sys.argv) == 2 and sys.argv[1] in ("stage-join", "close-join"):
             authorize_join(settings, stage=sys.argv[1] == "stage-join")
         elif len(sys.argv) == 2 and sys.argv[1] == "graph":
-            if settings.get("controller") == 2:
+            if not is_writer(settings):
                 raise DirectoryIdentityError("Graph tasks require the directory writer")
             config = read_checkpoint(STATE / "controller.json", settings) / "etc/smb.conf"
             database = domain_join.open_directory(config)

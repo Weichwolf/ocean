@@ -74,10 +74,12 @@ func (j *joinClient) directoryTasks(ctx context.Context) (map[string]enrollment.
 		if !taskIdentityPattern.MatchString(assignment.ID) || !taskIdentityPattern.MatchString(assignment.Generation) ||
 			!taskIdentityPattern.MatchString(assignment.TenantID) || !taskIdentityPattern.MatchString(assignment.SubscriptionID) ||
 			!directoryHostname.MatchString(directory.DNSName) || index < 1 || index > len(peers) || peers[index-1] != assignment.PrivateIPv4 ||
+			directory.WriterIndex < 0 || directory.WriterIndex > len(peers) ||
 			!assignment.PrivateIPv4.Is4() || assignment.Resources.CPUMillis < 1 || assignment.Resources.MemoryMiB < 1 {
 			return nil, errors.New("invalid directory task in host assignments")
 		}
-		if directory.RetireReplica != "" && (index != 1 || !taskIdentityPattern.MatchString(directory.RetireReplica)) {
+		if directory.RetireReplica != "" && (!directory.IsWriter() || !taskIdentityPattern.MatchString(directory.RetireReplica)) ||
+			directory.PromoteFrom != "" && (!directory.IsWriter() || !taskIdentityPattern.MatchString(directory.PromoteFrom) || directory.RetireReplica != "") {
 			return nil, errors.New("invalid directory retirement task")
 		}
 		name := containerName(directoryTaskID(assignment))
@@ -112,7 +114,7 @@ func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assign
 		clear(secret)
 		return bootstrap, errors.New("invalid directory identity response")
 	}
-	establishedPrimary := sids[0] != "" && a.Directory.ControllerIndex == 1
+	establishedPrimary := sids[0] != "" && a.Directory.IsWriter()
 	if err != nil || establishedPrimary && len(secret) != 0 || !establishedPrimary && (len(secret) < 24 || len(secret) > 128) {
 		clear(secret)
 		return bootstrap, errors.New("invalid directory bootstrap response")
@@ -121,6 +123,8 @@ func (j *joinClient) directoryBootstrap(ctx context.Context, a enrollment.Assign
 }
 
 const directoryControllerPath = "/usr/local/lib/ocean-directory/controller.py"
+
+var errDirectoryPromotionBlocked = errors.New("the directory replica is still serving read-only SYSVOL while promotion awaits a consistent policy snapshot")
 
 func (j *joinClient) confirmDirectoryStartup(ctx context.Context, name string, assignment enrollment.Assignment) error {
 	probe, cancel := context.WithTimeout(ctx, 4*time.Second)
@@ -173,10 +177,14 @@ func (j *joinClient) reportDirectoryHealth(ctx context.Context, assignment enrol
 	return nil
 }
 
-func (j *joinClient) retireDirectoryReplica(ctx context.Context, name string, assignment enrollment.Assignment) error {
+func (j *joinClient) acknowledgeDirectoryRetirement(ctx context.Context, name string, assignment enrollment.Assignment) error {
 	retired := assignment.Directory.RetireReplica
+	action := "retire-replica"
+	if assignment.Directory.PromoteFrom != "" {
+		retired, action = assignment.Directory.PromoteFrom, "promotion-status"
+	}
 	if err := podmanAction(ctx, "exec", name, "/usr/bin/timeout", "12", "/usr/bin/python3",
-		directoryControllerPath, "retire-replica", retired); err != nil {
+		directoryControllerPath, action, retired); err != nil {
 		return err
 	}
 	body, _ := json.Marshal(map[string]string{"retiredGeneration": retired})
@@ -244,33 +252,57 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 	}
 	for name, task := range tasks {
 		var health enrollment.DirectoryHealth
+		var syncErr error
 		if !task.NetworkUnavailable && task.Network != nil {
-			if err := j.syncDirectoryContainer(ctx, name, task); err != nil {
-				failures = append(failures, err)
-			} else {
+			syncErr = j.syncDirectoryContainer(ctx, name, task)
+			failures = append(failures, syncErr)
+			if syncErr == nil || errors.Is(syncErr, errDirectoryPromotionBlocked) {
 				health = directoryControllerHealth(ctx, name)
-				if !health.Ready {
-					failures = append(failures, j.confirmDirectoryStartup(ctx, name, task))
-				}
+			}
+			if syncErr == nil && !health.Ready {
+				failures = append(failures, j.confirmDirectoryStartup(ctx, name, task))
 			}
 		}
 		reportErr := j.reportDirectoryHealth(ctx, task, health)
 		failures = append(failures, reportErr)
-		if reportErr == nil && health.Ready && task.Directory.ControllerIndex == 1 {
-			failures = append(failures, j.runDirectoryJoinTask(ctx, name, task))
-			failures = append(failures, j.runDirectoryGraphTask(ctx, name, task))
-		}
-		if health.Ready && task.Directory.RetireReplica != "" {
-			failures = append(failures, j.retireDirectoryReplica(ctx, name, task))
+		if syncErr == nil && reportErr == nil && health.Ready && task.Directory.IsWriter() {
+			if task.Directory.RetireReplica != "" || task.Directory.PromoteFrom != "" {
+				if err := j.acknowledgeDirectoryRetirement(ctx, name, task); err != nil {
+					failures = append(failures, err)
+					continue
+				}
+			}
+			failures = append(failures, j.runDirectoryJoinTask(ctx, name, task), j.runDirectoryGraphTask(ctx, name, task))
 		}
 	}
 	return errors.Join(failures...)
 }
 
 func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a enrollment.Assignment) error {
+	directory := a.Directory
 	status, present, err := inspectContainer(ctx, name, localPodman)
-	if err != nil || status.Running {
+	if err != nil {
 		return err
+	}
+	if status.Running {
+		if directory.PromoteFrom == "" {
+			return nil
+		}
+		label, err := localPodman(ctx, "inspect", "--type", "container", "--format",
+			`{{index .Config.Labels "ocean.directory-promotion"}}`, name).Output()
+		if err != nil {
+			return errors.New("could not inspect the directory promotion generation")
+		}
+		if strings.TrimSpace(string(label)) == directory.PromoteFrom {
+			return nil
+		}
+		if err := podmanAction(ctx, "exec", name, "/usr/bin/timeout", "8", "/usr/bin/python3",
+			directoryControllerPath, "promotion-preflight"); err != nil {
+			return errDirectoryPromotionBlocked
+		}
+		if err := podmanAction(ctx, "stop", "--time", "5", name); err != nil {
+			return err
+		}
 	}
 	bootstrap, err := j.directoryBootstrap(ctx, a)
 	if err != nil {
@@ -299,7 +331,6 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 			return err
 		}
 	}
-	directory := a.Directory
 	size := strconv.FormatInt(a.Resources.MemoryMiB, 10) + "m"
 	cpu := strconv.FormatFloat(float64(a.Resources.CPUMillis)/1000, 'f', 3, 64)
 	index := strconv.Itoa(directory.ControllerIndex)
@@ -314,15 +345,21 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 		"--mount", "type=volume,source=" + name + ",target=/var/lib/ocean-ad",
 		"--env", "OCEAN_AD_DNS_NAME=" + directory.DNSName, "--env", "OCEAN_AD_NETBIOS_NAME=" + directory.NetBIOSName,
 		"--env", "OCEAN_AD_DIRECTORY_ID=" + directory.DirectoryID, "--env", "OCEAN_AD_ADDRESS=" + a.PrivateIPv4.String(),
-		"--env", "OCEAN_AD_CONTROLLER=" + index, "--env", "OCEAN_AD_REQUIRE_AUTHORIZATION=1",
+		"--env", "OCEAN_AD_CONTROLLER=" + index, "--env", "OCEAN_AD_WRITER=" + strconv.Itoa(max(directory.WriterIndex, 1)),
+		"--env", "OCEAN_AD_REQUIRE_AUTHORIZATION=1",
 		"--env", "OCEAN_AD_EXPECTED_SID=" + bootstrap.DomainSID}
 	if len(bootstrap.Credential) > 0 {
 		args = append(args, "--secret", name+",target=ocean-directory-bootstrap,mode=0400")
 	}
-	if directory.ControllerIndex == 2 {
-		args = append(args, "--env", "OCEAN_AD_PRIMARY="+directory.ControllerIPv4[0].String())
-	} else if directory.ControllerIPv4[1].Is4() {
-		args = append(args, "--env", "OCEAN_AD_REPLICA="+directory.ControllerIPv4[1].String())
+	peer := directory.ControllerIPv4[2-directory.ControllerIndex]
+	if !directory.IsWriter() {
+		args = append(args, "--env", "OCEAN_AD_PRIMARY="+peer.String())
+	} else if peer.Is4() {
+		args = append(args, "--env", "OCEAN_AD_REPLICA="+peer.String())
+	}
+	if directory.PromoteFrom != "" {
+		args = append(args, "--label", "ocean.directory-promotion="+directory.PromoteFrom,
+			"--env", "OCEAN_AD_PROMOTE="+directory.PromoteFrom)
 	}
 	return podmanAction(ctx, append(args, "--", j.config.DirectoryImage)...)
 }

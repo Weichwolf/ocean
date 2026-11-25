@@ -38,7 +38,7 @@ def replace_config(config, content):
     sync_directory(config.parent)
 
 
-def configure_export(config, settings, replica):
+def configure_export(config, settings, replica, peer):
     original = config.read_text()
     configured = re.sub(rf"(?mis)^\[{re.escape(SHARE)}\]\n.*?(?=^\[|\Z)", "", original)
     if replica:
@@ -47,7 +47,7 @@ def configure_export(config, settings, replica):
         folder.chmod(0o711)
         configured = (configured.rstrip() + f"\n\n[{SHARE}]\n\tpath = {folder}\n"
                       "\tread only = yes\n\tbrowseable = no\n\tguest ok = no\n"
-                      f"\tvalid users = {settings['netbios']}\\DC02$\n\thosts allow = {replica}\n"
+                      f"\tvalid users = {settings['netbios']}\\{peer}$\n\thosts allow = {replica}\n"
                       "\tserver smb encrypt = required\n")
     if configured != original:
         replace_config(config, configured)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -36,21 +37,23 @@ func (r *Region) placeDirectoryReplicaReplacement(ctx context.Context, tenantID,
 	if placement.Repair != retired {
 		return nil
 	}
-	old, primary := placement.Controllers[1], placement.Controllers[0]
+	writerSlot := placement.writerSlot()
+	replicaSlot := 1 - writerSlot
+	old, primary := placement.Controllers[replicaSlot], placement.Controllers[writerSlot]
 	if len(receipts) != 1 || json.Unmarshal(receipts[0].Value, &repair) != nil || repair.Fence.HostID != old.HostID ||
 		repair.Fence.PlacementID != old.ID ||
 		repair.Fence.Generation != retired || old.Generation != retired || repair.PrimaryGeneration != primary.Generation ||
 		repair.ReplacementGeneration != "" || repair.Fence.DirectoryID != directory.ID {
 		return errors.New("invalid managed directory replacement receipt")
 	}
-	if !repair.MetadataRemoved {
+	if !repair.MetadataRemoved || placement.Promoting {
 		return nil
 	}
 	scope := arm.SubscriptionScope{TenantID: tenantID, SubscriptionID: tenant.SubscriptionID}
 	if !validScope(scope) || !validCapacity(old.Resources) || !old.PrivateIPv4.Is4() {
 		return errors.New("invalid managed directory reservation for replacement")
 	}
-	sid, healthGuards, err := r.directoryControllerHealth(ctx, *directory, scope, primary, 0, revision)
+	sid, healthGuards, err := r.directoryControllerHealth(ctx, *directory, scope, primary, writerSlot, revision)
 	if err != nil || sid == "" {
 		return err
 	}
@@ -97,28 +100,36 @@ func (r *Region) placeDirectoryReplicaReplacement(ctx context.Context, tenantID,
 		item := items[0]
 		var reservation Reservation
 		if n < 2 && (json.Unmarshal(item.Value, &reservation) != nil || reservation != old) ||
-			n == 2 && !directoryAssignmentMatches(item.Value, *directory, old, 1) {
+			n == 2 && !directoryAssignmentMatches(item.Value, *directory, old, replicaSlot) {
 			return errors.New("inconsistent directory placement index during replacement")
 		}
 		guards = append(guards, clientv3.Compare(clientv3.ModRevision(string(item.Key)), "=", item.ModRevision))
 	}
 	var primaryAssignment enrollment.Assignment
 	primaryRaw := existing.Responses[3].GetResponseRange().Kvs[0].Value
-	if !directoryAssignmentMatches(primaryRaw, *directory, primary, 0) ||
-		json.Unmarshal(primaryRaw, &primaryAssignment) != nil || primaryAssignment.Directory.RetireReplica != retired {
+	action, audit := identity.ReplaceDirectoryReplica, "Ocean.Identity/directories/replaceReplica/action"
+	if repair.Fence.Action == identity.ReplaceDirectoryPrimary {
+		action, audit = identity.ReplaceDirectoryPrimary, "Ocean.Identity/directories/replacePrimary/action"
+	}
+	if !directoryAssignmentMatches(primaryRaw, *directory, primary, writerSlot) ||
+		json.Unmarshal(primaryRaw, &primaryAssignment) != nil || repair.Fence.Action != action || !primaryAssignment.Directory.IsWriter() ||
+		action == identity.ReplaceDirectoryPrimary && primaryAssignment.Directory.PromoteFrom != retired ||
+		action == identity.ReplaceDirectoryReplica && primaryAssignment.Directory.RetireReplica != retired {
 		return errors.New("invalid surviving directory assignment during replacement")
 	}
 	primaryAssignment.Directory.RetireReplica = ""
+	primaryAssignment.Directory.PromoteFrom = ""
 	current := old
 	current.HostID, current.Pool, current.Generation = target.host.HostID, target.host.Pool, operationID()
-	placement.Controllers[1], placement.Repair = current, ""
+	placement.Controllers[replicaSlot], placement.Repair = current, ""
 	repair.ReplacementGeneration = current.Generation
 	nextKey := r.hostReservationKey(scope, current.HostID, current.ID)
 	assignment := enrollment.Assignment{ID: current.ID, Generation: current.Generation, Cell: current.Cell,
 		TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Role: current.Role, Resources: current.Resources,
 		SubnetID: current.SubnetID, PrivateIPv4: current.PrivateIPv4,
 		Directory: &enrollment.DirectoryAssignment{DirectoryID: directory.ID, DNSName: directory.Spec.DNSName, NetBIOSName: directory.Spec.NetBIOSName,
-			ControllerIndex: 2, ControllerIPv4: [2]netip.Addr{primary.PrivateIPv4, current.PrivateIPv4}}}
+			ControllerIndex: replicaSlot + 1, WriterIndex: placement.WriterIndex,
+			ControllerIPv4: [2]netip.Addr{placement.Controllers[0].PrivateIPv4, placement.Controllers[1].PrivateIPv4}}}
 	allocation := r.subnetNetworkPlacements(scope, parent, subnet) + current.PrivateIPv4.String()
 	oldSpread, newSpread := r.spreadHostKey(scope, old.SpreadSet, old.HostID), r.spreadHostKey(scope, old.SpreadSet, current.HostID)
 	guards = append(guards, target.guards...)
@@ -137,6 +148,6 @@ func (r *Region) placeDirectoryReplicaReplacement(ctx context.Context, tenantID,
 		clientv3.OpPut(newSpread, current.Generation), clientv3.OpPut(allocation, current.Generation),
 		oldUsage.write(delta), target.usage.write(current.Resources),
 		r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: "managed-directory-controller",
-			Action: "Ocean.Identity/directories/replaceReplica/action", Target: directory.ID, Outcome: "Reserved"})).Commit()
+			Action: audit, Target: directory.ID, Outcome: "Reserved"})).Commit()
 	return err
 }

@@ -30,12 +30,13 @@ func (r *Region) readyDirectoryWriter(ctx context.Context, directory identity.Ma
 		return Reservation{}, nil, err
 	}
 	var placement directoryPlacement
-	if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &placement) != nil || placement.DirectoryID != directory.ID {
+	if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &placement) != nil || placement.DirectoryID != directory.ID || placement.Promoting {
 		return Reservation{}, nil, identity.ErrDirectoryJoinUnavailable
 	}
-	writer := placement.Controllers[0]
+	index := placement.writerSlot()
+	writer := placement.Controllers[index]
 	scope := arm.SubscriptionScope{TenantID: directory.TenantID, SubscriptionID: directory.SubscriptionID}
-	sid, guards, err := r.directoryControllerHealth(ctx, directory, scope, writer, 0, revision)
+	sid, guards, err := r.directoryControllerHealth(ctx, directory, scope, writer, index, revision)
 	if err != nil {
 		return Reservation{}, nil, err
 	}
@@ -121,6 +122,7 @@ func (r *Region) readManagedDirectoryHealth(ctx context.Context, directory *iden
 		}
 		directory.Controllers[i] = identity.DirectoryControllerReadiness{
 			DNSName: fmt.Sprintf("dc%02d.%s", i+1, directory.Spec.DNSName), PrivateIPv4: controller.PrivateIPv4,
+			Writer: i == placement.writerSlot() && !placement.Promoting,
 		}
 		sid, checked, err := r.directoryControllerHealth(ctx, *directory, scope, controller, i, revision)
 		if err != nil {

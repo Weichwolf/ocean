@@ -165,7 +165,7 @@ func (r *Region) readHostDirectoryJoin(ctx context.Context, host string, certifi
 	if err != nil {
 		return nil, "", nil, 0, 0, err
 	}
-	if binding.index != 0 {
+	if !binding.activeWriter() {
 		return nil, "", nil, 0, 0, enrollment.ErrHostDenied
 	}
 	if binding.directory.ProvisionedAt.IsZero() {

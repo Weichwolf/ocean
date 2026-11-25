@@ -330,7 +330,7 @@ account GUID and the original domain and employee identities, membership,
 policy version, and ACL. The replacement then serves clients with the primary
 stopped. This recovery run uses controlled Podman stops on one host.
 
-To enable managed replica replacement, configure
+To enable fenced controller replacement, configure
 `region.directoryFencePublicKeyFile` with the out-of-band fencing authority's
 Ed25519 public key in PEM format. Configure the same key on every regional
 API replica. The authority signs an attestation after observing the exact
@@ -359,16 +359,47 @@ the sealed directory join credential. It publishes readiness after the
 data-plane probes pass. Replaying an accepted envelope preserves the
 original replacement.
 
+To replace the current writer, sign an attestation with
+`action: ReplaceDirectoryPrimary` and submit it to the writer replacement
+endpoint. The attestation identifies the writer's current host, placement and
+generation. The survivor needs a recent health report for the established SID.
+
+```sh
+replace_url="$directory_url_base/replacePrimary?api-version=2026-11-01"
+az rest --method post --url "$replace_url" --body @signed-primary-fence.json -o none
+az rest --method get --url "$directory_url"
+```
+
+Ocean revokes the fenced writer and suspends delegated join and Graph tasks
+while the survivor takes over. The survivor verifies its local SYSVOL against
+the replicated policy versions, takes ownership of all seven FSMO roles, and
+removes the failed controller's AD and DNS records before serving writable
+SYSVOL. Its mTLS acknowledgement and fresh health report permit writer tasks
+and placement of a new replica. DNS names and IP addresses remain tied to
+the controller slots. The replacement uses the old writer's slot, a new
+generation, and a separate host and volume. Directory status identifies the
+controller designated for Ocean-managed writes once it has acknowledged
+promotion.
+
+AD replication is asynchronous. A valid fence establishes that the old
+writer is off. The surviving domain reflects the changes that reached it.
+If the local GPO data and version disagree, Ocean withholds writer promotion.
+When the replica is still serving, it remains available with read-only
+SYSVOL while the inconsistency is investigated.
+Measure the replication gap and recovery time under the intended load before
+assigning a service guarantee.
+
 The same profile runs the `az rest` request and status commands with Azure
 CLI 2.93.0 against a loopback HTTPS contract fixture and a signed fixture
 token. The runtime and CLI probes are independently selectable with
 `OCEAN_E2E_CASES=WORKPLACE-04` or `OCEAN_E2E_CASES=WORKPLACE-05`.
 Add `WORKPLACE-06` to `OCEAN_E2E_CASES` and set
 `OCEAN_E2E_DIRECTORY_ETCD` to an isolated etcd endpoint to exercise regional
-fencing and placement with simulated host identities and power evidence.
-The replica workflow requires a valid directory join credential. The
-physical-host fencing run, primary replacement, and Windows and Debian
-client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
+fencing, promotion admission and placement with simulated host identities and
+power evidence. Select `WORKPLACE-12` to exercise actual Samba and SYSVOL writer
+promotion and replacement with controlled Podman stops on one host. A
+replacement replica needs a valid directory join credential. The physical
+fencing and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ### Regional delegated machine joins
 

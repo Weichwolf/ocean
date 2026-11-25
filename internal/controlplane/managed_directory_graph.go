@@ -131,7 +131,7 @@ func (r *Region) readHostDirectoryGraphTask(ctx context.Context, host string, ce
 	if err != nil {
 		return nil, err
 	}
-	if binding.index != 0 {
+	if !binding.activeWriter() {
 		return nil, enrollment.ErrHostDenied
 	}
 	if binding.directory.ProvisionedAt.IsZero() {

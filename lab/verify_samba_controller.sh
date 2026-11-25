@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--delegated-join|--hold-controller)?$ ]]; then
-    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--delegated-join|--hold-controller]\n' "$0" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^sha256:[a-f0-9]{64}$ || ! ${2:-} =~ ^(--restore|--delegated-join|--hold-controller|--promote-writer)?$ ]]; then
+    printf 'Usage: %s sha256:<local-controller-image-id> [--restore|--delegated-join|--hold-controller|--promote-writer]\n' "$0" >&2
     exit 2
 fi
 image=$1
@@ -186,6 +186,10 @@ administrator_policy() {
                 exit 1
             fi
             grep -E "NT_STATUS_(ACCESS_DENIED|MEDIA_WRITE_PROTECTED)" "$cache/write"
+        elif [ "$action" = advance ]; then
+            printf "[General]\r\nVersion=2\r\n" > "$cache/gpt.ini"
+            smbclient "$smb" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
+                -c "put $cache/gpt.ini ${guarded%/*}/GPT.INI"
         else
             smbcacls "$smb" "$guarded" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" \
                 --query-security-info=7 --numeric --sddl
@@ -527,6 +531,94 @@ fi
 printf 'Updated GPO bytes and custom ACL replicated in %d seconds.\n' "$(( SECONDS - policy_started ))"
 if [[ ${2:-} == --restore ]]; then
     verify_independent_restore
+    exit
+fi
+if [[ ${2:-} == --promote-writer ]]; then
+    mkdir "$probe/member"
+    machine_trust "$addr" dc01.ad.runtime.test join
+    machine=$(directory_tool "$name" computer show OCEANMEMBER | grep '^objectGUID:')
+    for _ in $(seq 1 30); do
+        if machine_trust "$replica_addr" dc02.ad.runtime.test test >"$probe/member.log" 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    grep -F 'Join is OK' "$probe/member.log"
+    test "$machine" = "$(directory_tool "$replica" computer show OCEANMEMBER | grep '^objectGUID:')"
+    retired_generation=$(cat /proc/sys/kernel/random/uuid)
+    old_account=$(directory_tool "$name" computer show DC01 | grep '^objectGUID:')
+    p stop --time 15 "$name" >/dev/null
+    p rm "$name" >/dev/null
+    test "$(gpo_version "$replica" 2)" = 2
+    verify_promotion_snapshot() {
+        p exec "$replica" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py promotion-preflight
+    }
+    if verify_promotion_snapshot; then
+        printf 'Promotion accepted a local policy snapshot with a different AD version.\n' >&2
+        exit 1
+    fi
+    wait_health "$replica" "$domain_sid"
+    administrator_policy "$replica_addr" 2 read-only
+    test "$(gpo_version "$replica" 1)" = 1
+    verify_promotion_snapshot
+    printf 'A mismatched AD policy version blocked promotion while the survivor served read-only SYSVOL.\n'
+    p stop --time 15 "$replica" >/dev/null
+    p rm "$replica" >/dev/null
+    started=$SECONDS
+    start "$replica" "$replica_addr" 2 "$tenant" --env OCEAN_AD_WRITER=2 \
+        --env "OCEAN_AD_PROMOTE=$retired_generation" --env "OCEAN_AD_REPLICA=$addr"
+    wait_dns "$replica" "$replica_addr" 2
+    wait_health "$replica" "$domain_sid"
+    confirm_promotion() {
+        p exec "$replica" /usr/bin/python3 /usr/local/lib/ocean-directory/controller.py promotion-status "$retired_generation"
+    }
+    confirm_promotion
+    test "$(directory_tool "$replica" fsmo show | grep -c ' owner: CN=NTDS Settings,CN=DC02,')" = 7
+    test "$original" = "$(account "$replica")"
+    machine_trust "$replica_addr" dc02.ad.runtime.test test
+    promoted=$(proof "$replica_addr" 2 guarded)
+    same_policy "$changed" "$promoted"
+    test "$expected_acl" = "$(administrator_policy "$replica_addr" 2 read)"
+    administrator_policy "$replica_addr" 2 advance
+    test "$(gpo_version "$replica" 2)" = 2
+    updated=$(proof "$replica_addr" 2 guarded)
+    if same_policy "$changed" "$updated"; then
+        printf 'The promoted writer did not publish the new SYSVOL bytes.\n' >&2
+        exit 1
+    fi
+    directory_tool "$replica" group add LabPromotedGroup
+    directory_tool "$replica" group addmembers LabPromotedGroup employee
+    printf 'The surviving DC02 became the writer and served an updated policy in %d seconds.\n' "$(( SECONDS - started ))"
+    p volume create "$replacement" >/dev/null
+    started=$SECONDS
+    start "$replacement" "$addr" 1 "$tenant" --env OCEAN_AD_WRITER=2 --env "OCEAN_AD_PRIMARY=$replica_addr" \
+        --secret "$secret,target=ocean-directory-bootstrap,mode=0400"
+    wait_dns "$replacement" "$addr" 1
+    wait_health "$replacement" "$domain_sid"
+    replacement_account=$(directory_tool "$replacement" computer show DC01 | grep '^objectGUID:')
+    test "$old_account" != "$replacement_account"
+    machine_trust "$addr" dc01.ad.runtime.test test
+    wait_membership "$replacement" LabPromotedGroup employee "$SECONDS"
+    test "$expected_acl" = "$(administrator_policy "$addr" 1 read)"
+    administrator_policy "$addr" 1 read-only
+    after=$(proof "$addr" 1 guarded dc01)
+    same_policy "$updated" "$after"
+    p stop --time 15 "$replica" >/dev/null
+    p start "$replica" >/dev/null
+    wait_dns "$replica" "$replica_addr" 2
+    wait_health "$replica" "$domain_sid"
+    confirm_promotion
+    test "$replacement_account" = "$(directory_tool "$replica" computer show DC01 | grep '^objectGUID:')"
+    printf 'Retried the completed promotion without disturbing the new DC01 account.\n'
+    printf 'The replacement DC01 joined as a read-only policy replica with the original SID and current GPO, ACL and membership in %d seconds.\n' \
+        "$(( SECONDS - started ))"
+    p stop --time 15 "$replica" >/dev/null
+    p rm "$replica" >/dev/null
+    start "$replica" "$replica_addr" 2 "$tenant" --env OCEAN_AD_WRITER=2 --env "OCEAN_AD_REPLICA=$addr"
+    wait_dns "$replica" "$replica_addr" 2
+    wait_health "$replica" "$domain_sid"
+    test "$replacement_account" = "$(directory_tool "$replica" computer show DC01 | grep '^objectGUID:')"
+    printf 'Restarted DC02 as the writer with its local promotion receipt and no pending promotion command.\n'
     exit
 fi
 p stop --time 15 "$name" >/dev/null

@@ -33,16 +33,26 @@ func (f directoryTenantFixture) LookupTenant(_ context.Context, tenant string) (
 }
 
 type directoryRequestFixture struct {
-	received *ManagedDirectory
+	received        *ManagedDirectory
+	lastReplacement string
 }
 
 func (f *directoryRequestFixture) RequestDirectoryReplicaReplacement(_ context.Context, _ TenantReservation, fence SignedDirectoryFence) error {
+	return f.replace(ReplaceDirectoryReplica, fence)
+}
+
+func (f *directoryRequestFixture) RequestDirectoryPrimaryReplacement(_ context.Context, _ TenantReservation, fence SignedDirectoryFence) error {
+	return f.replace(ReplaceDirectoryPrimary, fence)
+}
+
+func (f *directoryRequestFixture) replace(action string, fence SignedDirectoryFence) error {
 	if string(fence.Attestation) != "fixture-attestation" || string(fence.Signature) != "fixture-signature" {
 		return ErrDirectoryFenceDenied
 	}
 	if f.received == nil || f.received.ProvisionedAt.IsZero() {
 		return ErrDirectoryFencePending
 	}
+	f.lastReplacement = action
 	return nil
 }
 
@@ -125,6 +135,7 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 	query := "?api-version=" + directoryAPIVersion
 	input := `{"dnsName":"AD.Example.Test","netbiosName":"office","subnetId":"/fixture"}`
 	replacement := path + "/replaceReplica"
+	primaryReplacement := path + "/replacePrimary"
 	fence, _ := json.Marshal(SignedDirectoryFence{Attestation: []byte("fixture-attestation"), Signature: []byte("fixture-signature")})
 	for _, check := range []struct {
 		name, method, path, query, subject, content string
@@ -140,6 +151,8 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 		{"replacement malformed", http.MethodPost, replacement, query, tenant.Administrator, `{"unknown":true}`, http.StatusBadRequest},
 		{"replacement unsigned", http.MethodPost, replacement, query, tenant.Administrator, `{}`, http.StatusForbidden},
 		{"replacement unavailable", http.MethodPost, replacement, query, tenant.Administrator, string(fence), http.StatusConflict},
+		{"primary replacement member", http.MethodPost, primaryReplacement, query, member, string(fence), http.StatusForbidden},
+		{"primary replacement unavailable", http.MethodPost, primaryReplacement, query, tenant.Administrator, string(fence), http.StatusConflict},
 	} {
 		t.Run(check.name, func(t *testing.T) {
 			result := send(check.method, check.path, check.query, check.subject, check.content)
@@ -174,6 +187,10 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 			store.received.Controllers[i].Ready = true
 		}
 	}
+	if result := send(http.MethodPost, primaryReplacement, query, tenant.Administrator, string(fence)); result.Code != http.StatusAccepted ||
+		result.Header().Get("Location") != armOrigin+path+query || store.lastReplacement != ReplaceDirectoryPrimary {
+		t.Fatalf("primary replacement response (%d) %s", result.Code, result.Body)
+	}
 	if os.Getenv("OCEAN_E2E_DIRECTORY_CLI") == "1" {
 		t.Run("pinned Azure CLI", func(t *testing.T) {
 			ready := make(chan struct{})
@@ -184,12 +201,13 @@ func TestManagedDirectoryHTTP(t *testing.T) {
 			defer server.Close()
 			compat.cloud.ResourceManager = server.URL
 			close(ready)
-			testManagedDirectoryCLI(t, server, path+query, input, signedToken(server.URL, tenant.Administrator), store.received.ID, replacement+query, fence)
+			testManagedDirectoryCLI(t, server, path+query, input, signedToken(server.URL, tenant.Administrator), store.received.ID,
+				[]string{replacement + query, primaryReplacement + query}, fence)
 		})
 	}
 }
 
-func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, input, token, expectedID, replacement string, fence []byte) {
+func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, input, token, expectedID string, replacements []string, fence []byte) {
 	t.Helper()
 	temp := t.TempDir()
 	ca, body := filepath.Join(temp, "test-ca.pem"), filepath.Join(temp, "directory.json")
@@ -241,7 +259,9 @@ func testManagedDirectoryCLI(t *testing.T, api *httptest.Server, directoryPath, 
 	if err := os.WriteFile(fenceFile, fence, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run("rest", "--method", "post", "--url", api.URL+replacement, "--headers", "Authorization=Bearer "+token,
-		"--body", "@"+fenceFile, "--only-show-errors", "-o", "none")
-	t.Logf("Azure CLI %s az rest post submitted the replica fence envelope", version.CLI)
+	for _, replacement := range replacements {
+		run("rest", "--method", "post", "--url", api.URL+replacement, "--headers", "Authorization=Bearer "+token,
+			"--body", "@"+fenceFile, "--only-show-errors", "-o", "none")
+		t.Logf("Azure CLI %s az rest post submitted the %s envelope", version.CLI, strings.SplitN(replacement, "?", 2)[0])
+	}
 }

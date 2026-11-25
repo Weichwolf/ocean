@@ -104,7 +104,13 @@ type DirectoryAssignment struct {
 	NetBIOSName     string        `json:"netbiosName"`
 	ControllerIndex int           `json:"controllerIndex"`
 	ControllerIPv4  [2]netip.Addr `json:"controllerIPv4"`
+	WriterIndex     int           `json:"writerIndex,omitempty"`
 	RetireReplica   string        `json:"retireReplicaGeneration,omitempty"`
+	PromoteFrom     string        `json:"promoteFromGeneration,omitempty"`
+}
+
+func (a DirectoryAssignment) IsWriter() bool {
+	return a.ControllerIndex == max(a.WriterIndex, 1)
 }
 
 type AssignmentPage struct {

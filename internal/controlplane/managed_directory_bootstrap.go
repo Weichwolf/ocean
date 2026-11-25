@@ -19,8 +19,8 @@ func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certif
 		return enrollment.DirectoryBootstrap{}, err
 	}
 	bootstrap := enrollment.DirectoryBootstrap{DomainSID: binding.directory.DomainSID}
-	if binding.index == 0 && bootstrap.DomainSID != "" {
-		// A previously initialized primary only needs its existing local keys.
+	if binding.index == binding.placement.writerSlot() && bootstrap.DomainSID != "" {
+		// A previously initialized writer only needs its existing local keys.
 		return bootstrap, nil
 	}
 	bootstrap.Credential, err = r.workloads.sealer.Open(nil, nil, binding.placement.Bootstrap,
@@ -65,8 +65,13 @@ type authorizedDirectoryController struct {
 	placement directoryPlacement
 	directory identity.ManagedDirectory
 	index     int
+	revision  int64
 	lease     clientv3.LeaseID
 	guards    []clientv3.Cmp
+}
+
+func (binding *authorizedDirectoryController) activeWriter() bool {
+	return binding.index == binding.placement.writerSlot() && !binding.placement.Promoting
 }
 
 func (r *Region) authorizeDirectoryController(ctx context.Context, host string, certificate []byte, tenant, generation string) (*authorizedDirectoryController, error) {
@@ -119,7 +124,7 @@ func (r *Region) authorizeDirectoryController(ctx context.Context, host string, 
 	if len(active.Kvs) != 1 || !directoryAssignmentMatches(active.Kvs[0].Value, directory, controller, index) {
 		return nil, enrollment.ErrHostDenied
 	}
-	binding := &authorizedDirectoryController{placement: placement, directory: directory, index: index,
+	binding := &authorizedDirectoryController{placement: placement, directory: directory, index: index, revision: snapshot.Header.Revision,
 		lease: clientv3.LeaseID(snapshot.Responses[1].GetResponseRange().Kvs[0].Lease)}
 	for _, response := range snapshot.Responses {
 		kv := response.GetResponseRange().Kvs[0]
