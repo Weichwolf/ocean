@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
@@ -36,8 +37,10 @@ func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certif
 	if json.Unmarshal(rows[0].Value, &placement) != nil || placement.DirectoryID == "" {
 		return nil, errors.New("invalid managed directory placement")
 	}
-	primary := placement.Controllers[0]
-	if primary.HostID != host || primary.Generation != generation {
+	index := slices.IndexFunc(placement.Controllers[:], func(controller Reservation) bool {
+		return controller.HostID == host && controller.Generation == generation
+	})
+	if index < 0 {
 		return nil, enrollment.ErrHostDenied
 	}
 	directories := snapshot.Responses[3].GetResponseRange().Kvs
@@ -47,16 +50,17 @@ func (r *Region) HostDirectoryBootstrap(ctx context.Context, host string, certif
 		return nil, enrollment.ErrHostDenied
 	}
 	scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: directory.SubscriptionID}
-	if !validScope(scope) || !identifier.MatchString(primary.ID) {
+	controller := placement.Controllers[index]
+	if !validScope(scope) || !identifier.MatchString(controller.ID) {
 		return nil, errors.New("invalid directory controller identity")
 	}
-	active, err := r.client.Get(ctx, r.hostReservationKey(scope, host, primary.ID), clientv3.WithRev(snapshot.Header.Revision))
+	active, err := r.client.Get(ctx, r.hostReservationKey(scope, host, controller.ID), clientv3.WithRev(snapshot.Header.Revision))
 	if err != nil {
 		return nil, err
 	}
 	var assignment enrollment.Assignment
 	if len(active.Kvs) != 1 || json.Unmarshal(active.Kvs[0].Value, &assignment) != nil || assignment.Generation != generation ||
-		assignment.Directory == nil || assignment.Directory.DirectoryID != directory.ID || assignment.Directory.ControllerIndex != 1 {
+		assignment.Directory == nil || assignment.Directory.DirectoryID != directory.ID || assignment.Directory.ControllerIndex != index+1 {
 		return nil, enrollment.ErrHostDenied
 	}
 	return r.workloads.sealer.Open(nil, nil, placement.Bootstrap, placement.bootstrapLabel(key))

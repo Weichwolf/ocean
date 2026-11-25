@@ -46,6 +46,7 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `geo-4x3` | Four independent logical farms and initial WireGuard mesh and federation setup |
 | `geo-4x4` | Enroll one additional node per farm, then exercise node, tunnel, and whole-farm loss |
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
+| `managed-directory` | Exercise controller-pair bootstrap and individual outages with a fresh Kerberos and SMB client on an isolated rootless Podman network |
 
 Record the environment for each run. Production runs use qualified independent physical hosts or sites as required by the selected cases.
 

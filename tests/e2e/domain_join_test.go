@@ -3,7 +3,9 @@
 package e2e
 
 import (
+	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/Weichwolf/ocean/tests/e2e/internal/harness"
 )
@@ -26,5 +28,12 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		}
 		steps = append(steps, step)
 	}
-	return steps
+	runtime := harness.Step{Name: "samba-controller-pair", Cases: []string{"WORKPLACE-04"}, Timeout: 4 * time.Minute,
+		Command: []string{"bash", filepath.Join("lab", "verify_samba_controller.sh"), options.sambaImage}}
+	if options.sambaImage == "" {
+		runtime.BlockedReason = "Provide OCEAN_E2E_SAMBA_IMAGE with the locally built controller image ID."
+	} else if _, err := exec.LookPath("podman"); err != nil {
+		runtime.BlockedReason = "Install rootless Podman for the directory runtime probe."
+	}
+	return append(steps, runtime)
 }

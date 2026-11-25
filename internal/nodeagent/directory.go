@@ -66,12 +66,13 @@ func (j *joinClient) directoryTasks(ctx context.Context) (map[string]enrollment.
 	}
 	for _, assignment := range placements {
 		directory := assignment.Directory
-		if directory == nil || directory.ControllerIndex != 1 {
+		if directory == nil {
 			continue
 		}
+		index, peers := directory.ControllerIndex, directory.ControllerIPv4
 		if !taskIdentityPattern.MatchString(assignment.ID) || !taskIdentityPattern.MatchString(assignment.Generation) ||
 			!taskIdentityPattern.MatchString(assignment.TenantID) || !taskIdentityPattern.MatchString(assignment.SubscriptionID) ||
-			!directoryHostname.MatchString(directory.DNSName) || directory.ControllerIPv4[0] != assignment.PrivateIPv4 ||
+			!directoryHostname.MatchString(directory.DNSName) || index < 1 || index > len(peers) || peers[index-1] != assignment.PrivateIPv4 ||
 			!assignment.PrivateIPv4.Is4() || assignment.Resources.CPUMillis < 1 || assignment.Resources.MemoryMiB < 1 {
 			return nil, errors.New("invalid directory task in host assignments")
 		}
@@ -180,16 +181,21 @@ func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a 
 	directory := a.Directory
 	size := strconv.FormatInt(a.Resources.MemoryMiB, 10) + "m"
 	cpu := strconv.FormatFloat(float64(a.Resources.CPUMillis)/1000, 'f', 3, 64)
-	return podmanAction(ctx, "run", "--detach", "--pull=never", "--name", name,
-		"--hostname", "dc01", "--network=none", "--label", "ocean.directory-controller",
+	index := strconv.Itoa(directory.ControllerIndex)
+	args := []string{"run", "--detach", "--pull=never", "--name", name,
+		"--hostname", "dc0" + index, "--network=none", "--label", "ocean.directory-controller",
 		"--cpus", cpu, "--memory", size, "--memory-swap", size, "--pids-limit", "128",
 		"--security-opt=no-new-privileges", "--cap-drop=ALL", "--cap-add=CHOWN", "--cap-add=SETUID", "--cap-add=SETGID",
 		"--cap-add=NET_BIND_SERVICE", "--log-driver=k8s-file", "--log-opt=max-size=256kb",
 		"--uidmap", "0:0:1", "--uidmap", "1:1:60000", "--uidmap", "3000000:60001:5535",
 		"--gidmap", "0:0:1", "--gidmap", "1:1:60000", "--gidmap", "3000000:60001:5535",
-		"--secret", name+",target=ocean-directory-bootstrap,mode=0400",
-		"--mount", "type=volume,source="+name+",target=/var/lib/ocean-ad",
-		"--env", "OCEAN_AD_DNS_NAME="+directory.DNSName, "--env", "OCEAN_AD_NETBIOS_NAME="+directory.NetBIOSName,
-		"--env", "OCEAN_AD_DIRECTORY_ID="+directory.DirectoryID, "--env", "OCEAN_AD_ADDRESS="+a.PrivateIPv4.String(),
-		"--", j.config.DirectoryImage)
+		"--secret", name + ",target=ocean-directory-bootstrap,mode=0400",
+		"--mount", "type=volume,source=" + name + ",target=/var/lib/ocean-ad",
+		"--env", "OCEAN_AD_DNS_NAME=" + directory.DNSName, "--env", "OCEAN_AD_NETBIOS_NAME=" + directory.NetBIOSName,
+		"--env", "OCEAN_AD_DIRECTORY_ID=" + directory.DirectoryID, "--env", "OCEAN_AD_ADDRESS=" + a.PrivateIPv4.String(),
+		"--env", "OCEAN_AD_CONTROLLER=" + index}
+	if directory.ControllerIndex == 2 {
+		args = append(args, "--env", "OCEAN_AD_PRIMARY="+directory.ControllerIPv4[0].String())
+	}
+	return podmanAction(ctx, append(args, "--", j.config.DirectoryImage)...)
 }

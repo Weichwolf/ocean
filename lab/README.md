@@ -255,21 +255,33 @@ placement stays in `Creating` for a later attempt.
 
 Build the controller image and install the same image on the selected hosts.
 Set `enrollment.directoryImage` in each node agent config to its local
-`sha256:<image-id>`. The primary receives its bootstrap credential over host
-mTLS. The region seals that credential in etcd with the workload key. The
-agent passes it to Podman through stdin and mounts it read-only with mode
-0400. The primary uses its generation-specific persistent volume on restart.
+`sha256:<image-id>`. Each assigned host can retrieve its controller's
+bootstrap credential over host mTLS. The region seals that credential in etcd
+with the workload key. The agent passes it to Podman through stdin and mounts
+it read-only with mode 0400. Each controller uses its own generation-specific
+persistent volume on restart.
+
+The primary provisions the domain. The replica joins over Kerberos and seeds
+SYSVOL over signed SMB, including the remote security descriptors. It checks
+the seeded policy ACLs before listening. A persistent join checkpoint lets the
+replica retry the seed if the primary goes away during the initial copy.
 
 ```sh
-podman build -t localhost/ocean-directory:lab packaging/samba
+nice -n 10 podman build -t localhost/ocean-directory:lab packaging/samba
 image_id=$(podman image inspect --format '{{.Id}}' localhost/ocean-directory:lab)
-bash lab/verify_samba_controller.sh "sha256:${image_id#sha256:}"
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_SAMBA_IMAGE="sha256:${image_id#sha256:}" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
 ```
 
-The local probe provisions the primary, reads SYSVOL through a separate
-Kerberos client, checks write denial, and reopens the volume without a
-bootstrap credential. The regional directory remains in `Creating` while
-replica startup and verified directory health are pending.
+The probe runs both controllers on one isolated rootless Podman network. It
+compares employee identity and SYSVOL bytes, checks that the employee cannot
+write the policy, and tests each controller with its peer stopped. It reopens
+both volumes without bootstrap credentials. The harness stores the Markdown
+report, TSV, and client logs under `artifacts/e2e`.
+
+The regional directory stays in `Creating` pending verified health reporting.
+Ongoing SYSVOL synchronization, controller replacement, and the separate-host
+and client sign-in gates are tracked in [issue #50](https://github.com/Weichwolf/ocean/issues/50).
 
 ## Tenant directory users
 

@@ -273,10 +273,15 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 		t.Fatal("a retry changed the directory bootstrap credential")
 	}
 	clear(retry)
+	peerBootstrap, err := r.HostDirectoryBootstrap(ctx, right.HostID, []byte(right.HostID), tenant.TenantID, right.Generation)
+	if err != nil || !bytes.Equal(peerBootstrap, password) {
+		t.Fatal("the assigned replica could not read the expected bootstrap credential")
+	}
+	clear(peerBootstrap)
 	for _, request := range []struct{ host, certificate, generation string }{
 		{left.HostID, "other-certificate", left.Generation},
 		{left.HostID, left.HostID, right.Generation},
-		{right.HostID, right.HostID, right.Generation},
+		{right.HostID, right.HostID, left.Generation},
 	} {
 		if secret, err := r.HostDirectoryBootstrap(ctx, request.host, []byte(request.certificate), tenant.TenantID, request.generation); secret != nil || !errors.Is(err, enrollment.ErrHostDenied) {
 			t.Fatal("an unauthorized host or generation could read a bootstrap credential")
