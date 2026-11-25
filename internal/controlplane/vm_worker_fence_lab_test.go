@@ -81,7 +81,7 @@ type windowsVMCheckpoint struct {
 }
 
 func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.Lab, worker directoryKVMHosts,
-	r *Region, api *httptest.Server, scope arm.SubscriptionScope, address arm.ResourceAddress) {
+	r *Region, api *httptest.Server, scope arm.SubscriptionScope, address arm.ResourceAddress, restart time.Time) {
 	t.Helper()
 	_, first, _, _, _, err := r.readVM(ctx, scope, address)
 	if err != nil || first.Reservation.HostID != vmLabPrimary || first.Observed != workload.Running || !first.Prepared {
@@ -93,15 +93,28 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 	worker.run(ctx, vmLabSpare, "sudo tee "+probe.path+"/sent >/dev/null", bytes.NewReader(marker))
 	var before windowsVMCheckpoint
 	pollVMWorker(t, ctx, 65*time.Second, "the Windows SMB checkpoint upload and readback", func() bool {
-		output, err := probe.smb(ctx, "put "+probe.path+"/sent data/checkpoint")
-		if err != nil {
+		output, uploadErr := probe.smb(ctx, "put "+probe.path+"/sent data/checkpoint")
+		if uploadErr != nil {
 			t.Logf("waiting for the SMB upload: %s", strings.TrimSpace(string(output)))
 			return false
 		}
-		before, err = probe.read(ctx)
-		return err == nil
+		_, readErr := probe.read(ctx)
+		return readErr == nil
 	})
-	if !strings.EqualFold(before.UUID, first.MachineID) || before.GUID == "" || before.Hostname == "" || before.Build != "26100" || before.BootedAt.IsZero() {
+	// SMB can start before Windows Task Scheduler refreshes the identity
+	// file. Wait for the current virtual hardware identity and boot time.
+	pollVMWorker(t, ctx, 2*time.Minute, "the Windows identity from the current boot", func() bool {
+		identity, readErr := probe.read(ctx)
+		if readErr != nil {
+			return false
+		}
+		if identity != before {
+			t.Logf("observed Windows UUID %s from boot %s", identity.UUID, identity.BootedAt.Format(time.RFC3339Nano))
+		}
+		before = identity
+		return strings.EqualFold(before.UUID, first.MachineID) && before.BootedAt.After(restart)
+	})
+	if before.GUID == "" || before.Hostname == "" || before.Build != "26100" {
 		t.Fatalf("unexpected initial Windows guest identity: %+v", before)
 	}
 	t.Logf("Windows build %s acknowledged an encrypted SMB checkpoint at 10.232.1.20", before.Build)
@@ -143,10 +156,10 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 			record.Disk == first.Disk && record.MachineID == first.MachineID
 	})
 	var after windowsVMCheckpoint
-	pollVMWorker(t, ctx, 65*time.Second, "the replacement Windows SMB checkpoint and new boot record", func() bool {
+	pollVMWorker(t, ctx, 2*time.Minute, "the replacement Windows SMB checkpoint and new boot record", func() bool {
 		var err error
 		after, err = probe.read(ctx)
-		return err == nil && after.BootedAt.After(before.BootedAt)
+		return err == nil && after.BootedAt.After(started)
 	})
 	if after.UUID != before.UUID || after.GUID != before.GUID || after.Hostname != before.Hostname || after.Build != before.Build {
 		t.Fatalf("Windows machine identity changed during fenced replacement: %+v then %+v", before, after)

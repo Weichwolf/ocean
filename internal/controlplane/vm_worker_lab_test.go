@@ -196,7 +196,7 @@ func TestPackagedVMWorker(t *testing.T) {
 		startPackagedVMHost(t, ctx, r, worker, guests, vmLabSpare, origin, caPEM)
 		t.Cleanup(func() { stopPackagedVMHost(t, worker, vmLab, vmLabSpare) })
 		waitPackagedVMHost(t, ctx, r, vmLabSpare)
-		fence.verify(t, ctx, vmLab, worker, r, api, scope, vm)
+		fence.verify(t, ctx, vmLab, worker, r, api, scope, vm, restart)
 		assertPower("running")
 	}
 	deletedAt := time.Now()
