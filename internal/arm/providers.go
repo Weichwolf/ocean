@@ -53,6 +53,20 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		if s.Functions != nil {
 			types[0].APIVersions = append(types[0].APIVersions, network.ContainerSubnetAPIVersion)
 		}
+		if s.VirtualMachines != nil {
+			types = append(types, providerResourceType{ResourceType: "networkInterfaces", Locations: []string{s.Location}, APIVersions: []string{VMNetworkAPIVersion}})
+		}
+	case "microsoft.compute":
+		if s.VirtualMachines == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = "Microsoft.Compute"
+		types = []providerResourceType{
+			{ResourceType: "virtualMachines", Locations: []string{s.Location}, APIVersions: []string{VirtualMachineAPIVersion}},
+			{ResourceType: "images", Locations: []string{s.Location}, APIVersions: []string{VMImageAPIVersion}},
+			{ResourceType: "disks", Locations: []string{s.Location}, APIVersions: []string{VMDiskAPIVersion}},
+		}
 	case "microsoft.web":
 		if !s.FunctionPlans {
 			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
