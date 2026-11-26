@@ -47,5 +47,13 @@ func virtualMachineSteps() []harness.Step {
 		BlockedReason: linux.BlockedReason,
 		Evidence:      []harness.EvidenceSource{{Name: "desktop-vm-fence.tsv", Path: filepath.Join(linuxState, "evidence", "desktop-vm-fence.tsv")}}}
 	desktopFence = requireFile(desktopFence, os.Getenv("OCEAN_E2E_VM_FENCE_PROFILE"), "the original two-worker KVM lab profile")
-	return []harness.Step{step, linux, desktopFence}
+	pair := harness.Step{Name: "packaged-assigned-desktop-pair", Cases: []string{"WORKPLACE-40"}, Timeout: 24 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-timeout=22m", "-v", "-run",
+			"^TestPackagedAssignedDesktopPair$", "./internal/controlplane"},
+		BlockedReason: linux.BlockedReason,
+		Evidence: []harness.EvidenceSource{
+			{Name: "desktop-pair.tsv", Path: filepath.Join(linuxState, "evidence", "desktop-pair.tsv")},
+			{Name: "desktop-pair-rdp.tsv", Path: filepath.Join(linuxState, "evidence", "desktop-pair-rdp.tsv")},
+		}}
+	return []harness.Step{step, linux, desktopFence, pair}
 }

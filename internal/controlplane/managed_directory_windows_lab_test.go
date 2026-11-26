@@ -347,14 +347,14 @@ func writeWindowsRecoverySecret(t *testing.T, path string, secret []byte) {
 	}
 }
 
-func directoryLabServerTLS(t *testing.T, ca *x509.Certificate, signer ed25519.PrivateKey) *tls.Config {
+func directoryLabServerTLS(t *testing.T, ca *x509.Certificate, signer ed25519.PrivateKey, additionalIPs ...net.IP) *tls.Config {
 	t.Helper()
 	public, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	template := &x509.Certificate{SerialNumber: big.NewInt(4), NotBefore: ca.NotBefore, NotAfter: ca.NotAfter,
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("10.0.2.2")},
+		IPAddresses: append([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("10.0.2.2")}, additionalIPs...),
 		KeyUsage:    x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	raw, err := x509.CreateCertificate(rand.Reader, template, ca, public, signer)
 	if err != nil {

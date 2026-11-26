@@ -1002,6 +1002,35 @@ and the previous checkpoint. The restarted worker must have neither an
 assignment nor a writable map for the desktop disk. The probe writes lease,
 boot and reconnect measurements to `desktop-vm-fence.tsv`.
 
+Run `WORKPLACE-40` with the `VM-03` inputs and
+`OCEAN_E2E_PROFILE=vm-worker-desktop-pair`. Keep the primary compute worker
+and all three Ceph guests running. The private observer `farm-1-node-07`
+needs `socat`, `nc`, `freerdp3-x11`, `xvfb`, and `xauth`. On the dedicated
+`farm-1-node-01`, install `samba-ad-dc`, `ldb-tools`, `krb5-user`, and
+`bind9-dnsutils`. Prepare the isolated Samba domain before running the case.
+This setup changes the controller's hostname and network configuration.
+Use a disposable guest reserved for this test.
+
+```sh
+bin/ocean-lab ssh -state "$LAB_STATE" farm-1-node-01 -- 'sudo sh -s' \
+  < lab/prepare_desktop_pair_directory.sh
+```
+
+Samba listens on `10.232.1.29` for the desktop subnet `10.232.1.16/28`.
+The case seeds regional directory placement and uses a test ARM identity.
+It creates the test Samba accounts through Ocean's directory Graph worker.
+Stock `az rest` registers the pinned image, allocates two private NICs,
+provisions two `Standard_B1s` desktops and assigns a different directory
+user to each. The probe verifies the running guests' DMI and boot IDs over
+pinned SSH and tests native admission over separate guest mTLS identities.
+It joins both desktops to Samba and installs the Ocean XRDP PAM hooks.
+FreeRDP pins each server certificate and attempts assigned, crossed, and
+unassigned logins. The probe observes the running Openbox sessions and
+checks that XRDP denies valid crossed and unassigned credentials at
+account admission. The test removes the ARM resources and verifies quota
+recovery. It records provisioning and admission timings in
+`desktop-pair.tsv` and `desktop-pair-rdp.tsv`.
+
 For the browser identity path, configure `desktopApplicationId` with the
 published Graph application object ID in
 `identity.onboarding.webDirectories[tenantId]`. The configured application

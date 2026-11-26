@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/desktop"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/lab"
@@ -36,30 +38,39 @@ import (
 
 const vmLabPrimary = "farm-1-node-05"
 
+type packagedVMScenario struct {
+	fenced      bool
+	desktopPair bool
+}
+
 func TestPackagedVMWorker(t *testing.T) {
 	state := os.Getenv("OCEAN_E2E_VM_WORKER_STATE")
 	testPackagedVMWorker(t, state, vmCatalogImage{URI: "https://images.ocean.test/server-core.vhd", SizeGiB: 64,
 		ImageSHA256: os.Getenv("OCEAN_E2E_VM_DISK_PIN"), FirmwareSHA256: os.Getenv("OCEAN_E2E_VM_VARS_PIN")},
-		"Standard_B2s", "server-core", os.Getenv("OCEAN_E2E_VM_SMB_AUTH") != "")
+		"Standard_B2s", "server-core", packagedVMScenario{fenced: os.Getenv("OCEAN_E2E_VM_SMB_AUTH") != ""})
 }
 
 func TestPackagedLinuxVMWorker(t *testing.T) {
-	testPackagedLinuxVMWorker(t, false)
+	testPackagedLinuxVMWorker(t, packagedVMScenario{})
 }
 
 func TestPackagedDesktopVMFence(t *testing.T) {
-	testPackagedLinuxVMWorker(t, true)
+	testPackagedLinuxVMWorker(t, packagedVMScenario{fenced: true})
 }
 
-func testPackagedLinuxVMWorker(t *testing.T, withFence bool) {
+func TestPackagedAssignedDesktopPair(t *testing.T) {
+	testPackagedLinuxVMWorker(t, packagedVMScenario{desktopPair: true})
+}
+
+func testPackagedLinuxVMWorker(t *testing.T, scenario packagedVMScenario) {
 	t.Helper()
 	state := os.Getenv("OCEAN_E2E_VM_LINUX_STATE")
 	testPackagedVMWorker(t, state, vmCatalogImage{URI: "https://images.ocean.test/debian-desktop.raw", SizeGiB: 8, OSType: workload.VMLinux,
 		ImageSHA256: os.Getenv("OCEAN_E2E_VM_LINUX_DISK_PIN"), FirmwareSHA256: os.Getenv("OCEAN_E2E_VM_LINUX_VARS_PIN")},
-		"Standard_B1s", "debian-desktop", withFence)
+		"Standard_B1s", "debian-desktop", scenario)
 }
 
-func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, hardware, guest string, withFence bool) {
+func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, hardware, guest string, scenario packagedVMScenario) {
 	t.Helper()
 	endpoint := os.Getenv("OCEAN_E2E_VM_ETCD")
 	if state == "" || endpoint == "" {
@@ -78,7 +89,7 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 		t.Fatal(err)
 	}
 	var fencePlan lab.Plan
-	if withFence {
+	if scenario.fenced {
 		fencePlan = loadPackagedVMFence(t)
 	}
 	osType := vmOperatingSystem(catalog.OSType)
@@ -93,7 +104,7 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	scope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
 	foreignScope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
 	catalog.TenantID, catalog.SubscriptionID = scope.TenantID, scope.SubscriptionID
-	r := setupPackagedVMStore(t, endpoint, catalog, packagedVMFencerKey(t, state), withFence)
+	r := setupPackagedVMStore(t, endpoint, catalog, packagedVMFencerKey(t, state), scenario.fenced)
 	ca, caKey, _, _ := directoryJoinClientCertificates(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
 	key, err := x509.MarshalPKCS8PrivateKey(caKey)
@@ -118,7 +129,11 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	}
 	api := httptest.NewUnstartedServer(nil)
 	t.Cleanup(api.Close)
-	api.TLS = directoryLabServerTLS(t, ca, caKey)
+	var extraIPs []net.IP
+	if scenario.desktopPair {
+		extraIPs = append(extraIPs, net.ParseIP(pairObserverIP))
+	}
+	api.TLS = directoryLabServerTLS(t, ca, caKey, extraIPs...)
 	regional := arm.Server{Origin: "https://" + api.Listener.Addr().String(), Location: r.name,
 		Inventory: r, Operations: r, Roles: r, VirtualMachines: r, Storage: r, Authenticate: func(_ context.Context, request *http.Request) (identity.ARMPrincipal, error) {
 			authenticatedScope := scope
@@ -133,7 +148,28 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 				TenantID: authenticatedScope.TenantID, SubscriptionID: authenticatedScope.SubscriptionID, Members: []string{"operator"},
 			}}, nil
 		}}
-	api.Config.Handler = authority.Handler(regional.Handler(http.NotFoundHandler()))
+	var handler http.Handler
+	var pairOrigin string
+	if scenario.desktopPair {
+		regional.Desktops = r
+		_, port, err := net.SplitHostPort(api.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pairOrigin = "https://" + net.JoinHostPort(pairObserverIP, port)
+		native := arm.Server{Origin: pairOrigin, DesktopNative: r}.Handler(http.NotFoundHandler())
+		management := regional.Handler(http.NotFoundHandler())
+		handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.URL.Path == desktop.NativeAdmissionPath {
+				native.ServeHTTP(w, req)
+				return
+			}
+			management.ServeHTTP(w, req)
+		})
+	} else {
+		handler = regional.Handler(http.NotFoundHandler())
+	}
+	api.Config.Handler = authority.Handler(handler)
 	api.StartTLS()
 	worker := directoryKVMHosts{root: root, state: state, directory: "vm-worker-" + scope.TenantID[:8], t: t}
 	origin := directoryGuestOrigin(t, api)
@@ -160,6 +196,11 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	}
 	cli := regionalWorkerCLI(t, ctx, api.URL, caFile, os.Getenv("OCEAN_E2E_VM_AZ"))
 	az := func(method, path, body string) []byte { return cli(method, path, body, "vm-worker-lab", "") }
+	if scenario.desktopPair {
+		testAssignedDesktopPair(t, ctx, r, worker, guests, scope, vnet, subnet, catalog, desktopPairAPI{az: az, cli: cli,
+			api: api, privateOrigin: pairOrigin, ca: ca, key: caKey, caPEM: caPEM})
+		return
+	}
 	image, nic, vm := address(arm.VMImageType, guest), address(arm.VMNetworkInterfaceType, "primary"), address(arm.VirtualMachineType, guest)
 	imageURL := image.ID(scope) + "?api-version=" + arm.VMImageAPIVersion
 	nicURL := nic.ID(scope) + "?api-version=" + arm.VMNetworkAPIVersion
@@ -266,7 +307,7 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 		t.Log("the private RDP listener returned with the previous user's profile checkpoint")
 	}
 	t.Logf("%s preserved the machine ID and private address on restart after %s", osType, time.Since(restart).Round(time.Millisecond))
-	if withFence {
+	if scenario.fenced {
 		startPackagedVMHost(t, ctx, r, worker, guests, vmLabSpare, origin, caPEM)
 		t.Cleanup(func() { stopPackagedVMHost(t, worker, vmLab, vmLabSpare) })
 		waitPackagedVMHost(t, ctx, r, vmLabSpare)
@@ -311,6 +352,10 @@ func (c *packagedDesktopClient) run(ctx context.Context, command string, input i
 }
 
 func packagedDesktopSSH(t *testing.T, state string, guests []lab.GuestStatus) *packagedDesktopClient {
+	return packagedDesktopSSHAt(t, state, guests, "10.232.1.20")
+}
+
+func packagedDesktopSSHAt(t *testing.T, state string, guests []lab.GuestStatus, ip string) *packagedDesktopClient {
 	t.Helper()
 	identity, knownHosts := os.Getenv("OCEAN_E2E_VM_LINUX_SSH_KEY"), os.Getenv("OCEAN_E2E_VM_LINUX_KNOWN_HOSTS")
 	if !filepath.IsAbs(identity) || !filepath.IsAbs(knownHosts) {
@@ -341,12 +386,13 @@ Host desktop-hop
     IdentityFile %q
     UserKnownHostsFile %q
 Host desktop
-    HostName 10.232.1.20
+    HostName %s
+    HostKeyAlias 10.232.1.20
     User debian
     ProxyJump desktop-hop
     IdentityFile %q
     UserKnownHostsFile %q
-`, port, filepath.Join(state, "ssh-key"), filepath.Join(state, "known-hosts"), identity, knownHosts)
+`, port, filepath.Join(state, "ssh-key"), filepath.Join(state, "known-hosts"), ip, identity, knownHosts)
 	if err := os.WriteFile(config, []byte(settings), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +421,7 @@ func setupPackagedVMStore(t *testing.T, endpoint string, catalog vmCatalogImage,
 		workers = append(workers, vmLabSpare)
 	}
 	r := &Region{client: client, root: "/test/vm-worker/" + operationID(), name: "local", cell: "cell-1",
-		workloads: &workloadControl{defaultPlacement: PlacementPolicy{Pools: []string{"lab"}, Quota: enrollment.Capacity{CPUMillis: 2000, MemoryMiB: 4096}}},
+		workloads: &workloadControl{sealer: sealer, defaultPlacement: PlacementPolicy{Pools: []string{"lab"}, Quota: enrollment.Capacity{CPUMillis: 2000, MemoryMiB: 4096}}},
 		storage:   &storageControl{sealer: sealer, workers: workers, fencer: fencer}}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
