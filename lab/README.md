@@ -2336,13 +2336,59 @@ restrict a subscription to a subset of those pools. Ocean checks the pool
 on new workload reservations and on VM and directory replacement placement.
 Azure Files jobs and their volume keys require an eligible registered worker.
 An SMB standby can become the writer only if its certified registration and
-the subscription policy still permit that placement. A pool change affects
-subsequent assignments and grants. Account for running guests and mounted
-volumes before changing a subscription's pool policy.
+the subscription policy still permit that placement.
+
+Enable tenant onboarding for the hosted region. Sign in with the configured
+operator application's service principal and use its ARM access token to read
+and replace a customer's placement policy. `GET` returns the effective policy,
+including the regional default before the first successful `PUT`. The request
+body contains the allowed `pools` and the CPU and memory `quota` in millicores
+and MiB. The API rejects pools outside the regional allowlist and quotas below
+committed usage. Finish retiring active guest reservations, Azure Files shares
+and SMB shares before removing a pool. Adding a preapproved pool leaves existing
+placements eligible. Reads and changes are scoped to the tenant subscription
+and recorded in its activity log. Repeating an identical `PUT` preserves the
+existing policy and the original write event.
+
+```sh
+placement="$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/placementPolicy?api-version=2026-11-01"
+az rest --method get --url "$placement"
+az rest --method put --url "$placement" \
+  --body '{"pools":["primary"],"quota":{"cpuMillis":8000,"memoryMiB":16384}}'
+```
 
 Verify the physical sites, network ACLs, Ceph clients, service endpoints,
 repositories and administrative access paths as part of the hosted deployment
 review. [Hosted workplace deployment review](HOSTED-WORKPLACE.md)
+
+Register independent key recovery sites under `hostedWorkplace.recoveryTargets`
+before bootstrapping the hosted region. Each target names an `operatorPool`,
+the exact HTTPS `metadataOrigins` of its restored etcd cluster, and an absolute
+`keyDirectory` on an approved private volume. Keep the region policy from the
+original cluster in the recovery configuration and use the restored cluster's
+mutual TLS endpoints. Create the directory with mode `0700` under the local
+recovery account. When exporting a key, the restore target must still be allowed
+by the tenant policy recorded in the restored metadata. Ocean refuses to open
+the key if the target is missing or disallowed, the endpoint set differs, or the
+output is outside the target directory. The output must be a new direct child
+of that directory. An offline key export verifies the snapshot's policy. Apply
+subsequent deletion decisions before making recovered services available.
+
+```json
+{
+  "recovery-a": {
+    "operatorPool": "primary",
+    "metadataOrigins": ["https://restore.ocean.test:2379"],
+    "keyDirectory": "/srv/ocean/recovery/keys"
+  }
+}
+```
+
+```sh
+ocean-recover -config "$RESTORED_REGION_CONFIG" -tenant "$OCEAN_CUSTOMER_TENANT" \
+  -subscription "$OCEAN_SUBSCRIPTION" -share "$OCEAN_SHARE_ID" \
+  -target recovery-a -output /srv/ocean/recovery/keys/recovered.key
+```
 
 Set `region.auditRetentionSeconds` on every replica to the period approved
 for regional activity records. For example, `2592000` specifies 30 days.
@@ -2361,15 +2407,19 @@ Apply the deployment retention schedule separately to etcd MVCC history,
 snapshots, operator logs and backups. The audit setting applies to current
 regional activity records. Telemetry has its own `retentionSeconds` setting.
 
-Run `WORKPLACE-42` and `WORKPLACE-43` against a disposable loopback etcd
+Run `WORKPLACE-42` through `WORKPLACE-44` against a disposable loopback etcd
 instance with the pinned Azure CLI. The probes use synthetic tenant and host
-identities and test the ARM responses, etcd keys, volume key assignment and
-SMB writer generation. The harness writes Markdown and TSV reports and logs.
+identities and test the ARM responses, etcd keys, volume key assignment,
+SMB writer generation and signed operator authorization. `WORKPLACE-45`
+starts two disposable mutual TLS etcd clusters from the pinned archive,
+takes and restores a snapshot, and exercises the recovery command.
+The harness writes Markdown and TSV reports and logs.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
 OCEAN_E2E_HOSTED_AZ="$(command -v az)" \
+OCEAN_E2E_HOSTED_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64.tar.gz" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 

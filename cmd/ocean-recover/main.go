@@ -15,6 +15,7 @@ func main() {
 	tenant := flag.String("tenant", "", "tenant that owns the share")
 	subscription := flag.String("subscription", "", "subscription that owns the share")
 	share := flag.String("share", "", "ARM file share resource ID")
+	target := flag.String("target", "", "approved target name for hosted recovery")
 	output := flag.String("output", "", "new private key file")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -23,7 +24,7 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := controlplane.RecoverVolumeKey(ctx, *config, *tenant, *subscription, *share, *output); err != nil {
+	if err := controlplane.RecoverVolumeKey(ctx, *config, *tenant, *subscription, *share, *target, *output); err != nil {
 		fmt.Fprintln(os.Stderr, "ocean-recover:", err)
 		os.Exit(1)
 	}

@@ -8,9 +8,11 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -21,10 +23,7 @@ var (
 	ErrReservationChanged = errors.New("reservation does not match its original request or generation")
 )
 
-type PlacementPolicy struct {
-	Pools []string            `json:"pools"`
-	Quota enrollment.Capacity `json:"quota"`
-}
+type PlacementPolicy = identity.PlacementPolicy
 
 type PlacementRequest struct {
 	ID                    string              `json:"id"`
@@ -173,37 +172,146 @@ func validScope(scope arm.SubscriptionScope) bool {
 // SetPlacementPolicy is called by the trusted provisioning plane. Workload
 // requests inherit this policy from their subscription.
 func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionScope, policy PlacementPolicy) error {
-	if !validScope(scope) || len(policy.Pools) == 0 || !validCapacity(policy.Quota) || !r.hosted.allowsPlacement(policy.Pools) {
+	_, err := r.writePlacementPolicy(ctx, scope, "", policy)
+	if errors.Is(err, identity.ErrPlacementTenantGone) {
 		return ErrPlacementPolicy
 	}
-	for _, name := range policy.Pools {
-		if !identifier.MatchString(name) {
-			return ErrPlacementPolicy
+	return err
+}
+
+func (r *Region) readPlacementSubscription(ctx context.Context, scope arm.SubscriptionScope) (int64, error) {
+	if !validScope(scope) {
+		return 0, identity.ErrPlacementTenantGone
+	}
+	_, key := r.tenantKeys(scope.TenantID)
+	rows, err := r.client.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows.Kvs) == 0 {
+		return 0, identity.ErrPlacementTenantGone
+	}
+	var sub identity.Subscription
+	if json.Unmarshal(rows.Kvs[0].Value, &sub) != nil || !sub.Valid(scope.TenantID) {
+		return 0, errors.New("invalid placement subscription")
+	}
+	if sub.SubscriptionID != scope.SubscriptionID {
+		return 0, identity.ErrPlacementTenantGone
+	}
+	return rows.Kvs[0].ModRevision, nil
+}
+
+func (r *Region) ReadTenantPlacementPolicy(ctx context.Context, sub identity.Subscription, actor string) (PlacementPolicy, error) {
+	scope := arm.SubscriptionScope{TenantID: sub.TenantID, SubscriptionID: sub.SubscriptionID}
+	_, subKey := r.tenantKeys(scope.TenantID)
+	for range 8 {
+		revision, err := r.readPlacementSubscription(ctx, scope)
+		if err != nil {
+			return PlacementPolicy{}, err
+		}
+		key := r.armPrefix(scope) + "placement-policy"
+		policy, policyRevision, err := r.placementPolicy(ctx, key, true)
+		if err != nil {
+			return PlacementPolicy{}, err
+		}
+		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(subKey), "=", revision),
+			clientv3.Compare(clientv3.ModRevision(key), "=", policyRevision)).Then(r.placementAudit(scope, actor, "read")).Commit()
+		if err != nil || result.Succeeded {
+			return policy, err
 		}
 	}
-	subscription, err := r.lookupSubscription(ctx, scope.TenantID)
-	if err != nil {
-		return err
+	return PlacementPolicy{}, errors.New("tenant placement policy changed concurrently")
+}
+
+func (r *Region) WriteTenantPlacementPolicy(ctx context.Context, sub identity.Subscription, actor string, policy PlacementPolicy) (PlacementPolicy, error) {
+	stored, err := r.writePlacementPolicy(ctx, arm.SubscriptionScope{TenantID: sub.TenantID, SubscriptionID: sub.SubscriptionID}, actor, policy)
+	switch {
+	case errors.Is(err, ErrPlacementPolicy):
+		return PlacementPolicy{}, identity.ErrPlacementPolicy
+	case errors.Is(err, ErrQuotaExceeded):
+		return PlacementPolicy{}, identity.ErrPlacementPolicyQuota
+	default:
+		return stored, err
 	}
-	if subscription == nil || !subscription.Valid(scope.TenantID) || subscription.SubscriptionID != scope.SubscriptionID {
-		return ErrPlacementPolicy
+}
+
+func (r *Region) writePlacementPolicy(ctx context.Context, scope arm.SubscriptionScope, actor string, policy PlacementPolicy) (PlacementPolicy, error) {
+	if len(policy.Pools) == 0 || len(policy.Pools) > 16 || !validCapacity(policy.Quota) || !r.hosted.allowsPlacement(policy.Pools) {
+		return PlacementPolicy{}, ErrPlacementPolicy
+	}
+	policy.Pools = slices.Clone(policy.Pools)
+	slices.Sort(policy.Pools)
+	for i, name := range policy.Pools {
+		if !identifier.MatchString(name) || i > 0 && policy.Pools[i-1] == name {
+			return PlacementPolicy{}, ErrPlacementPolicy
+		}
 	}
 	base := r.armPrefix(scope)
-	data, _ := json.Marshal(policy)
+	key := base + "placement-policy"
+	_, subKey := r.tenantKeys(scope.TenantID)
 	for range 8 {
+		subRevision, err := r.readPlacementSubscription(ctx, scope)
+		if err != nil {
+			return PlacementPolicy{}, err
+		}
 		used, err := r.counter(ctx, base+"placement-usage")
 		if err != nil {
-			return err
+			return PlacementPolicy{}, err
 		}
 		if !fits(policy.Quota, used.used, enrollment.Capacity{}) {
-			return ErrQuotaExceeded
+			return PlacementPolicy{}, ErrQuotaExceeded
 		}
-		result, err := r.client.Txn(ctx).If(used.compare()).Then(clientv3.OpPut(base+"placement-policy", string(data))).Commit()
+		guards := []clientv3.Cmp{used.compare(), clientv3.Compare(clientv3.ModRevision(subKey), "=", subRevision)}
+		if r.hosted != nil {
+			previous, revision, err := r.placementPolicy(ctx, key, true)
+			if err != nil {
+				return PlacementPolicy{}, err
+			}
+			if revision != 0 && previous.Quota == policy.Quota && slices.Equal(previous.Pools, policy.Pools) {
+				return policy, nil // A retry preserves the original policy and its audit event.
+			}
+			guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", revision))
+			if slices.ContainsFunc(previous.Pools, func(pool string) bool { return !slices.Contains(policy.Pools, pool) }) {
+				restrictions, err := r.narrowHostedPlacement(ctx, base, used)
+				if err != nil {
+					return PlacementPolicy{}, err
+				}
+				guards = append(guards, restrictions...)
+			}
+		}
+		writes := []clientv3.Op{putJSON(key, policy)}
+		if actor != "" {
+			writes = append(writes, r.placementAudit(scope, actor, "write"))
+		}
+		result, err := r.client.Txn(ctx).If(guards...).Then(writes...).Commit()
 		if err != nil || result.Succeeded {
-			return err
+			return policy, err
 		}
 	}
-	return errors.New("tenant quota usage changed concurrently")
+	return PlacementPolicy{}, errors.New("tenant placement state changed concurrently")
+}
+
+func (r *Region) narrowHostedPlacement(ctx context.Context, base string, used capacityCounter) ([]clientv3.Cmp, error) {
+	if used.used != (enrollment.Capacity{}) {
+		return nil, identity.ErrPlacementPolicyInUse
+	}
+	var guards []clientv3.Cmp
+	for _, prefix := range []string{base + "storage/shares/", base + "smb/groups/"} {
+		rows, err := r.client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+		if err != nil {
+			return nil, err
+		}
+		if rows.Count != 0 {
+			return nil, identity.ErrPlacementPolicyInUse
+		}
+		guards = append(guards, clientv3.Compare(clientv3.Version(prefix), "=", 0).WithPrefix())
+	}
+	return guards, nil
+}
+
+func (r *Region) placementAudit(scope arm.SubscriptionScope, actor, action string) clientv3.Op {
+	return r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: actor, Action: "Ocean.Hosted/placementPolicies/" + action,
+		Target: "/subscriptions/" + scope.SubscriptionID + "/providers/Ocean.Hosted/placementPolicies/default", Outcome: arm.OperationSucceeded})
 }
 
 // ReservePlacement commits one reservation together with tenant and host

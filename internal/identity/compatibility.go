@@ -36,6 +36,7 @@ type Compatibility struct {
 	signingKeys    sync.Map
 	subscriptions  *subscriptionReader
 	onboarding     *onboarding
+	placement      PlacementPolicyStore
 	directories    ManagedDirectoryStore
 }
 
@@ -140,6 +141,10 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("POST /ocean/tenants/{tenant}/directory/joinAuthorizations/{authorization}/close", c.managedDirectory)
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/directory/webApplications/{application}", c.managedDirectory)
 		mux.HandleFunc("PUT /ocean/tenants/{tenant}/directory/webApplications/{application}", c.managedDirectory)
+	}
+	if c.placement != nil {
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/placementPolicy", c.tenantPlacementPolicy)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/placementPolicy", c.tenantPlacementPolicy)
 	}
 	return mux
 }

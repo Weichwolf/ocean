@@ -60,21 +60,16 @@ func prepareSMBRecoveryEtcd(t *testing.T, ctx context.Context, archive, director
 		serverCert, serverKey, filepath.Join(directory, "etcd"), filepath.Join(directory, "etcdctl")
 }
 
-func startSMBRecoveryEtcd(t *testing.T, ctx context.Context, cfg etcdConfig, serverCert, serverKey, etcd, data string, restore func(string, string, string)) (etcdConfig, uint64, func()) {
+func startSMBRecoveryEtcd(t *testing.T, ctx context.Context, cfg etcdConfig, serverCert, serverKey, etcd, data string,
+	restore func(string, string, string), approvedOrigin ...string) (etcdConfig, uint64, func()) {
 	t.Helper()
-	loopback := func() string {
-		t.Helper()
-		listener, err := net.Listen("tcp4", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		address := listener.Addr().String()
-		if err := listener.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return address
+	var endpoint string
+	if len(approvedOrigin) == 0 {
+		endpoint = "https://" + disposableEtcdAddress(t)
+	} else {
+		endpoint = approvedOrigin[0]
 	}
-	endpoint, peer, token := "https://"+loopback(), "http://"+loopback(), operationID()
+	peer, token := "http://"+disposableEtcdAddress(t), operationID()
 	cluster := "smb-recovery=" + peer
 	if restore != nil {
 		restore(peer, cluster, token)
@@ -133,6 +128,19 @@ func startSMBRecoveryEtcd(t *testing.T, ctx context.Context, cfg etcdConfig, ser
 		return clusterID != 0
 	})
 	return cfg, clusterID, stop
+}
+
+func disposableEtcdAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
 }
 
 func etcdLabCommand(t *testing.T, ctx context.Context, env []string, command string, args ...string) []byte {

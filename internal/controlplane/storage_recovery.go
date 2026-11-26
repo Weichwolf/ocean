@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 
 // RecoverVolumeKey restores one key envelope with the operator's separate
 // key file and authenticated access to a restored regional metadata store.
-func RecoverVolumeKey(ctx context.Context, configuration, tenant, subscription, shareID, destination string) error {
+func RecoverVolumeKey(ctx context.Context, configuration, tenant, subscription, shareID, targetName, destination string) error {
 	scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: subscription}
 	address, err := recoveryShareAddress(scope, shareID)
 	if err != nil {
@@ -30,28 +31,45 @@ func RecoverVolumeKey(ctx context.Context, configuration, tenant, subscription, 
 	if settings.Region == nil || settings.Region.Storage == nil {
 		return errors.New("recovery requires regional storage and key configuration")
 	}
+	target, err := settings.Region.authorizeRecoveryTarget(targetName, destination)
+	if err != nil {
+		return err
+	}
 	region, err := openRegion(*settings.Region)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = region.client.Close() }()
+	defer func() { _ = region.close() }()
+	if err := region.verifyRecoveryTarget(ctx, scope, target); err != nil {
+		return err
+	}
+	openFile, remove := os.OpenFile, os.Remove
+	if target.KeyDirectory != "" {
+		root, err := target.openKeyDirectory()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = root.Close() }()
+		openFile, remove = root.OpenFile, root.Remove
+		destination = filepath.Base(destination)
+	}
 	key, err := region.recoverShareKey(ctx, scope, address)
 	if err != nil {
 		return err
 	}
 	defer clear(key)
-	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := openFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
 	if _, err := file.Write(key); err != nil {
-		return errors.Join(err, file.Close(), os.Remove(destination))
+		return errors.Join(err, file.Close(), remove(destination))
 	}
 	if err := file.Sync(); err != nil {
-		return errors.Join(err, file.Close(), os.Remove(destination))
+		return errors.Join(err, file.Close(), remove(destination))
 	}
 	if err := file.Close(); err != nil {
-		return errors.Join(err, os.Remove(destination))
+		return errors.Join(err, remove(destination))
 	}
 	return nil
 }

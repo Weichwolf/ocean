@@ -223,3 +223,5 @@ WORKPLACE-33	desktop-vm-delete	2.93.0	none	2024-03-01	rest --method delete --url
 WORKPLACE-43	hosted-account-put	2.93.0	none	2026-09-01	rest --method put --url {arm}{accountId}?api-version=2026-09-01 --body @{hosted_or_offsite_account_request} -o json
 WORKPLACE-43	hosted-share-get	2.93.0	none	2024-01-01	rest --method get --url {arm}{shareId}?api-version=2024-01-01 -o json
 WORKPLACE-43	hosted-share-denied	2.93.0	none	2024-01-01	rest --method put --url {arm}{shareId}?api-version=2024-01-01 --body @{share_request} -o json
+WORKPLACE-44	hosted-placement-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/placementPolicy?api-version=2026-11-01 -o json
+WORKPLACE-44	hosted-placement-put	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/placementPolicy?api-version=2026-11-01 --body @{placement_policy} -o json

@@ -24,6 +24,8 @@ const onboardingVersion = "2026-11-01"
 
 var ErrTenantConflict = errors.New("tenant registration conflicts with an existing allocation")
 
+var errOperatorDenied = errors.New("the operation requires an ocean operator")
+
 // OnboardingConfig identifies the operator and the private Keycloak admin API.
 type OnboardingConfig struct {
 	OperatorTenant  string                        `json:"operatorTenant"`
@@ -155,6 +157,28 @@ func newUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:])
 }
 
+func (c *Compatibility) authenticateOperator(ctx context.Context, req *http.Request) (string, error) {
+	raw, issuer, caller := c.bearerRealm(req)
+	if caller == "" {
+		return "", ErrInvalidARMToken
+	}
+	if caller != c.onboarding.config.OperatorTenant {
+		return "", errOperatorDenied
+	}
+	token, err := c.verifyAccessToken(ctx, raw, issuer, c.cloud.ResourceManager)
+	var actor struct {
+		Client string `json:"azp"`
+		Type   string `json:"typ"`
+	}
+	if err != nil || token.Claims(&actor) != nil || actor.Type != "Bearer" {
+		return "", ErrInvalidARMToken
+	}
+	if actor.Client != c.onboarding.config.OperatorClient {
+		return "", errOperatorDenied
+	}
+	return token.Subject, nil
+}
+
 func (c *Compatibility) onboardTenant(w http.ResponseWriter, req *http.Request) {
 	if !strings.EqualFold(req.Host, strings.TrimPrefix(c.cloud.ResourceManager, "https://")) {
 		http.NotFound(w, req)
@@ -164,26 +188,13 @@ func (c *Compatibility) onboardTenant(w http.ResponseWriter, req *http.Request) 
 	tenant := req.PathValue("tenant")
 	ctx, cancel := context.WithTimeout(req.Context(), 24*time.Second)
 	defer cancel()
-	raw, issuer, caller := c.bearerRealm(req)
-	if caller == "" {
-		invalidARMToken(w)
-		return
-	}
-	if caller != o.config.OperatorTenant {
-		armError(w, http.StatusForbidden, "AuthorizationFailed", "Tenant registration requires an ocean operator.")
-		return
-	}
-	token, err := c.verifyAccessToken(ctx, raw, issuer, c.cloud.ResourceManager)
-	var actor struct {
-		Client string `json:"azp"`
-		Type   string `json:"typ"`
-	}
-	if err != nil || token.Claims(&actor) != nil || actor.Type != "Bearer" {
-		invalidARMToken(w)
-		return
-	}
-	if actor.Client != o.config.OperatorClient {
-		armError(w, http.StatusForbidden, "AuthorizationFailed", "Tenant registration requires an ocean operator.")
+	actor, err := c.authenticateOperator(ctx, req)
+	if err != nil {
+		if errors.Is(err, errOperatorDenied) {
+			armError(w, http.StatusForbidden, "AuthorizationFailed", "Tenant registration requires an ocean operator.")
+		} else {
+			invalidARMToken(w)
+		}
 		return
 	}
 	query, err := url.ParseQuery(req.URL.RawQuery)
@@ -245,7 +256,7 @@ func (c *Compatibility) onboardTenant(w http.ResponseWriter, req *http.Request) 
 	if created {
 		status = http.StatusCreated
 	}
-	slog.Info("Tenant registration reconciled", "tenant", tenant, "operator", token.Subject,
+	slog.Info("Tenant registration reconciled", "tenant", tenant, "operator", actor,
 		"subscription", reservation.SubscriptionID, "created", created)
 	writeJSON(w, status, reservation.view())
 }

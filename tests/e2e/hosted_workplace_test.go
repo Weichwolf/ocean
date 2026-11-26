@@ -21,5 +21,12 @@ func hostedWorkplaceSteps() []harness.Step {
 	placement.Name = "hosted-placement-policy"
 	placement.Cases = []string{"WORKPLACE-43"}
 	placement.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedPlacement$", "./internal/controlplane"}
-	return []harness.Step{step, placement}
+	operator := step
+	operator.Name = "hosted-operator-placement"
+	operator.Cases = []string{"WORKPLACE-44"}
+	operator.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedOperatorPlacement$", "./internal/controlplane"}
+	recovery := harness.Step{Name: "hosted-recovery-target", Cases: []string{"WORKPLACE-45"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-tags=e2e", "-run", "^TestHostedRecoveryTarget$", "./internal/controlplane"}}
+	recovery = requireFile(recovery, os.Getenv("OCEAN_E2E_HOSTED_ETCD_ARCHIVE"), "the pinned etcd archive in OCEAN_E2E_HOSTED_ETCD_ARCHIVE")
+	return []harness.Step{step, placement, operator, recovery}
 }

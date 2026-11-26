@@ -79,6 +79,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if cfg.Region != nil && cfg.Region.DesktopLaunch != nil && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("desktop launch requires enrolled gateway hosts")
 	}
+	if cfg.Region != nil && cfg.Region.HostedWorkplace != nil && (cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil) {
+		return config.Server{}, service.Hooks{}, errors.New("hosted workplace requires operator and tenant onboarding identity")
+	}
 	if cfg.Region != nil && cfg.Region.ManagedDirectories != nil &&
 		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil ||
 			cfg.Region.Workloads == nil || !validCapacity(*cfg.Region.ManagedDirectories)) {
@@ -153,6 +156,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			compatibility.EnableSubscriptions(cfg.Region.Name, region.lookupSubscription)
 			if cfg.Identity.Onboarding != nil {
 				if err := compatibility.EnableOnboarding(*cfg.Identity.Onboarding, region); err != nil {
+					_ = region.close()
+					return config.Server{}, service.Hooks{}, err
+				}
+			}
+			if region.hosted != nil {
+				if err := compatibility.EnablePlacementPolicies(region); err != nil {
 					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
 				}
@@ -404,8 +413,7 @@ func (cfg etcdConfig) clientConfig() (clientv3.Config, error) {
 		return clientv3.Config{}, errors.New("region.etcd.endpoints is required")
 	}
 	for _, endpoint := range cfg.Endpoints {
-		parsed, err := url.Parse(endpoint)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		if !validEtcdOrigin(endpoint) {
 			return clientv3.Config{}, errors.New("etcd endpoints must be HTTPS origins")
 		}
 	}
@@ -431,4 +439,9 @@ func (cfg etcdConfig) clientConfig() (clientv3.Config, error) {
 			MinVersion:   tls.VersionTLS12,
 		},
 	}, nil
+}
+
+func validEtcdOrigin(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && parsed.Scheme == "https" && parsed.Hostname() != "" && parsed.User == nil && endpoint == "https://"+parsed.Host
 }
