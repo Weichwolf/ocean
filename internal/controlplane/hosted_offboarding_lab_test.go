@@ -68,7 +68,7 @@ func seedHostedRestoreAssignments(t *testing.T, ctx context.Context, r *Region, 
 }
 
 func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig, source *Region,
-	tenant, neighbor identity.TenantReservation, cli string, stopLedger, verifyKeyDenied func()) {
+	tenant, neighbor identity.TenantReservation, cli string, stopLedger func(), share storageShareRecord, writer containerRecord, verifyKeyDenied func()) {
 	t.Helper()
 	started := time.Now()
 	operatorRealm, operatorClient, operator := operationID(), operationID(), operationID()
@@ -100,6 +100,8 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 	}
 	sourceAz("get", groups(tenant.SubscriptionID), "", tenantToken, "InvalidAuthenticationToken")
 	verifyKeyDenied()
+	probe := newHostedPurgeProbe(tenant, share.Address.ID(share.Scope))
+	purge := checkHostedPurgeView(t, sourceAz("put", probe.path, probe.body, operatorToken, ""), probe.id, share.Volume.ID, "Pending")
 
 	restored, err := openRegion(cfg)
 	if err != nil {
@@ -112,6 +114,10 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 		clientv3.OpGet(marker, clientv3.WithCountOnly())).Commit()
 	if err != nil || before.Responses[0].GetResponseRange().Count != 1 || before.Responses[1].GetResponseRange().Count != 0 {
 		t.Fatalf("test requires a pre-suspension subscription from the snapshot: %v", err)
+	}
+	stalePurge, err := restored.client.Get(ctx, restored.filePurgeKey(tenant.TenantID, purge.ID), clientv3.WithCountOnly())
+	if err != nil || stalePurge.Count != 0 {
+		t.Fatalf("the snapshot must predate the independent deletion decision: %v", err)
 	}
 	origin, apiClient, az, _ := startHostedRestoreAPI(t, ctx, cfg, cli, operatorRealm, operatorClient, issuer.URL, issuer.Certificate())
 	after, err := restored.client.Get(ctx, marker)
@@ -136,6 +142,8 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 		t.Fatal("replay incorrectly blocked the neighboring tenant")
 	}
 	check(az("get", offboard, "", sign(operatorRealm, operatorClient, operator, origin), ""))
+	verifyHostedFilePurgeReplay(t, ctx, restored, share, writer, purge,
+		az("get", probe.path, "", sign(operatorRealm, operatorClient, operator, origin), ""))
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+"/"+tenant.TenantID+"/oauth2/v2.0/token", strings.NewReader("grant_type=client_credentials"))
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +160,7 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 	verifyHostedTenantExport(t, ctx, restored, az, origin, tenant, neighbor, operatorClient, operatorRealm, operator, sign)
 	stopLedger()
 	az("get", groups(neighbor.SubscriptionID), "", neighborToken, "ServiceUnavailable")
+	az("get", probe.path, "", sign(operatorRealm, operatorClient, operator, origin), "ServiceUnavailable")
 	az("get", "/ocean/tenants/"+neighbor.TenantID+"/dataExport?api-version=2026-11-01", "", neighborToken, "ServiceUnavailable")
 	startup, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()

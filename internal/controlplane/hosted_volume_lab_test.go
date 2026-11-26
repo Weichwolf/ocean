@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -126,7 +127,7 @@ func TestHostedMountedVolumeOffboarding(t *testing.T) {
 			"if sudo test -e /dev/mapper/" + mapper + "; then sudo cryptsetup close " + mapper + "; fi\n" +
 			"device=$(sudo " + rbd + " device list --format json | python3 -c 'import json, sys; print(next((x[\"device\"] for x in json.load(sys.stdin) if x[\"pool\"] == \"ocean\" and x[\"name\"] == sys.argv[1]), \"\"))' " + volume + ")\n" +
 			"if test -n \"$device\"; then sudo " + rbd + " device unmap \"$device\"; fi\n" +
-			"if sudo " + rbd + " info ocean/" + volume + " >/dev/null 2>&1; then sudo " + rbd + " rm ocean/" + volume + "; fi"
+			"if sudo " + rbd + " info ocean/" + volume + " >/dev/null 2>&1; then sudo " + rbd + " snap purge ocean/" + volume + "; sudo " + rbd + " rm ocean/" + volume + "; fi"
 		if out, err := worker.ssh(clean, hostedVolumeGuest, script, nil); err != nil {
 			t.Errorf("clean the disposable RBD volume: %v: %s", err, out)
 		}
@@ -164,6 +165,11 @@ func TestHostedMountedVolumeOffboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clear(key)
+	operatorToken := sign(operatorRealm, operatorClient, operator, origin)
+	purge := newHostedPurgeProbe(tenant, share.Address.ID(scope))
+	tenantToken := sign(tenant.TenantID, operatorClient, tenant.Administrator, origin)
+	az("put", purge.path, purge.body, tenantToken, "AuthorizationFailed")
+	az("put", purge.path, purge.body, operatorToken, "FileShareDeletionUnavailable")
 	start("containers", "--uid=ocean-agent --gid=ocean-agent --property=WorkingDirectory=/tmp --setenv=XDG_RUNTIME_DIR=/run/user/$(id -u ocean-agent)")
 	started := time.Now().UTC()
 	path := "/ocean/tenants/" + tenant.TenantID + "/offboarding?api-version=2026-11-01"
@@ -192,6 +198,22 @@ func TestHostedMountedVolumeOffboarding(t *testing.T) {
 	verifyHostedVolumeCheckpoint(t, remote, rbd, volume, mapper, key, run)
 	verifyHostedVolumeReceipts(t, ctx, r, scope, record, share, host.HostID, started)
 	t.Logf("The RBD worker withdrew the writable LUKS2 volume in %d ms, with its authenticated unmount receipt recorded before the container receipt. Both Podman containers stopped and a read-only audit recovered the original bytes from the detached image.", detachedIn)
+	verifyNativeHostedFilePurge(t, ctx, r, host, share, purge, func(method, path, body, expected string) []byte {
+		return az(method, path, body, sign(operatorRealm, operatorClient, operator, origin), expected)
+	}, func() { start("storage", "") }, run, rbd, func() bool {
+		out, err := worker.ssh(ctx, hostedVolumeGuest, "sudo journalctl -u "+fixture+"-storage --no-pager --output=cat -n 20", nil)
+		return err == nil && bytes.Contains(out, []byte("remove unbound encrypted volume"))
+	})
+}
+
+type hostedPurgeProbe struct {
+	path, body, id, approval string
+}
+
+func newHostedPurgeProbe(tenant identity.TenantReservation, shareID string) hostedPurgeProbe {
+	id, approval := operationID(), operationID()
+	return hostedPurgeProbe{path: "/ocean/tenants/" + tenant.TenantID + "/fileSharePurges/" + id + "?api-version=2026-11-01",
+		body: fmt.Sprintf(`{"subscriptionId":%q,"shareId":%q,"approvalId":%q}`, tenant.SubscriptionID, shareID, approval), id: id, approval: approval}
 }
 
 func verifyHostedVolumeReceipts(t *testing.T, ctx context.Context, r *Region, scope arm.SubscriptionScope,

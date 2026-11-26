@@ -242,7 +242,7 @@ func (r *Region) replayHostedOffboarding(ctx context.Context, regionalClusterID 
 			}
 		}
 		if !rows.More {
-			return nil
+			return r.replayHostedFilePurges(ctx, revision)
 		}
 		cursor = string(rows.Kvs[len(rows.Kvs)-1].Key) + "\x00"
 	}

@@ -38,6 +38,7 @@ type Compatibility struct {
 	onboarding     *onboarding
 	placement      PlacementPolicyStore
 	offboarding    HostedOffboardingStore
+	filePurge      HostedFilePurgeStore
 	hostedExport   HostedExportStore
 	directories    ManagedDirectoryStore
 }
@@ -151,6 +152,10 @@ func (c *Compatibility) Handler() http.Handler {
 	if c.offboarding != nil {
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/offboarding", c.hostedOffboarding)
 		mux.HandleFunc("PUT /ocean/tenants/{tenant}/offboarding", c.hostedOffboarding)
+	}
+	if c.filePurge != nil {
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/fileSharePurges/{decision}", c.hostedFilePurge)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/fileSharePurges/{decision}", c.hostedFilePurge)
 	}
 	if c.hostedExport != nil {
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/dataExport", c.tenantDataExport)

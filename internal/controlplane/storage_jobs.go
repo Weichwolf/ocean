@@ -10,6 +10,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/storage"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -19,17 +20,40 @@ func (r *Region) HostShareJobs(ctx context.Context, host string, certificate []b
 		return nil, enrollment.ErrHostDenied
 	}
 	prefix := r.storageJobKey(host, "")
+	purgePrefix := r.filePurgeJobKey(host, "")
 	snapshot, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.hostKey("registered", host)), clientv3.OpGet(r.hostKey("live", host)),
-		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithLimit(8))).Commit()
+		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithLimit(8)), clientv3.OpGet(purgePrefix, clientv3.WithPrefix())).Commit()
 	if err != nil {
 		return nil, err
 	}
-	if err := r.authorizeHostRole(host, certificate, "compute", snapshot); err != nil {
+	pool, err := r.authorizeStorageJobHost(host, certificate, snapshot)
+	if err != nil {
 		return nil, err
 	}
 	items := snapshot.Responses[2].GetResponseRange().Kvs
-	jobs := make([]storage.Job, 0, len(items))
+	const maxJobs = 8
+	jobs := make([]storage.Job, 0, maxJobs)
+	for _, item := range snapshot.Responses[3].GetResponseRange().Kvs {
+		volume := strings.TrimPrefix(string(item.Key), purgePrefix)
+		decision, err := r.certifyFilePurgeJob(ctx, host, pool, volume, string(item.Value), snapshot.Header.Revision)
+		if err == nil {
+			_, _, err = r.filePurgeBoundary(ctx, decision, snapshot.Header.Revision)
+		}
+		if errors.Is(err, identity.ErrHostedPurgeState) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, storage.Job{ID: volume, Volume: storage.Volume{ID: volume}, Delete: true})
+		if len(jobs) == maxJobs/2 {
+			break
+		}
+	}
 	for _, item := range items {
+		if len(jobs) == maxJobs {
+			break
+		}
 		key := string(item.Value)
 		id := strings.TrimPrefix(string(item.Key), prefix)
 		record, _, err := r.readShareJob(ctx, host, key, id, snapshot.Header.Revision)
@@ -52,6 +76,17 @@ func (r *Region) HostShareJobs(ctx context.Context, host string, certificate []b
 		jobs = append(jobs, job)
 	}
 	return jobs, nil
+}
+
+func (r *Region) authorizeStorageJobHost(host string, certificate []byte, snapshot *clientv3.TxnResponse) (string, error) {
+	if err := r.authorizeHostRole(host, certificate, "compute", snapshot); err != nil {
+		return "", err
+	}
+	var registration enrollment.Host
+	if err := json.Unmarshal(snapshot.Responses[0].GetResponseRange().Kvs[0].Value, &registration); err != nil {
+		return "", err
+	}
+	return registration.Pool, nil
 }
 
 func (r *Region) readShareJob(ctx context.Context, host, key, jobID string, revision int64) (storageShareRecord, int64, error) {
@@ -84,6 +119,9 @@ func (r *Region) shareEncryptionKey(record storageShareRecord) ([]byte, error) {
 func (r *Region) CompleteShareJob(ctx context.Context, host string, certificate []byte, id string) error {
 	if r.storage == nil || !slices.Contains(r.storage.workers, host) {
 		return enrollment.ErrHostDenied
+	}
+	if strings.HasPrefix(id, "vol-") {
+		return r.completeHostedFilePurge(ctx, host, certificate, id)
 	}
 	hostKey, liveKey, taskKey := r.hostKey("registered", host), r.hostKey("live", host), r.storageJobKey(host, id)
 	for range 8 {

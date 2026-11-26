@@ -228,8 +228,12 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 	return enrollment.ErrWorkloadChanged
 }
 
+func (r *Region) hostedContainerReceiptKey(scope arm.SubscriptionScope, placement, generation string) string {
+	return r.armPrefix(scope) + "hosted-suspensions/containers/" + placement + "/" + generation
+}
+
 func (r *Region) recordContainerSuspension(ctx context.Context, scope arm.SubscriptionScope, host string, record containerRecord, checks []clientv3.Cmp) error {
-	receipt := r.armPrefix(scope) + "hosted-suspensions/containers/" + record.Reservation.ID + "/" + record.Reservation.Generation
+	receipt := r.hostedContainerReceiptKey(scope, record.Reservation.ID, record.Reservation.Generation)
 	audit := r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: host, Action: "Ocean.Hosted/offboarding/stopContainer",
 		Target: record.Address.ID(scope), Outcome: workload.Suspended})
 	if record.Volume != nil {

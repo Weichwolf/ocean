@@ -2411,6 +2411,36 @@ layers, encrypted volumes and their regional writer grants for the tenant's
 retention or deletion procedure. Deploy the compatible control plane and
 workload and storage workers together.
 
+After suspension, an authenticated hosted operator can request deletion of a
+completed Azure Files share. Record the controller's approval in the
+deployment review and pass its opaque UUID as `approvalId`. Use a stable UUID
+for the request and retry with the same body. The independent ledger binds
+the decision to the subscription, full share resource ID, exact RBD volume,
+approved storage worker and pool. A pending decision releases no volume
+key. An attached share requires both current writer receipts before the
+storage worker receives the deletion job.
+
+```sh
+purge="$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/fileSharePurges/$OCEAN_DECISION_ID?api-version=2026-11-01"
+az rest --method put --url "$purge" --body @"$OCEAN_FILE_DELETION_REQUEST" -o json
+az rest --method get --url "$purge" -o json
+```
+
+The request file contains `subscriptionId`, `shareId` and `approvalId`.
+It contains no keys. The decision stays `Pending` while the approved worker
+is unavailable, while receipts are missing, or while Ceph snapshots prevent
+removal. The worker uses normal RBD deletion and acknowledges after the image
+is absent. Ocean then removes the live sealed key, inventory and writer grant
+and records `Succeeded`. Preserve access-control audit records under their
+own retention policy.
+
+Startup replays the deletion decision before the regional listener opens.
+An older snapshot repeats the checks for the restored writer. A different
+volume at the same share address remains outside the decision. Restore one
+authoritative regional writer at a time and use the approved storage identity
+and pool. Backup retention and physically retired devices have independent
+handling and evidence. The current endpoint covers Azure Files share volumes.
+
 Before suspending the tenant, the administrator registered at onboarding can
 export a snapshot of the tenant's regional records. Use that administrator's
 ARM token. Each successful page records a scoped `Ocean.Hosted/dataExports/read`
@@ -2555,6 +2585,12 @@ an isolated worker identity and one volume in the lab pool. It checks the
 detached mapping and reads a flushed checkpoint from the image in read-only
 mode using the fixture key held before suspension. The harness writes
 Markdown and TSV reports and logs.
+
+`WORKPLACE-51` uses the same mounted-volume fixture to prove that a retained
+Ceph snapshot blocks physical deletion until it is released. It inspects
+the native image inventory and the regional key record. `WORKPLACE-52`
+uses the older regional backup fixture to verify startup replay, the writer
+receipt gates and exact-volume binding through the storage protocol.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \

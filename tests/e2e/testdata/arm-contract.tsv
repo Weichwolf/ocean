@@ -233,3 +233,6 @@ WORKPLACE-48	hosted-tenant-export-next	2.93.0	none	2026-11-01	rest --method get 
 WORKPLACE-49	hosted-container-suspension	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
 WORKPLACE-50	hosted-mounted-volume-suspension	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
 WORKPLACE-50	hosted-mounted-volume-access-denied	2.93.0	none	2024-01-01	rest --method get --url {arm}{shareId}?api-version=2024-01-01 -o json
+WORKPLACE-51	hosted-file-purge-put	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 --body @{scoped_file_deletion_approval} -o json
+WORKPLACE-51	hosted-file-purge-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 -o json
+WORKPLACE-52	hosted-file-purge-restore	2.93.0	none	2026-11-01	rest --method get --url {restored_arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 -o json

@@ -19,6 +19,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/storage"
+	"github.com/Weichwolf/ocean/internal/workload"
 )
 
 func TestHostedRecoveryTarget(t *testing.T) {
@@ -72,7 +73,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	}
 	seedHostedRestoreAssignments(t, ctx, region, tenant, neighbor, quota)
 	seedHostedExportFixture(t, ctx, region, tenant, neighbor)
-	account := arm.ResourceAddress{Group: "lab", Path: storage.AccountType + "/fixture"}
+	account := arm.ResourceAddress{Group: "retained-fixture", Path: storage.AccountType + "/fixture"}
 	share := arm.ResourceAddress{Group: account.Group, Path: account.Path + "/fileServices/default/shares/fixture"}
 	volume := storage.Volume{ID: "vol-" + operationID(), SizeMiB: 1024}
 	key := make([]byte, storage.KeySize)
@@ -80,7 +81,17 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	defer clear(key)
 	shareKey := region.shareKey(scope, share)
 	envelope := region.storage.sealer.Seal(nil, nil, key, []byte(shareKey+"/"+volume.ID))
-	if _, err := region.client.Do(ctx, putJSON(shareKey, storageShareRecord{Address: share, Account: account, Scope: scope, Volume: volume, Envelope: envelope})); err != nil {
+	now := time.Now().UTC()
+	op := arm.Operation{ID: operationID(), Kind: createFileShare, Group: share.Group, Actor: tenant.Administrator, Status: arm.OperationSucceeded,
+		StartedAt: now, FinishedAt: &now}
+	record := storageShareRecord{Address: share, Account: account, Scope: scope, Volume: volume, Envelope: envelope, Host: hostedSuspensionHost, Operation: op.ID}
+	if err := region.PutInventoryResource(ctx, scope, arm.InventoryResource{Address: share, APIVersion: storage.ShareAPIVersion, Location: region.name}); err != nil {
+		t.Fatal(err)
+	}
+	writer := seedHostedContainer(t, ctx, region, scope, tenant.Administrator, workload.ContainerGroupType, 0)
+	writer.Volume = &volumeBinding{ID: volume.ID, Share: share}
+	if _, err := region.client.Txn(ctx).Then(putJSON(shareKey, record), putJSON(region.operationKey(scope, op.ID), op),
+		putJSON(region.containerKey(scope, writer.Address), writer), putJSON(region.writerKey(scope, volume.ID), writerFor(writer))).Commit(); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := verifyHostedBackup(t, ctx, cfg, region, scope, quota, backupIdentity, dir)
@@ -149,7 +160,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 		t.Fatal("the recovery key file is not owner-only")
 	}
 	t.Logf("Pinned etcd restored an independent cluster. ocean-recover rejected four target or policy mismatches, an outside path, and a shared directory before recovering the sealed key. Verification took %d ms.", time.Since(started).Milliseconds())
-	verifyHostedSuspension(t, ctx, cfg, region, tenant, neighbor, cli, stopLedger, func() {
+	verifyHostedSuspension(t, ctx, cfg, region, tenant, neighbor, cli, stopLedger, record, writer, func() {
 		run(cfg, "recovery-a", filepath.Join(keys, "after-suspension.key"), "hosted tenant subscription is unavailable")
 	})
 	stopSource()

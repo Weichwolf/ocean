@@ -153,6 +153,11 @@ func hostedOperatorLabAPI(t *testing.T, ctx context.Context, r *Region, cli, ope
 		if err := compat.EnableHostedOffboarding(r); err != nil {
 			t.Fatal(err)
 		}
+		if r.storage != nil {
+			if err := compat.EnableHostedFilePurge(r); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	api.Config.Handler = (arm.Server{Origin: armOrigin, Authenticate: compat.AuthenticateARM, Groups: r, Roles: r}).Handler(compat.Handler())
 	api.StartTLS()
