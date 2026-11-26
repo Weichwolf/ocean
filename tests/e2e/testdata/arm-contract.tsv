@@ -242,5 +242,7 @@ WORKPLACE-53	hosted-smb-purge-get	2.93.0	none	2026-11-01	rest --method get --url
 WORKPLACE-54	hosted-smb-purge-restore	2.93.0	none	2026-11-01	rest --method get --url {restored_arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 -o json
 WORKPLACE-55	hosted-smb-ha-share-put	2.93.0	none	2026-11-01	rest --method put --url {arm}{smb_share_id}?api-version=2026-11-01 --body @{smb_share_request} -o json
 WORKPLACE-55	hosted-smb-ha-fence	2.93.0	none	local	rest --method post --url {arm}/ocean/storage/smb-fences --body @{signed_smb_fence} -o json
-WORKPLACE-55	hosted-smb-ha-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
-WORKPLACE-55	hosted-smb-ha-purge	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 --body @{scoped_smb_deletion_approval} -o json
+WORKPLACE-56	hosted-smb-ha-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
+WORKPLACE-56	hosted-smb-cleanup-fence	2.93.0	none	local	rest --method post --url {arm}/ocean/storage/smb-fences --body @{signed_cleanup_fence} -o json
+WORKPLACE-56	hosted-smb-ha-purge	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 --body @{scoped_smb_deletion_approval} -o json
+WORKPLACE-56	hosted-smb-cleanup-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/fileSharePurges/{decision}?api-version=2026-11-01 -o json

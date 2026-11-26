@@ -101,6 +101,12 @@ func (r *Region) validateHostedInventory(inventory []enrollment.Approval) error 
 // It also covers an offline standby. The caller includes the revision guards
 // when committing a placement or publishing a replacement writer.
 func (r *Region) hostedHostGuards(ctx context.Context, scope arm.SubscriptionScope, host string, revision int64) ([]clientv3.Cmp, error) {
+	return r.hostedHostPlacementGuards(ctx, scope, host, revision, false)
+}
+
+// The suspended path is restricted to a signed SMB fence. Its caller must
+// compare the regional suspension marker and publish only cleanup ownership.
+func (r *Region) hostedHostPlacementGuards(ctx context.Context, scope arm.SubscriptionScope, host string, revision int64, suspended bool) ([]clientv3.Cmp, error) {
 	if r.hosted == nil {
 		return nil, nil
 	}
@@ -117,7 +123,11 @@ func (r *Region) hostedHostGuards(ctx context.Context, scope arm.SubscriptionSco
 	if revision == 0 {
 		revision = rows.Header.Revision
 	}
-	guard, err := r.hostedPoolGuard(ctx, scope, registration.Pool, revision)
+	poolGuard := r.hostedPoolGuard
+	if suspended {
+		poolGuard = r.hostedPlacementAt
+	}
+	guard, err := poolGuard(ctx, scope, registration.Pool, revision)
 	if err != nil {
 		return nil, err
 	}

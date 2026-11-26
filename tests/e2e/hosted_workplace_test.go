@@ -57,7 +57,7 @@ func hostedWorkplaceSteps() []harness.Step {
 	smb = requireFile(smb, filepath.Join(fixture, "member-rbd.json"), "the disposable SMB member identity")
 	smb = requireFile(smb, filepath.Join(fixture, "smbwriter"), "the disposable SMB writer credential")
 	ha := smb
-	ha.Name, ha.Cases = "hosted-smb-ha-offboarding", []string{"WORKPLACE-55"}
+	ha.Name, ha.Cases = "hosted-smb-ha-offboarding", []string{"WORKPLACE-55", "WORKPLACE-56"}
 	ha.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedSMBHAOffboarding$", "./internal/controlplane"}
 	ha.Timeout = 6 * time.Minute
 	ha = requireFile(ha, os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE"), "the SMB HA lab profile in OCEAN_E2E_SMB_FAILOVER_PROFILE")

@@ -36,8 +36,7 @@ func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate
 	}
 	read, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.hostKey("registered", host)), clientv3.OpGet(r.hostKey("live", host)),
 		clientv3.OpGet(r.smbMemberKey(binding)), clientv3.OpGet(r.managedDirectoryKey(binding.TenantID)),
-		clientv3.OpGet(r.smbOwnerKey(binding)), clientv3.OpGet(r.managedDirectoryPlacementKey(binding.TenantID)),
-		clientv3.OpGet(r.filePurgeJobKey(host, ""), clientv3.WithPrefix())).Commit()
+		clientv3.OpGet(r.smbOwnerKey(binding)), clientv3.OpGet(r.managedDirectoryPlacementKey(binding.TenantID))).Commit()
 	if err != nil {
 		return smbWorkerState{}, err
 	}

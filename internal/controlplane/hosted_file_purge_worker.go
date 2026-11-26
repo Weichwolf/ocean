@@ -170,15 +170,15 @@ func (r *Region) completeHostedFilePurge(ctx context.Context, host string, certi
 	checks = append(checks, clientv3.Compare(clientv3.ModRevision(job), "=", jobs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(hostKey), "=", read.Responses[0].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.Version(liveKey), ">", 0))
-	return r.finishHostedFilePurge(ctx, decision, job, key, checks, writes)
+	return r.finishHostedFilePurge(ctx, decision, host, job, key, checks, writes)
 }
 
-func (r *Region) finishHostedFilePurge(ctx context.Context, decision identity.HostedFilePurge, job, key string, checks []clientv3.Cmp, writes []clientv3.Op) error {
+func (r *Region) finishHostedFilePurge(ctx context.Context, decision identity.HostedFilePurge, worker, job, key string, checks []clientv3.Cmp, writes []clientv3.Op) error {
 	decision.CompletedAt = time.Now().UTC()
 	if decision.CompletedAt.Before(decision.DecidedAt) {
 		decision.CompletedAt = decision.DecidedAt
 	}
-	completion := r.auditOp(purgeScope(decision), arm.AuditEvent{Time: decision.CompletedAt, Actor: decision.Worker,
+	completion := r.auditOp(purgeScope(decision), arm.AuditEvent{Time: decision.CompletedAt, Actor: worker,
 		Action: "Ocean.Hosted/offboarding/completeFilePurge", Target: decision.ShareID, Outcome: arm.OperationSucceeded})
 	writes = append(writes, putJSON(key, decision), clientv3.OpDelete(job), completion)
 	result, err := r.client.Txn(ctx).If(checks...).Then(writes...).Commit()

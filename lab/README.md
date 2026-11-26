@@ -2425,6 +2425,13 @@ receipt before offering a deletion to that member. The member receives no
 share or Samba-state keys. An older SMB agent receives revocation and must
 be upgraded to acknowledge withdrawal and execute the approved deletion.
 
+If the SMB owner fails after suspension, the fencing authority can submit a
+fresh signed power-off observation to `/ocean/storage/smb-fences` after
+verifying the fence. The peer receives a new cleanup generation after the
+old host's lease expires. The peer confirms keyless withdrawal before it can
+execute a pending deletion. The decision retains the initial worker and
+operator pool, and completion records the executing member in the audit.
+
 ```sh
 purge="$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/fileSharePurges/$OCEAN_DECISION_ID?api-version=2026-11-01"
 az rest --method put --url "$purge" --body @"$OCEAN_FILE_DELETION_REQUEST" -o json
@@ -2432,8 +2439,8 @@ az rest --method get --url "$purge" -o json
 ```
 
 The request file contains `subscriptionId`, `shareId` and `approvalId`.
-It contains no keys. The decision stays `Pending` while the approved worker
-is unavailable, while receipts are missing, or while Ceph snapshots prevent
+It contains no keys. The decision stays `Pending` while an eligible worker
+in the approved pool is unavailable, while receipts are missing, or while Ceph snapshots prevent
 removal. The worker uses normal RBD deletion and acknowledges after the image
 is absent. Ocean then removes the live sealed key, inventory and applicable
 writer grant or SMB share binding and records `Succeeded`. Preserve access-control audit records under their
@@ -2609,8 +2616,14 @@ regional snapshot reapplies the same decision with a fresh receipt gate.
 copies the encrypted Samba membership image and powers off
 `farm-1-node-04` before publishing a signed fence. It verifies Kerberos
 reconnect on the standby, reboots the former writer, and exercises
-suspension and approved deletion with the new owner. It removes its test
-images and restores the original guest configurations.
+suspension with the new owner. `WORKPLACE-56` then powers off that owner
+before it can acknowledge withdrawal. A second signed fence assigns a fresh
+cleanup generation to the enrolled peer. The agent receives only a keyless
+withdrawal plan and must acknowledge it before receiving a deletion job.
+The approval keeps its original worker and pool. The peer can execute it in
+that same pool, and the audit attributes completion to the actual worker.
+The test removes its images and restores the original guests, standalone SMB
+share and configurations.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \

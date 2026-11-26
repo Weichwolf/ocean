@@ -38,7 +38,7 @@ func TestHostedSMBHAOffboarding(t *testing.T) {
 	if state == "" || fixture == "" || archive == "" || cli == "" || profile == "" {
 		t.Skip("requires the disposable two-member SMB KVM lab and profile, pinned etcd, and stock Azure CLI")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -135,51 +135,61 @@ func TestHostedSMBHAOffboarding(t *testing.T) {
 	}
 	priorReceipt := firstPlan.Receipt()
 	firstPlan.ClearKeys()
-	bootPrimary := func(ctx context.Context) error {
-		return workspace.UpSelected(ctx, labPlan, "", 0, []string{smbLabHost})
-	}
-	t.Cleanup(func() {
-		clean, stop := context.WithTimeout(context.Background(), 60*time.Second)
-		defer stop()
-		if err := bootPrimary(clean); err != nil {
-			t.Errorf("restore the original lab guest: %v", err)
+	bootMember := func(ctx context.Context, guest string) {
+		t.Helper()
+		if err := workspace.UpSelected(ctx, labPlan, "", 0, []string{guest}); err != nil {
+			t.Errorf("restore the lab guest %s: %v", guest, err)
 			return
 		}
-		pollVMWorker(t, clean, 45*time.Second, "original member SSH after test cleanup", func() bool {
-			_, err := worker.ssh(clean, smbLabHost, "true", nil)
+		pollVMWorker(t, ctx, 45*time.Second, "SSH after booting "+guest, func() bool {
+			_, err := worker.ssh(ctx, guest, "true", nil)
 			return err == nil
 		})
-	})
-	shortenHostedTestLease(t, ctx, r, binding.HostID)
-	if err := workspace.Stop(smbLabHost); err != nil {
-		t.Fatal(err)
 	}
-	pollVMWorker(t, ctx, 15*time.Second, "the fenced primary KVM guest and its lease to stop", func() bool {
-		guests, err := workspace.Status()
-		if err != nil || !slices.ContainsFunc(guests, func(g lab.GuestStatus) bool { return g.Guest.Name == smbLabHost && !g.Running }) {
-			return false
+	stopMember := func(owner smbOwner, guest string) {
+		t.Helper()
+		t.Cleanup(func() {
+			clean, stop := context.WithTimeout(context.Background(), 60*time.Second)
+			defer stop()
+			bootMember(clean, guest)
+		})
+		shortenHostedTestLease(t, ctx, r, owner.HostID)
+		if err := workspace.Stop(guest); err != nil {
+			t.Fatal(err)
 		}
-		live, err := r.client.Get(ctx, r.hostKey("live", binding.HostID), clientv3.WithCountOnly())
-		return err == nil && live.Count == 0
-	})
+		pollVMWorker(t, ctx, 15*time.Second, "the fenced KVM guest and its lease to stop", func() bool {
+			guests, err := workspace.Status()
+			if err != nil || !slices.ContainsFunc(guests, func(g lab.GuestStatus) bool { return g.Guest.Name == guest && !g.Running }) {
+				return false
+			}
+			live, err := r.client.Get(ctx, r.hostKey("live", owner.HostID), clientv3.WithCountOnly())
+			return err == nil && live.Count == 0
+		})
+	}
+	stopMember(first, smbLabHost)
 	denyHostedSMBHost(t, ctx, r, binding.StandbyHostID, standbyCert)
 	registerNamedHostedLabWorker(t, ctx, r, binding.StandbyHostID, standbyCert)
 	denyHostedSMBHost(t, ctx, r, binding.StandbyHostID, standbyCert)
-	attestation, err := json.Marshal(smb.FenceAttestation{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID,
-		HostID: first.HostID, Generation: first.Generation, Observation: storage.PoweredOff, ObservedAt: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sendFence := func(signature []byte, expected string) {
+	prepareFence := func(owner smbOwner, signed bool) string {
 		t.Helper()
+		attestation, err := json.Marshal(smb.FenceAttestation{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID,
+			HostID: owner.HostID, Generation: owner.Generation, Observation: storage.PoweredOff, ObservedAt: time.Now().UTC()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signature := make([]byte, ed25519.SignatureSize)
+		if signed {
+			signature = ed25519.Sign(signer, attestation)
+		}
 		raw, err := json.Marshal(storage.SignedFence{Attestation: attestation, Signature: signature})
 		if err != nil {
 			t.Fatal(err)
 		}
-		tenantCall("post", "/ocean/storage/smb-fences", string(raw), expected)
+		return string(raw)
 	}
-	sendFence(make([]byte, ed25519.SignatureSize), "StorageAuthorizationFailed")
-	sendFence(ed25519.Sign(signer, attestation), "")
+	const fencePath = "/ocean/storage/smb-fences"
+	tenantCall("post", fencePath, prepareFence(first, false), "StorageAuthorizationFailed")
+	tenantCall("post", fencePath, prepareFence(first, true), "")
 	second, _ := hostedSMBLabOwner(t, ctx, r, binding)
 	if second.HostID != binding.StandbyHostID || second.Generation == first.Generation {
 		t.Fatal("fencing did not move the certified writer generation to the standby")
@@ -204,13 +214,7 @@ func TestHostedSMBHAOffboarding(t *testing.T) {
 		return err == nil
 	})
 
-	if err := bootPrimary(ctx); err != nil {
-		t.Fatal(err)
-	}
-	pollVMWorker(t, ctx, 45*time.Second, "the former writer to reboot", func() bool {
-		_, err := worker.ssh(ctx, smbLabHost, "true", nil)
-		return err == nil
-	})
+	bootMember(ctx, smbLabHost)
 	registerNamedHostedLabWorker(t, ctx, r, binding.HostID, primaryCert)
 	registerNamedHostedLabWorker(t, ctx, r, binding.StandbyHostID, standbyCert)
 	primary()
@@ -240,18 +244,86 @@ func TestHostedSMBHAOffboarding(t *testing.T) {
 	if err := r.CompleteSMBPlan(ctx, binding.StandbyHostID, standbyCert, priorReceipt); !errors.Is(err, enrollment.ErrSMBPlanChanged) {
 		t.Fatalf("a receipt from the fenced generation was accepted: %v", err)
 	}
-	worker.run(ctx, smbLabStandby, "sudo systemctl kill --signal=CONT --kill-whom=main "+unit, nil)
-	pollVMWorker(t, ctx, 35*time.Second, "the new SMB writer to withdraw and purge the approved share", func() bool {
+	if t.Failed() {
+		t.FailNow()
+	}
+	operatorCall("post", fencePath, prepareFence(second, true), "StorageResourceInUse")
+	worker.run(ctx, smbLabHost, "sudo systemctl kill --signal=STOP --kill-whom=main "+unit, nil)
+	stopMember(second, smbLabStandby)
+	denyHostedSMBHost(t, ctx, r, binding.HostID, primaryCert)
+	registerNamedHostedLabWorker(t, ctx, r, binding.HostID, primaryCert)
+	proof := prepareFence(second, true)
+	operatorCall("post", fencePath, proof, "")
+	operatorCall("post", fencePath, proof, "")
+	third, _ := hostedSMBLabOwner(t, ctx, r, binding)
+	if third.HostID != binding.HostID || third.Generation == second.Generation || third.Generation == first.Generation {
+		t.Fatal("the suspended fence did not assign a fresh cleanup generation")
+	}
+	current := hostedSMBLabRecord(t, ctx, r, binding, shareName)
+	if current.Operation != replacement.Operation || !current.Ready || current.Volume != record.Volume {
+		t.Fatal("the cleanup fence changed the share or scheduled publication")
+	}
+	cleanup, err := r.HostSMBPlan(ctx, third.HostID, primaryCert)
+	if err != nil || !cleanup.Valid() || cleanup.Generation != third.Generation || cleanup.Suspension == nil ||
+		cleanup.Suspension.PurgeVolume != "" || len(cleanup.StateKey) != 0 || len(cleanup.Volumes) != 0 ||
+		!slices.Contains(cleanup.Suspension.Volumes, member.StateVolumeID) || !slices.Contains(cleanup.Suspension.Volumes, record.Volume.ID) {
+		t.Fatalf("the replacement did not receive a keyless withdrawal before deletion: %v", err)
+	}
+	if err := r.CompleteSMBPlan(ctx, third.HostID, primaryCert, withdraw.Receipt()); !errors.Is(err, enrollment.ErrSMBPlanChanged) {
+		t.Fatalf("the replacement accepted the failed writer's withdrawal receipt: %v", err)
+	}
+	bootMember(ctx, smbLabStandby)
+	registerNamedHostedLabWorker(t, ctx, r, binding.StandbyHostID, standbyCert)
+	standby()
+	denyHostedSMBHost(t, ctx, r, binding.StandbyHostID, standbyCert)
+	if err := r.CompleteSMBPlan(ctx, binding.StandbyHostID, standbyCert, withdraw.Receipt()); !errors.Is(err, enrollment.ErrHostDenied) {
+		t.Fatalf("the restarted writer could report its old receipt: %v", err)
+	}
+	for _, guest := range []string{smbLabHost, smbLabStandby} {
+		assertSMBLabPlacement(t, ctx, worker, guest, vip, member.StateVolumeID, record.Volume.ID, false)
+	}
+	worker.run(ctx, smbLabHost, "sudo systemctl kill --signal=CONT --kill-whom=main "+unit, nil)
+	pollVMWorker(t, ctx, 55*time.Second, "the cleanup owner to withdraw and purge the approved share", func() bool {
 		found, err := r.HostedFilePurge(ctx, scope.TenantID, probe.id)
 		return err == nil && found != nil && !found.CompletedAt.IsZero()
 	})
-	checkHostedPurgeView(t, operatorCall("get", probe.path, "", ""), probe.id, record.Volume.ID, "Succeeded")
+	completed := checkHostedPurgeView(t, operatorCall("get", probe.path, "", ""), probe.id, record.Volume.ID, "Succeeded")
+	if completed.Worker != approved.Worker || completed.ApprovalID != approved.ApprovalID {
+		t.Fatal("the completion changed the independent deletion approval")
+	}
+	verifyHostedSMBCleanupAudit(t, ctx, r, scope, third.HostID, address)
 	for _, guest := range []string{smbLabHost, smbLabStandby} {
 		assertSMBLabPlacement(t, ctx, worker, guest, vip, member.StateVolumeID, record.Volume.ID, false)
 	}
 	worker.run(ctx, smbRecoveryCeph, "sudo rbd ls ocean --format json | python3 -c 'import json, sys; ids=json.load(sys.stdin); assert sys.argv[1] in ids and sys.argv[2] not in ids' "+
 		member.StateVolumeID+" "+record.Volume.ID, nil)
-	t.Logf("The QEMU fence transferred the service to the standby and Kerberos recovered the original checkpoint. Hosted suspension detached both RBD volumes and removed the floating address. The approved share alone was deleted by the current writer in %d ms.", time.Since(started).Milliseconds())
+	t.Logf("The first QEMU fence transferred the service to the standby and Kerberos recovered the original checkpoint. A second QEMU fence after suspension assigned only keyless cleanup. The failed writer's approval stayed intact, the audit recorded the actual cleanup worker, and the approved share alone was deleted in %d ms from suspension.", time.Since(started).Milliseconds())
+}
+
+func verifyHostedSMBCleanupAudit(t *testing.T, ctx context.Context, r *Region, scope arm.SubscriptionScope, host string, address arm.ResourceAddress) {
+	t.Helper()
+	rows, err := r.client.Get(ctx, r.armPrefix(scope)+"audit/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fenced, withdrawn, deleted int
+	for _, row := range rows.Kvs {
+		var event arm.AuditEvent
+		if err := json.Unmarshal(row.Value, &event); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case event.Action == "Ocean.Hosted/offboarding/fenceSMB" && event.Actor == "storage-fencing-authority" && event.Outcome == arm.OperationSucceeded:
+			fenced++
+		case event.Action == "Ocean.Hosted/offboarding/withdrawSMB" && event.Actor == host && event.Outcome == "Suspended":
+			withdrawn++
+		case event.Action == "Ocean.Hosted/offboarding/completeFilePurge" && event.Actor == host && event.Target == address.ID(scope) && event.Outcome == arm.OperationSucceeded:
+			deleted++
+		}
+	}
+	if fenced != 1 || withdrawn == 0 || deleted != 1 {
+		t.Fatalf("want a cleanup fence, withdrawal and attributed deletion in the audit, got %d, %d, %d", fenced, withdrawn, deleted)
+	}
 }
 
 func hostedSMBTestFencer(t *testing.T) (ed25519.PrivateKey, string) {

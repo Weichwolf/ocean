@@ -15,7 +15,9 @@ var (
 	ErrHostedPurgeChanged = errors.New("this request ID or volume already has a different deletion decision")
 )
 
-// HostedFilePurge binds an operator approval to one immutable file volume.
+// HostedFilePurge binds an operator approval to one immutable file volume. The
+// recorded worker identifies the queue at approval time. For a redundant SMB
+// member, an independently fenced replacement in the same pool can execute it.
 // CompletedAt is regional evidence and is never written to the deletion ledger.
 type HostedFilePurge struct {
 	ID             string    `json:"id"`

@@ -26,6 +26,13 @@ func (r *Region) smbOwnerKey(binding smbBinding) string {
 	return r.smbMemberKey(binding) + "/owner"
 }
 
+func otherSMBMember(binding smbBinding, host string) string {
+	if host == binding.StandbyHostID {
+		return binding.HostID
+	}
+	return binding.StandbyHostID
+}
+
 func readSMBOwner(binding smbBinding, rows []*mvccpb.KeyValue) (smbOwner, int64, error) {
 	var owner smbOwner
 	if len(rows) != 1 || json.Unmarshal(rows[0].Value, &owner) != nil || !identifier.MatchString(owner.Generation) ||
@@ -82,11 +89,15 @@ func (r *Region) ApplySMBFence(ctx context.Context, signed storage.SignedFence) 
 		if err != nil {
 			return err
 		}
-		replacement := binding.StandbyHostID
-		if owner.HostID == replacement {
-			replacement = binding.HostID
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
+			return err
 		}
-		target, err := r.hostedHostGuards(ctx, scope, replacement, read.Header.Revision)
+		if suspension != nil && suspension.SubscriptionID != scope.SubscriptionID {
+			return arm.ErrStorageAccess
+		}
+		replacement := otherSMBMember(binding, owner.HostID)
+		target, err := r.hostedHostPlacementGuards(ctx, scope, replacement, read.Header.Revision, suspension != nil)
 		if errors.Is(err, ErrPlacementPolicy) || errors.Is(err, enrollment.ErrHostDenied) {
 			return arm.ErrStorageAccess
 		}
@@ -99,6 +110,21 @@ func (r *Region) ApplySMBFence(ctx context.Context, signed storage.SignedFence) 
 			clientv3.Compare(clientv3.ModRevision(memberKey), "=", revision),
 			clientv3.Compare(clientv3.Version(liveKey), "=", 0), clientv3.Compare(clientv3.Version(fenceKey), "=", 0))
 		writes := []clientv3.Op{clientv3.OpPut(fenceKey, string(signed.Attestation)), putJSON(ownerKey, next)}
+		marker := r.offboardingMarker(scope.TenantID)
+		if suspension != nil {
+			encoded, err := json.Marshal(suspension)
+			if err != nil {
+				return err
+			}
+			checks = append(checks, clientv3.Compare(clientv3.Value(marker), "=", string(encoded)))
+			writes = append(writes, r.smbOffboardingAudit(binding, "storage-fencing-authority", "fenceSMB", arm.OperationSucceeded, now))
+			result, err := r.client.Txn(ctx).If(checks...).Then(writes...).Commit()
+			if err != nil || result.Succeeded {
+				return err
+			}
+			continue
+		}
+		checks = append(checks, clientv3.Compare(clientv3.Version(marker), "=", 0))
 		for index, record := range records {
 			if !record.Ready {
 				continue // The replacement resumes pending publication or withdrawal.

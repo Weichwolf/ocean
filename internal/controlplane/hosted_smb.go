@@ -12,6 +12,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/smb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -51,6 +52,11 @@ func (r *Region) smbSuspensionReceiptKey(worker smbWorkerState, memberRevision i
 	return r.smbMemberKey(worker.binding) + "/suspensions/" + worker.owner.Generation + "/" + strconv.FormatInt(revision, 10)
 }
 
+func (r *Region) smbOffboardingAudit(binding smbBinding, actor, action, outcome string, now time.Time) clientv3.Op {
+	return r.auditOp(binding.scope(), arm.AuditEvent{Time: now, Actor: actor, Action: "Ocean.Hosted/offboarding/" + action,
+		Target: "/subscriptions/" + binding.SubscriptionID + "/providers/Ocean.Storage/smbMembers/" + binding.HostID, Outcome: outcome})
+}
+
 func (r *Region) hostedSMBSuspensionPlan(ctx context.Context, worker smbWorkerState, records []smbShareRecord, memberRevision int64) (smb.Plan, error) {
 	plan := smb.Plan{Generation: worker.owner.Generation, Revision: max(worker.ownerRevision, memberRevision), Suspension: &smb.SuspensionPlan{}}
 	for _, record := range records {
@@ -68,25 +74,12 @@ func (r *Region) hostedSMBSuspensionPlan(ctx context.Context, worker smbWorkerSt
 	if len(seen.Kvs) == 0 || string(seen.Kvs[0].Value) != worker.owner.HostID {
 		return plan, nil
 	}
-	for _, item := range read.Responses[6].GetResponseRange().Kvs {
-		volume := strings.TrimPrefix(string(item.Key), r.filePurgeJobKey(worker.owner.HostID, ""))
-		decision, err := r.certifyFilePurgeJob(ctx, worker.owner.HostID, worker.pool, volume, string(item.Value), read.Header.Revision)
-		if errors.Is(err, identity.ErrHostedPurgeState) {
-			continue
-		}
-		if err != nil {
-			return smb.Plan{}, err
-		}
-		if !isHostedSMBPurge(decision) || purgeScope(decision) != worker.binding.scope() {
-			continue
-		}
-		if _, _, err := r.smbFilePurgeBoundary(ctx, decision, worker, records); errors.Is(err, identity.ErrHostedPurgeState) {
-			continue
-		} else if err != nil {
-			return smb.Plan{}, err
-		}
-		plan.Suspension.PurgeVolume = volume
-		break
+	job, err := r.hostedSMBPurgeJob(ctx, worker, records, "")
+	if err != nil {
+		return smb.Plan{}, err
+	}
+	if job != nil {
+		plan.Suspension.PurgeVolume = job.decision.VolumeID
 	}
 	return plan, nil
 }
@@ -105,32 +98,69 @@ func (r *Region) completeHostedSMBSuspension(ctx context.Context, worker smbWork
 	)
 	key := r.smbSuspensionReceiptKey(worker, memberRevision)
 	if receipt.PurgeVolume == "" {
-		audit := r.auditOp(binding.scope(), arm.AuditEvent{Time: time.Now().UTC(), Actor: host, Action: "Ocean.Hosted/offboarding/withdrawSMB",
-			Target: "/subscriptions/" + binding.SubscriptionID + "/providers/Ocean.Storage/smbMembers/" + binding.HostID, Outcome: "Suspended"})
+		audit := r.smbOffboardingAudit(binding, host, "withdrawSMB", "Suspended", time.Now().UTC())
 		return r.recordHostedWorkerReceipt(ctx, host, key, audit, checks)
 	}
-	job := r.filePurgeJobKey(host, receipt.PurgeVolume)
-	for _, item := range read.Responses[6].GetResponseRange().Kvs {
-		if string(item.Key) != job {
+	job, err := r.hostedSMBPurgeJob(ctx, worker, records, receipt.PurgeVolume)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return enrollment.ErrSMBPlanChanged
+	}
+	checks = append(checks, job.guards...)
+	checks = append(checks, clientv3.Compare(clientv3.Value(key), "=", host),
+		clientv3.Compare(clientv3.ModRevision(string(job.row.Key)), "=", job.row.ModRevision))
+	return r.finishHostedFilePurge(ctx, job.decision, host, string(job.row.Key), string(job.row.Value), checks, job.writes)
+}
+
+type hostedSMBDeletion struct {
+	decision identity.HostedFilePurge
+	row      *mvccpb.KeyValue
+	guards   []clientv3.Cmp
+	writes   []clientv3.Op
+}
+
+// Approvals stay in the original queue for replay. The current certified
+// owner may consume either member's SMB job within the approved pool.
+func (r *Region) hostedSMBPurgeJob(ctx context.Context, worker smbWorkerState, records []smbShareRecord, wanted string) (*hostedSMBDeletion, error) {
+	at, scope := worker.read.Header.Revision, worker.binding.scope()
+	for _, approved := range []string{worker.owner.HostID, otherSMBMember(worker.binding, worker.owner.HostID)} {
+		if approved == "" {
 			continue
 		}
-		decision, err := r.certifyFilePurgeJob(ctx, host, worker.pool, receipt.PurgeVolume, string(item.Value), read.Header.Revision)
+		prefix := r.filePurgeJobKey(approved, "")
+		options := []clientv3.OpOption{clientv3.WithRev(at)}
+		if wanted == "" {
+			options = append(options, clientv3.WithPrefix())
+		}
+		jobs, err := r.client.Get(ctx, prefix+wanted, options...)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if !isHostedSMBPurge(decision) || purgeScope(decision) != binding.scope() {
-			return enrollment.ErrSMBPlanChanged
+		for _, item := range jobs.Kvs {
+			volume := strings.TrimPrefix(string(item.Key), prefix)
+			decision, err := r.certifyFilePurgeJob(ctx, approved, worker.pool, volume, string(item.Value), at)
+			if errors.Is(err, identity.ErrHostedPurgeState) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !isHostedSMBPurge(decision) || purgeScope(decision) != scope {
+				continue
+			}
+			guards, writes, err := r.smbFilePurgeBoundary(ctx, decision, worker, records)
+			if errors.Is(err, identity.ErrHostedPurgeState) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			return &hostedSMBDeletion{decision: decision, row: item, guards: guards, writes: writes}, nil
 		}
-		guards, writes, err := r.smbFilePurgeBoundary(ctx, decision, worker, records)
-		if err != nil {
-			return err
-		}
-		checks = append(checks, guards...)
-		checks = append(checks, clientv3.Compare(clientv3.Value(key), "=", host),
-			clientv3.Compare(clientv3.ModRevision(job), "=", item.ModRevision))
-		return r.finishHostedFilePurge(ctx, decision, job, string(item.Value), checks, writes)
 	}
-	return enrollment.ErrSMBPlanChanged
+	return nil, nil
 }
 
 func (r *Region) smbFilePurgeBoundary(ctx context.Context, decision identity.HostedFilePurge, worker smbWorkerState, records []smbShareRecord) ([]clientv3.Cmp, []clientv3.Op, error) {
