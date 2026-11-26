@@ -2405,6 +2405,105 @@ both Java revisions and the Node.js, .NET and Go fixtures. This check verifies
 each native trigger and the valid, missing and invalid key paths. The regional
 acceptance run uses the Java fixture for gateway, network and lifecycle checks.
 
+#### Prebuilt Functions ZIP verification
+
+The ZIP verification profile exercises two prebuilt Node.js packages and
+the regional package store. Each package places `host.json` at its root.
+The parser verifies the path layout, member types, checksums and expansion
+limits before publication. It admits archives up to 4 MiB compressed and
+32 MiB expanded, with at most 2,048 entries and 8 MiB per entry.
+The runtime extracts into a private tree and mounts the code read-only.
+The archive layout follows the native Functions packaging contract.
+[Microsoft Functions ZIP deployment](https://learn.microsoft.com/en-us/azure/azure-functions/deployment-zip-push)
+
+The package store seals chunks into the subscription's etcd namespace and
+publishes an immutable SHA-256 reference after the final chunk. A current
+worker identity and matching placement revision are needed to retrieve
+the archive. This probe exercises concurrent publication, misplaced
+ciphertext, cross-subscription reads, and removal of expired staging data.
+It also exercises deployment replay and restoration of the previous
+configuration on a worker-reported activation failure.
+
+To expose the opt-in SCM handler, set `region.functionScmDomain` on the
+regional replicas. Provide DNS and a trusted TLS certificate for each
+`<app>.<functionScmDomain>` host and route those hosts to the regional
+API. The Functions workload domain continues to route to its own
+ingress. Upload and status polling use bearer authentication. Register
+the cloud with `az cloud register --name ocean --endpoint-resource-manager
+"$ARM_ORIGIN"`. ARM discovery advertises its own origin as the App Service
+token audience when SCM is enabled. The handler treats an indexed native
+Functions host as the activation acknowledgement.
+
+Set `region.functionSlots` to `true` on each regional replica to enable
+named slots through the same SCM and ARM endpoints. Each slot gets its
+own `<app>-<slot>.<functionDomain>` workload hostname and
+`<app>-<slot>.<functionScmDomain>` SCM hostname. Provide DNS and trusted
+TLS for the SCM hostname. Route workload traffic through the operator's
+HTTPS ingress. The slot uses the parent's plan, pinned runtime and
+private subnet. Its host storage, native keys and package lifecycle are
+independent. A new slot is empty until it receives a ZIP package.
+
+Swap supports a named source slot and the `production` target with both
+packages indexed on the same runtime image. Packages and ordinary app
+settings move together. App settings named in the production app's
+`config/slotConfigNames` stay with their original site. Hostnames, network
+placement, shares and platform-managed credentials stay with their
+original site. Both runtimes restart. The operation completes after both
+workers confirm that their new releases indexed. A worker-reported
+activation failure fails the swap and schedules the previous releases
+on both workers. Repeating the accepted ARM request ID returns the same
+operation. Delete named slots before deleting their parent app.
+
+Run the tests on a host with rootless Podman and the pinned Functions and
+Azurite images. Supply a disposable etcd endpoint with mTLS and the PKI
+files `storage-ca.pem`, `lab-operator.pem` and `lab-operator.key`.
+
+```sh
+OCEAN_E2E_PROFILE=functions-zip-foundation \
+  OCEAN_E2E_ETCD_ENDPOINTS=https://127.0.0.1:2379 \
+  OCEAN_E2E_ETCD_PKI=/path/to/disposable-etcd-pki \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The [captured CLI request fixture](../tests/e2e/testdata/functions-zip-cli-requests.json)
+records production and slot uploads, configuration of sticky settings,
+asynchronous ARM slot operations and SCM polling from Azure CLI 2.93.0
+against a loopback protocol fixture. End-to-end CLI uploads and slot
+promotion have their own acceptance case, `PROFILE-02`.
+
+#### Regional ZIP and slot acceptance
+
+Use the running identity and storage lab with both enrolled storage workers,
+a healthy Ceph pool and Azure CLI 2.93.0 on the operator guest. Set up the
+private workload network and the regional public address pool as for the
+OCI Functions contract. The ZIP setup preloads the Node.js 22 runtime by
+digest and adds the SCM hostname pattern to the regional TLS certificates.
+The verifier installs DNS records and quota for its disposable tenant and
+removes them during cleanup.
+
+```sh
+make deb-agent
+python3 lab/prepare_functions.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev12_amd64.deb --zip-slots
+OCEAN_E2E_STATE="$LAB_STATE" OCEAN_E2E_PROFILE=functions-zip-slots \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The operator guest uses the native CLI with a fresh cache and a signed tenant
+session. It publishes two packages via trusted SCM HTTPS and checks the
+completion statuses. An independent network namespace invokes both private
+endpoints with valid, missing and wrong Function keys. After a failed package
+activation the previous release must serve again. The slot swap must move
+code and ordinary settings, preserve each endpoint's sticky settings and key,
+and retain each address. Cleanup deletes the slot, app, plan, and disposable
+storage resources. The verifier records command timings, deployment
+operation IDs, response bodies without credentials, and the cleanup result in
+`evidence/functions-zip-slots.json`. [CLI command matrix](../tests/e2e/testdata/arm-contract.tsv)
+
+Azure CLI 2.93.0 attempts an automatic log configuration write after a
+failed ZIP activation. Ocean explicitly rejects the unsupported write
+and includes the recorded deployment failure in the response.
+
 ### Regional observability
 
 Use the regional lab with installed compute agents, replicated storage, and the

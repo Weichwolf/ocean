@@ -30,7 +30,7 @@ def build_fixture(runtime):
     return image
 
 
-def run_fixture(image, expected):
+def run_fixture(image, expected, package=None):
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -48,8 +48,12 @@ def run_fixture(image, expected):
         (keys / "host.json").write_text(json.dumps(
             {"masterKey": {"name": "_master", "value": master, "encrypted": False}, "functionKeys": [], "systemKeys": []}))
         (directory / "storage.env").write_text(f"AZURITE_ACCOUNTS={account}:{key}\n")
-        (directory / "app.env").write_text(f"AzureWebJobsStorage={connection}\n"
-                                            "AzureWebJobsSecretStorageType=files\nOCEAN_SETTING=fixture\n")
+        app_env = f"AzureWebJobsStorage={connection}\nAzureWebJobsSecretStorageType=files\nOCEAN_SETTING=fixture\n"
+        package_mount = []
+        if package is not None:
+            app_env += "FUNCTIONS_WORKER_RUNTIME=node\n"
+            package_mount = ["--mount", f"type=bind,source={package},target=/home/site/wwwroot,ro,nosuid,nodev"]
+        (directory / "app.env").write_text(app_env)
 
         def request(path, credential=None, payload=None):
             data = json.dumps(payload).encode() if payload is not None else None
@@ -70,18 +74,30 @@ def run_fixture(image, expected):
                    "--env-file", directory / "storage.env", AZURITE, "azurite", "--silent", "--location", "/data",
                    "--blobHost", "127.0.0.1", "--queueHost", "127.0.0.1", "--tableHost", "127.0.0.1", "--skipApiVersionCheck", capture=True)
             podman("run", "--detach", "--name", app, "--network", f"container:{storage}",
-                   "--env-file", directory / "app.env", "--volume", f"{keys}:/azure-functions-host/Secrets", image, capture=True)
+                   "--env-file", directory / "app.env", "--volume", f"{keys}:/azure-functions-host/Secrets",
+                   *package_mount, image, capture=True)
+            if package is not None:
+                mounts = json.loads(podman("inspect", "--format", "{{json .Mounts}}", app, capture=True))
+                if not any(item["Destination"] == "/home/site/wwwroot" and not item["RW"] for item in mounts):
+                    raise RuntimeError("the deployed Functions code tree is not read-only")
             deadline = time.monotonic() + 40
             while time.monotonic() < deadline:
                 try:
                     status, body = request("/admin/functions", master)
-                    if status == 200 and any(row["name"] == "hello" for row in json.loads(body)):
-                        break
+                    if status == 200:
+                        discovered = json.loads(body)
+                        matches = discovered == [] if expected is None else any(row["name"] == "hello" for row in discovered)
+                        if matches:
+                            break
                 except (OSError, urllib.error.URLError):
                     pass
                 time.sleep(0.5)
             else:
-                raise RuntimeError(f"{image} did not index its HTTP Function")
+                raise RuntimeError(f"{image} did not load the expected Functions")
+            if expected is None:
+                if request("/api/hello")[0] != 404:
+                    raise RuntimeError("the empty slot exposed a Function endpoint")
+                return podman("image", "inspect", "--format", "{{.Digest}}", image, capture=True)
             status, _ = request("/admin/functions/hello/keys/fixture", master, {"name": "fixture", "value": function_key})
             if status not in (200, 201):
                 raise RuntimeError(f"{image} failed to store its Function key")

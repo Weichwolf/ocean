@@ -38,7 +38,14 @@ type SiteProperties struct {
 	VNetContentShareEnabled bool             `json:"vnetContentShareEnabled"`
 	VirtualNetworkSubnetID  string           `json:"virtualNetworkSubnetId,omitempty"`
 	OutboundVNetRouting     *OutboundRouting `json:"outboundVnetRouting,omitempty"`
+	HostNameSSLStates       []HostNameState  `json:"hostNameSslStates,omitempty"`
 	Config                  SiteConfig       `json:"siteConfig"`
+}
+
+type HostNameState struct {
+	Name     string `json:"name"`
+	HostType string `json:"hostType"`
+	SSLState string `json:"sslState"`
 }
 
 type OutboundRouting struct {
@@ -63,11 +70,13 @@ type Settings struct {
 
 // Runtime contains configuration that may be given only to the assigned worker.
 type Runtime struct {
-	MasterKey     string        `json:"masterKey"`
-	Account       string        `json:"account"`
-	StorageKey    string        `json:"storageKey"`
-	Configuration string        `json:"configuration"`
-	Request       *AdminRequest `json:"request,omitempty"`
+	MasterKey     string            `json:"masterKey"`
+	Account       string            `json:"account"`
+	StorageKey    string            `json:"storageKey"`
+	Configuration string            `json:"configuration"`
+	Request       *AdminRequest     `json:"request,omitempty"`
+	Package       *PackageReference `json:"package,omitempty"`
+	EmptySlot     bool              `json:"emptySlot,omitempty"`
 }
 
 type AdminRequest struct {
@@ -96,7 +105,7 @@ func ValidNameSetting(name string) bool {
 	}
 	switch upper {
 	case "HOME", "PATH", "SHELL", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "NODE_EXTRA_CA_CERTS",
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "CLR_PROFILER", "COR_ENABLE_PROFILING":
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "CLR_PROFILER", "COR_ENABLE_PROFILING", "SCM_DO_BUILD_DURING_DEPLOYMENT":
 		return false
 	default:
 		return true

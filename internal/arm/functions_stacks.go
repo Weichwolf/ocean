@@ -21,7 +21,7 @@ func (s Server) functionStacks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if _, ok := s.subscriptionPrincipal(ctx, w, r, ""); !ok {
+	if _, ok := subscriptionPrincipal(ctx, w, r, "", s.Authenticate); !ok {
 		return
 	}
 	stacks := []map[string]any{

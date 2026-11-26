@@ -48,6 +48,8 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `ipsec-gateway` | Check IKEv2 peer authentication, routed traffic, forwarding expiry, and cleanup in a disposable Debian KVM guest |
 | `ipsec-control` | Check regional VPN reservations, assignment authorization, status freshness, and teardown against real etcd |
 | `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
+| `functions-zip-foundation` | Invoke versioned packages in the native Functions host and verify sealed storage, assignment authorization, and regional slot activation and rollback |
+| `functions-zip-slots` | Use stock Azure CLI and authenticated SCM against regional workers, then verify keyed responses before and after failed activation and slot promotion |
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 | `vm-worker` | Exercise stock Azure CLI VM lifecycle, tenant boundaries and quota accounting, then confirm out-of-band fencing and read a persisted Windows checkpoint on the replacement |
@@ -68,6 +70,22 @@ the regional API, an enrolled Debian package, and an independently
 configured native customer peer. It records command results, connection
 and expiry measurements, rejected paths, and cleanup. Follow the
 [IPsec profile lab setup](../../lab/README.md#ipsec-profile-acceptance-run).
+
+The `functions-zip-foundation` runner exercises `ZIP-01` through `ZIP-03`.
+It records the native runtime digest, an empty slot's HTTP 404 response,
+keyed invocation of two independent packages, scoped retrieval, staging
+cleanup, and regional rollback following a reported activation failure.
+The regional swap probe uses authenticated worker fixtures to check that
+both acknowledgments are required and endpoint bindings and sticky settings
+are preserved.
+[Prebuilt Functions ZIP lab](../../lab/README.md#prebuilt-functions-zip-verification)
+
+Run `PROFILE-02` through `functions-zip-slots` against a prepared regional
+lab. It records both SCM operation outcomes, measured activation and swap
+times, and the responses from an independent private workload client. The CLI
+command matrix includes named slot operations and the supported ARM requests
+for staging function discovery and keys.
+[Regional ZIP and slot acceptance](../../lab/README.md#regional-zip-and-slot-acceptance)
 
 Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
 disposable endpoint to verify regional replica and writer fencing,

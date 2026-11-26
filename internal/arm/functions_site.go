@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/Weichwolf/ocean/internal/functions"
@@ -39,8 +40,9 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 	if path != "" && !strings.Contains(path, "/") && r.Method == http.MethodGet && r.URL.Query().Get("api-version") == functions.SiteReadAPIVersion {
 		version = functions.SiteReadAPIVersion
 	}
+	_, child, _ := strings.Cut(path, "/")
 	query, ok := readQuery(w, r, version, func(name, value string) bool {
-		return path == "" && name == "$skiptoken" && value != "" ||
+		return (path == "" || strings.EqualFold(child, "slots")) && name == "$skiptoken" && value != "" ||
 			r.Method == http.MethodDelete && !strings.Contains(path, "/") && name == "deleteEmptyServerFarm" && value == "false"
 	})
 	if !ok {
@@ -65,13 +67,24 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 			return
 		}
 		s.functionLifecycle(ctx, w, scope, actor, address, strings.ToLower(child))
-	case "config/web", "config/appsettings", "config/appsettings/list", "config/slotconfignames":
+	case "config/slotconfignames":
+		s.functionSlotSettings(ctx, w, r, scope, actor, reader, address)
+	case "config/logs":
+		s.rejectFunctionLogConfiguration(ctx, w, r, scope, reader, address)
+	case "config/web", "config/appsettings", "config/appsettings/list":
 		s.functionConfiguration(ctx, w, r, scope, actor, reader, address, strings.ToLower(child))
 	case "publishxml":
 		s.functionPublishProfile(ctx, w, r, scope, reader, address)
+	case "basicpublishingcredentialspolicies/scm":
+		s.functionSCMPolicy(ctx, w, r, scope, reader, address)
 	case "virtualnetworkconnections":
 		s.functionIntegrationList(ctx, w, r, scope, reader, address)
 	default:
+		lower := strings.ToLower(child)
+		if lower == "slots" || strings.HasPrefix(lower, "slots/") {
+			s.functionSlot(ctx, w, r, scope, actor, reader, address, child, query)
+			return
+		}
 		if !strings.EqualFold(child, "functions") && !strings.HasPrefix(strings.ToLower(child), "functions/") {
 			writeError(w, http.StatusBadRequest, "UnsupportedOperation", "The Functions operation is unsupported.")
 			return
@@ -86,7 +99,7 @@ func (s Server) functionSiteResource(ctx context.Context, w http.ResponseWriter,
 	case http.MethodGet:
 		resource := s.getFunctionSite(ctx, w, scope, reader, address)
 		if resource != nil {
-			writeJSON(w, http.StatusOK, functionSiteView(scope, *resource))
+			writeJSON(w, http.StatusOK, s.functionSiteView(scope, *resource))
 		}
 	case http.MethodPut:
 		var input functions.Site
@@ -142,7 +155,7 @@ func (s Server) putFunctionSite(ctx context.Context, w http.ResponseWriter, scop
 		return
 	}
 	account, key, valid := functions.ParseHostCredential(settings["AzureWebJobsStorage"], s.StorageSuffix)
-	if !valid || len(settings) != 7 || p.Name != "" || p.Enabled != nil || p.ProvisioningState != "" ||
+	if !valid || len(settings) != 7 || p.Name != "" || p.Enabled != nil || p.ProvisioningState != "" || len(p.HostNameSSLStates) != 0 ||
 		settings["AzureWebJobsDashboard"] != settings["AzureWebJobsStorage"] ||
 		settings["FUNCTIONS_EXTENSION_VERSION"] != "~4" || settings["FUNCTION_APP_EDIT_MODE"] != "readOnly" ||
 		settings["DOCKER_CUSTOM_IMAGE_NAME"] != image || settings["WEBSITES_ENABLE_APP_SERVICE_STORAGE"] != "false" ||
@@ -157,15 +170,19 @@ func (s Server) putFunctionSite(ctx context.Context, w http.ResponseWriter, scop
 		containerError(w, err)
 		return
 	}
+	s.writeFunctionCreate(w, scope, resource, op)
+}
+
+func (s Server) writeFunctionCreate(w http.ResponseWriter, scope SubscriptionScope, resource InventoryResource, op *Operation) {
 	status := http.StatusOK
-	if op != nil && op.Status == OperationInProgress {
+	if op != nil && op.Status != OperationSucceeded {
 		status = http.StatusAccepted
 		query := "?api-version=" + resourceAPIVersion
 		w.Header().Set("Azure-AsyncOperation", s.Origin+operationPath(scope, "operationStatuses", op.ID)+query)
 		w.Header().Set("Location", s.Origin+resource.Address.ID(scope)+"?api-version="+functions.APIVersion)
 		w.Header().Set("Retry-After", "1")
 	}
-	writeJSON(w, status, functionSiteView(scope, resource))
+	writeJSON(w, status, s.functionSiteView(scope, resource))
 }
 
 func (s Server) getFunctionSite(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, reader string, address ResourceAddress) *InventoryResource {
@@ -217,7 +234,7 @@ func (s Server) listFunctionSites(ctx context.Context, w http.ResponseWriter, r 
 	count := min(len(resources), inventoryPageSize)
 	items := make([]map[string]any, 0, count)
 	for _, item := range resources[:count] {
-		items = append(items, functionSiteView(scope, item))
+		items = append(items, s.functionSiteView(scope, item))
 	}
 	reply := map[string]any{"value": items}
 	if len(resources) > count {
@@ -231,14 +248,6 @@ func (s Server) functionConfiguration(ctx context.Context, w http.ResponseWriter
 	actor, reader string, address ResourceAddress, path string) {
 	resource := s.getFunctionSite(ctx, w, scope, reader, address)
 	if resource == nil {
-		return
-	}
-	if path == "config/slotconfignames" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"properties": map[string]any{"appSettingNames": []string{}}})
 		return
 	}
 	if path == "config/web" {
@@ -258,6 +267,11 @@ func (s Server) functionConfiguration(ctx context.Context, w http.ResponseWriter
 		containerError(w, err)
 		return
 	}
+	platform := []string{"FUNCTIONS_EXTENSION_VERSION", "DOCKER_CUSTOM_IMAGE_NAME", "FUNCTION_APP_EDIT_MODE", "WEBSITES_ENABLE_APP_SERVICE_STORAGE"}
+	if s.FunctionPackages != nil {
+		settings["SCM_DO_BUILD_DURING_DEPLOYMENT"] = "false"
+		platform = append(platform, "SCM_DO_BUILD_DURING_DEPLOYMENT")
+	}
 	if expected == http.MethodPut {
 		var input functions.Settings
 		if err := strictJSON(http.MaxBytesReader(w, r.Body, 48<<10), &input); err != nil || input.Properties == nil {
@@ -265,8 +279,9 @@ func (s Server) functionConfiguration(ctx context.Context, w http.ResponseWriter
 			return
 		}
 		user := maps.Clone(input.Properties)
-		for _, key := range []string{"FUNCTIONS_EXTENSION_VERSION", "DOCKER_CUSTOM_IMAGE_NAME", "FUNCTION_APP_EDIT_MODE", "WEBSITES_ENABLE_APP_SERVICE_STORAGE"} {
-			if user[key] != settings[key] {
+		for _, key := range platform {
+			value, present := user[key]
+			if value != settings[key] && (key != "SCM_DO_BUILD_DURING_DEPLOYMENT" || present) {
 				containerError(w, functions.ErrInvalidSite)
 				return
 			}
@@ -389,6 +404,7 @@ func (s Server) putFunctionIntegration(ctx context.Context, w http.ResponseWrite
 	wanted := input.Properties
 	if props.ServerFarmID != planID || props.Config.LinuxFxVersion != wanted.Config.LinuxFxVersion ||
 		!maps.Equal(current.Tags, input.Tags) || wanted.VirtualNetworkSubnetID == "" ||
+		len(wanted.HostNameSSLStates) != 0 && !slices.Equal(wanted.HostNameSSLStates, s.functionSCMStates(address)) ||
 		wanted.Name != "" && wanted.Name != props.Name || wanted.Enabled != nil && (props.Enabled == nil || *wanted.Enabled != *props.Enabled) ||
 		wanted.ProvisioningState != "" && wanted.ProvisioningState != props.ProvisioningState {
 		containerError(w, functions.ErrInvalidSite)
@@ -404,7 +420,7 @@ func (s Server) putFunctionIntegration(ctx context.Context, w http.ResponseWrite
 	}
 	updated := s.getFunctionSite(ctx, w, scope, "", address)
 	if updated != nil {
-		writeJSON(w, http.StatusOK, functionSiteView(scope, *updated))
+		writeJSON(w, http.StatusOK, s.functionSiteView(scope, *updated))
 	}
 }
 
@@ -416,14 +432,31 @@ func functionNativeError(w http.ResponseWriter, status int) {
 	}
 }
 
-func functionSiteView(scope SubscriptionScope, resource InventoryResource) map[string]any {
+func (s Server) functionSiteView(scope SubscriptionScope, resource InventoryResource) map[string]any {
 	view := resource.view(scope)
+	if app, slot, ok := functions.SlotNames(resource.Address.Path); ok {
+		view["name"] = app + "/" + slot
+	}
 	var properties map[string]any
 	if json.Unmarshal(resource.Properties, &properties) == nil && properties != nil {
 		properties["sku"] = "Basic"
+		if states := s.functionSCMStates(resource.Address); len(states) != 0 {
+			properties["hostNameSslStates"] = states
+		}
 		view["properties"] = properties
 	}
 	return view
+}
+
+func (s Server) functionSCMStates(address ResourceAddress) []functions.HostNameState {
+	if s.FunctionPackages == nil || s.FunctionSCMDomain == "" {
+		return nil
+	}
+	host, _, _ := address.parts()
+	if app, slot, ok := functions.SlotNames(address.Path); ok {
+		host = app + "-" + slot
+	}
+	return []functions.HostNameState{{Name: host + "." + s.FunctionSCMDomain, HostType: "Repository", SSLState: "Disabled"}}
 }
 
 func (s Server) functionPublishProfile(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope,

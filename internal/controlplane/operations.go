@@ -222,7 +222,7 @@ func decodeOperation(data []byte, id string) (*arm.Operation, error) {
 	case deleteResourceGroup, createApplicationGateway, deleteApplicationGateway, createSiteConnection, deleteSiteConnection,
 		createIPsecGateway, deleteIPsecGateway, createIPsecConnection, deleteIPsecConnection,
 		createContainer, startContainer, stopContainer, restartContainer, deleteContainer, createFileShare, deleteFileShare, fenceContainer,
-		updateFunction, integrateFunction, configureReplicaSet, deleteReplicaSet, createVM, startVM, stopVM, deleteVM, recoverVM,
+		updateFunction, deployFunctionZIP, rollbackFunctionZIP, swapFunctionSlot, rollbackFunctionSwap, integrateFunction, configureReplicaSet, deleteReplicaSet, createVM, startVM, stopVM, deleteVM, recoverVM,
 		putSMBShare, removeSMBShare, recoverSMBShare:
 	default:
 		return nil, errors.New("invalid ARM operation kind")

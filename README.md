@@ -19,6 +19,9 @@ topology, workload paths, and availability profiles.
 - **HTTP Functions.** Deploy Linux Functions v4 from an OCI image and manage
   plans, app settings, lifecycle, and function keys. Java 21 is the end-to-end
   reference workload. Node.js 22 is exercised by the Insights tests.
+  The optional Node.js 22 ZIP profile publishes prebuilt packages over
+  authenticated SCM and promotes releases through a named staging slot.
+  [ZIP and slot acceptance](lab/README.md#regional-zip-and-slot-acceptance)
 - **Networking.** Create IPv4 virtual networks, subnets, firewall rules,
   public IPs, HTTPS ingress with Application Gateway, and fixed egress with NAT
   Gateway. Connect on-premises networks over redundant WireGuard gateways.

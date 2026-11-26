@@ -86,7 +86,12 @@ func (s Server) functionDiscovery(w http.ResponseWriter, scope SubscriptionScope
 		unavailable(w)
 		return
 	}
-	site, _, _ := resource.Address.parts()
+	site, kind, _ := resource.Address.parts()
+	host := site
+	if app, slot, ok := functions.SlotNames(resource.Address.Path); ok {
+		site = app + "/" + slot
+		host = app + "-" + slot
+	}
 	items := make([]map[string]any, 0, len(discovered))
 	for _, function := range discovered {
 		if !functions.ValidFunctionName(function.Name) {
@@ -97,9 +102,9 @@ func (s Server) functionDiscovery(w http.ResponseWriter, scope SubscriptionScope
 			route = "/api/" + suffix
 		}
 		properties := map[string]any{"name": function.Name, "config": function.Config,
-			"invokeUrlTemplate": "https://" + site + "." + s.FunctionDomain + route}
+			"invokeUrlTemplate": "https://" + host + "." + s.FunctionDomain + route}
 		items = append(items, map[string]any{"name": site + "/" + function.Name,
-			"id": resource.Address.ID(scope) + "/functions/" + function.Name, "type": functions.SiteType + "/functions", "properties": properties})
+			"id": resource.Address.ID(scope) + "/functions/" + function.Name, "type": kind + "/functions", "properties": properties})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"value": items})
 }
