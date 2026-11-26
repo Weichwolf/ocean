@@ -10,7 +10,7 @@ import (
 )
 
 type DesktopNativeStore interface {
-	AuthorizeNativeDesktop(context.Context, []byte, desktop.NativeAdmissionRequest) error
+	AuthorizeNativeDesktop(context.Context, []byte, desktop.NativeAdmissionRequest) (desktop.NativeLease, error)
 }
 
 func (s Server) desktopNativeAdmission(w http.ResponseWriter, r *http.Request) {
@@ -36,12 +36,14 @@ func (s Server) desktopNativeAdmission(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	err := s.DesktopNative.AuthorizeNativeDesktop(ctx, peer.Raw, input)
+	lease, err := s.DesktopNative.AuthorizeNativeDesktop(ctx, peer.Raw, input)
 	switch {
 	case errors.Is(err, ErrDesktopDenied):
 		writeError(w, http.StatusForbidden, "DesktopGuestDenied", "Desktop guest access denied.")
 	case err != nil:
 		writeError(w, http.StatusServiceUnavailable, "DesktopAdmissionUnavailable", "Desktop guest admission is unavailable.")
+	case input.Lease:
+		writeJSON(w, http.StatusOK, lease)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}

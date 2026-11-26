@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"syscall"
@@ -25,7 +26,28 @@ type guestConfig struct {
 func main() {
 	mode := flag.String("mode", "", "XRDP launch credential or native admission action")
 	path := flag.String("config", "/etc/ocean-desktop/guest.json", "root-owned guest configuration")
+	session := flag.String("session", "", "logind session ID")
+	uid := flag.Int("uid", 0, "logind session owner")
+	leader := flag.Int("leader", 0, "logind session leader")
+	scopeInode := flag.Uint64("scope-inode", 0, "pinned cgroup kill control inode")
 	flag.Parse()
+	if *mode == "watch-native" || *mode == "end-native" {
+		if os.Geteuid() != 0 {
+			os.Exit(1)
+		}
+		target := nativeSession{id: *session, uid: *uid, leader: *leader}
+		var err error
+		if *mode == "watch-native" {
+			err = watchNativeSession(*path, target)
+		} else {
+			err = endNativeSession(target, *scopeInode)
+		}
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if !run(*mode, *path) {
 		os.Exit(1)
 	}
@@ -37,6 +59,8 @@ func run(mode, path string) bool {
 	}
 	pamType := os.Getenv("PAM_TYPE")
 	switch mode {
+	case "start-native":
+		return pamType == "open_session" && startNativeSession(path, os.Getenv("PAM_USER"))
 	case "authorize-account":
 		return pamType == "account" && authorizeAccount(path, os.Getenv("PAM_USER"))
 	case "require-native":

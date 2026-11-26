@@ -153,6 +153,7 @@ type desktopAccessOptions struct {
 	launch        bool
 	nativeUser    string
 	machineID     string
+	nativeLease   bool
 }
 
 func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, options desktopAccessOptions) (arm.DesktopSession, error) {
@@ -162,6 +163,10 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	if !principal.Tenant.Valid(principal.Tenant.TenantID) || !started.Before(principal.ExpiresAt) ||
 		!native && (!enrollment.ValidDirectoryJoinID(principal.UserID) || !enrollment.ValidDirectoryJoinID(principal.DirectoryID)) {
 		return empty, arm.ErrDesktopDenied
+	}
+	expires := started.Add(desktop.LaunchLifetime)
+	if principal.ExpiresAt.Before(expires) {
+		expires = principal.ExpiresAt
 	}
 	scope := arm.SubscriptionScope{TenantID: principal.Tenant.TenantID, SubscriptionID: principal.Tenant.SubscriptionID}
 	key := r.inventoryPrefix(scope) + address.Key()
@@ -201,7 +206,9 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	if policy.PrincipalType == "Group" {
 		check.GroupID = policy.PrincipalID
 	}
-	result, err := r.RunDirectoryGraph(ctx, principal.Tenant, check)
+	graph, stop := context.WithDeadline(ctx, expires)
+	result, err := r.checkDesktopDirectory(graph, principal.Tenant, check)
+	stop()
 	if err != nil || result.Status != http.StatusOK && result.Status != http.StatusNotFound {
 		return empty, arm.ErrDesktopDirectory
 	}
@@ -252,11 +259,12 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 		guards = append(guards, nicGuards...)
 		guards = append(guards, options.gatewayGuards...)
 		access.User, access.PrivateIP, access.NetworkInterface, access.SubnetID = user, nic.IP, nic.Address.ID(scope), nic.SubnetID
+		access.PrincipalID = result.User.ID
 		access.Generation = target.Reservation.Generation
 		if !enrollment.ValidDirectoryJoinID(access.Generation) {
 			return empty, arm.ErrDesktopOffline
 		}
-		if options.launch || native {
+		if options.launch || native && !options.nativeLease {
 			auditAction := arm.DesktopType + "/launch/action"
 			if native {
 				auditAction = arm.DesktopType + "/nativeAdmission/action"
@@ -267,10 +275,6 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	}
 	guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", read.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(hostKey), "=", host.Kvs[0].ModRevision))
-	expires := started.Add(desktop.LaunchLifetime)
-	if principal.ExpiresAt.Before(expires) {
-		expires = principal.ExpiresAt
-	}
 	if !time.Now().Before(expires) {
 		return empty, arm.ErrDesktopDenied
 	}
@@ -283,4 +287,22 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	}
 	access.DesktopAdmission = arm.DesktopAdmission{AssignmentID: policy.AssignmentID, MachineID: policy.MachineID, ExpiresAt: expires}
 	return access, nil
+}
+
+func (r *Region) checkDesktopDirectory(ctx context.Context, tenant identity.TenantReservation, input enrollment.DirectoryGraphInput) (enrollment.DirectoryGraphResult, error) {
+	// Native leases and gateway renewals can arrive together while the writer
+	// is completing an earlier directory operation.
+	for {
+		result, err := r.RunDirectoryGraph(ctx, tenant, input)
+		if !errors.Is(err, identity.ErrDirectoryGraphBusy) {
+			return result, err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return enrollment.DirectoryGraphResult{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

@@ -75,18 +75,26 @@ func installCIFSCache(settings guestKerberos, user string, ticket []byte) error 
 }
 
 func workforceUID(ctx context.Context, user string) (int, error) {
-	command := exec.CommandContext(ctx, "/usr/bin/getent", "passwd", user)
+	name, uid, err := workforcePasswd(ctx, user)
+	if err != nil || name != user {
+		return 0, errors.New("unable to resolve the desktop workforce account")
+	}
+	return uid, nil
+}
+
+func workforcePasswd(ctx context.Context, selector string) (string, int, error) {
+	command := exec.CommandContext(ctx, "/usr/bin/getent", "passwd", selector)
 	command.Env = []string{"LC_ALL=C"}
 	body, err := command.Output()
 	fields := strings.Split(strings.TrimSuffix(string(body), "\n"), ":")
-	if err != nil || len(fields) != 7 || fields[0] != user {
-		return 0, errors.New("unable to resolve the desktop workforce account")
+	if err != nil || len(fields) != 7 {
+		return "", 0, errors.New("unable to resolve the desktop workforce account")
 	}
 	uid, err := strconv.ParseUint(fields[2], 10, 31)
 	if err != nil || uid < 1000 {
-		return 0, errors.New("invalid desktop workforce identity")
+		return "", 0, errors.New("invalid desktop workforce identity")
 	}
-	return int(uid), nil
+	return fields[0], int(uid), nil
 }
 
 func (settings guestKerberos) fetch(ctx context.Context, user string, ticket []byte) ([]byte, error) {

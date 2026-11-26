@@ -32,6 +32,7 @@ type desktopBrowserLabSettings struct {
 	GatewayDER       string                         `json:"gatewayDer"`
 	StandbyDER       string                         `json:"standbyDer,omitempty"`
 	NativeRDP        bool                           `json:"nativeRdp,omitempty"`
+	DesktopGroupID   string                         `json:"desktopGroupId,omitempty"`
 	WriterDER        string                         `json:"writerDer"`
 	WriterGeneration string                         `json:"writerGeneration"`
 	Application      identity.DesktopBrowserFixture `json:"application"`
@@ -156,8 +157,11 @@ func seedDesktopBrowserVM(t *testing.T, r *Region, scope arm.SubscriptionScope, 
 	binding := vmNIC{Address: nic, IP: netip.MustParseAddr("10.232.1.12"), VMID: cfg.MachineID, VM: &vm,
 		Lease: operationID(), SubnetID: subnet}
 	binding.Config.Properties.IPConfigurations = []arm.VMIPConfiguration{{Name: "workforce"}}
-	properties, err := json.Marshal(desktopAssignment{DesktopPolicy: arm.DesktopPolicy{VirtualMachineID: vm.ID(scope),
-		PrincipalType: "User", PrincipalID: cfg.UserID}, MachineID: cfg.MachineID, DirectoryID: directory.ID,
+	policy := arm.DesktopPolicy{VirtualMachineID: vm.ID(scope), PrincipalType: "User", PrincipalID: cfg.UserID}
+	if cfg.DesktopGroupID != "" {
+		policy.PrincipalType, policy.PrincipalID = "Group", cfg.DesktopGroupID
+	}
+	properties, err := json.Marshal(desktopAssignment{DesktopPolicy: policy, MachineID: cfg.MachineID, DirectoryID: directory.ID,
 		AssignmentID: operationID(), ProvisioningState: vmSucceeded})
 	if err != nil {
 		t.Fatal(err)

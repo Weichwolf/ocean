@@ -893,8 +893,11 @@ VM and regional test endpoint remain running during this gateway test.
 ### Native access on the private RDP network
 
 Use the complete `packaging/debian/ocean-desktop-pam` snippet in
-`/etc/pam.d/xrdp-sesman`. Replace earlier copies of the snippet during upgrade.
-Keep Debian's `common-auth`, `common-account` and session stack. The managed
+`/etc/pam.d/xrdp-sesman` before `common-auth`. Insert
+`packaging/debian/ocean-desktop-pam-session` after `common-session`.
+Replace earlier copies of the snippets during upgrade. Keep Debian's
+`common-auth`, `common-account` and session stack with `pam_systemd`.
+Start fresh sessions after upgrading the PAM configuration. The managed
 guest admits signed browser launches by default. Enabling native RDP requires
 a `native` object in its root-owned guest configuration with the regional
 `region` HTTPS origin, `caFile`, `certificateFile` and `keyFile`. Protect
@@ -924,6 +927,16 @@ private VM attachment, and audits successful admission under the native
 directory object ID. An unavailable dependency or a revoked grant denies
 the login. The public desktop entry point is the HTTPS gateway.
 
+The session hook binds the native display to its logind session scope and
+requires a running root-managed monitor before starting the desktop. The
+monitor requests a lease of at most 12 seconds from the same mutual TLS
+endpoint and renews it every four seconds. Explicit denial or a changed
+assignment, workforce object, or placement generation ends the display.
+Unavailability can use the remaining lease only. On Debian's unified cgroup
+hierarchy the monitor pins the session's kernel kill control. The systemd
+watchdog also uses that control if the monitor stalls. The lab bounds both
+revocation and a stalled monitor at 15 seconds from the injected event.
+
 Select `WORKPLACE-38` using the live browser fixtures from `WORKPLACE-35`.
 Place the disposable `smbreader` password in
 `OCEAN_E2E_SMB_MEMBER_FIXTURE/smbreader`. Install `pamtester` inside the
@@ -932,6 +945,13 @@ The probe proves both passwords are valid when the native feature is enabled,
 then verifies the assigned account opens a native X session and the other
 account reaches a regional admission denial. The browser and encrypted SMB
 check exercise the same guest with the native admission hook installed.
+
+Select `WORKPLACE-39` with the same inputs to hold a native connection
+beyond its initial lease, remove the user from the separate desktop
+assignment group, and measure the end of the display and client connection.
+After restoring the assignment, the probe freezes the next session monitor
+and measures watchdog recovery. The browser application grant stays in
+place during the native cases.
 
 ### Small Debian desktop VM
 

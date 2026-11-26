@@ -1,0 +1,3 @@
+# Insert after the common-session include in /etc/pam.d/xrdp-sesman.
+# pam_systemd supplies the logind session identity to this hook.
+session required pam_exec.so type=open_session quiet quiet_log seteuid /usr/libexec/ocean/ocean-desktop-guest -mode start-native

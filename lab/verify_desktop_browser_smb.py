@@ -288,6 +288,13 @@ def prepare_live_keycloak(work, cleanup, origin, ca, signer, deployment_ca, now)
         cfg['standbyDer'] = '/fixture/standby.crt'
     if live_args.native_other_password:
         cfg['nativeRdp'] = True
+    if live_args.native_revocation:
+        native_group = 'OceanNative' + secrets.token_hex(5)
+        dc(shlex.join(['sudo', 'samba-tool', 'group', 'add', native_group, '--groupou=OU=Ocean Workforce Groups']))
+        cleanup.callback(dc, shlex.join(['sudo', 'samba-tool', 'group', 'delete', native_group]))
+        dc(shlex.join(['sudo', 'samba-tool', 'group', 'addmembers', native_group, 'smbwriter']))
+        cfg['desktopGroupId'] = directory_field(['group', 'show', native_group], 'objectGUID')
+        live_args.native_group = native_group
     return cfg, (group, otp, deployment_ca)
 
 
@@ -617,12 +624,6 @@ def verify_native_rdp(cleanup, pin, enable_native):
         query = shlex.join(['pgrep', '-u', account, '-x', 'openbox'])
         return bool(g(query + ' || true').strip())
 
-    started_at = time.monotonic()
-    assigned = connect(user, authorized, 'assigned', '16s')
-    wait(lambda: session(user), 14)
-    if assigned.poll() is not None:
-        raise RuntimeError('The assigned RDP connection closed before its desktop was observed.')
-    duration = round((time.monotonic() - started_at)*1000)
     denied = connect(reader, unassigned, 'unassigned', '8s')
     until = time.monotonic() + 10
     while time.monotonic() < until and denied.poll() is None:
@@ -631,7 +632,68 @@ def verify_native_rdp(cleanup, pin, enable_native):
         time.sleep(0.2)
     if denied.poll() is None or session(reader):
         raise RuntimeError('The denied client did not exit cleanly without a desktop session.')
-    if assigned.wait(12) != 0:
+
+    def monitors():
+        output = g("systemctl list-units --type=service --state=running --no-legend 'ocean-desktop-session-*.service'").decode()
+        return {line.split()[0] for line in output.splitlines() if line.strip()}
+    old_monitors = monitors()
+    started_at = time.monotonic()
+    assigned = connect(user, authorized, 'assigned', '42s' if live_args.native_revocation else '12s')
+    wait(lambda: session(user), 10)
+    if assigned.poll() is not None:
+        raise RuntimeError('The assigned RDP connection closed before its desktop was observed.')
+    duration = round((time.monotonic() - started_at)*1000)
+    active = monitors() - old_monitors
+    if len(active) != 1:
+        raise RuntimeError('The assigned login must start one systemd session monitor.')
+    if live_args.native_revocation:
+        unit = active.pop()
+        # Keep the connection beyond the initial lease and then change only
+        # native desktop membership. The browser application grant stays valid.
+        ready_until = time.monotonic() + 13
+        while time.monotonic() < ready_until:
+            if not session(user) or assigned.poll() is not None or unit not in monitors():
+                raise RuntimeError('The live native session did not survive its first lease renewal.')
+            time.sleep(0.5)
+        revoked_at = time.monotonic()
+        group = live_args.native_group
+        dc(shlex.join(['sudo', 'samba-tool', 'group', 'removemembers', group, 'smbwriter']))
+        try:
+            wait(lambda: not session(user) and assigned.poll() is not None, 14.5)
+            elapsed = round((time.monotonic() - revoked_at)*1000)
+            if elapsed > 15_000:
+                raise RuntimeError(f'The native session exceeded the 15-second withdrawal bound. Measured {elapsed} ms.')
+            log = g(shlex.join(['sudo', 'journalctl', '--no-pager', '-u', unit])).decode()
+            (report / 'desktop-native-monitor.log').write_text(log)
+            if 'native desktop access denied' not in log:
+                raise RuntimeError('The native monitor did not record a live regional denial.')
+            if login(user, authorized, 'authenticate', 'acct_mgmt').returncode == 0:
+                raise RuntimeError('The revoked account could open a new native session.')
+            (report / 'desktop-native-revocation.tsv').write_text('case\tresult\tduration_ms\n'
+                'native-renewed-past-initial-lease\tPASS\t\n'
+                f'native-live-session-revoked\tPASS\t{elapsed}\n'
+                'native-reconnect-denied\tPASS\t\n')
+        finally:
+            dc(shlex.join(['sudo', 'samba-tool', 'group', 'addmembers', group, 'smbwriter']))
+
+        old_monitors = monitors()
+        frozen = connect(user, authorized, 'watchdog-client', '23s')
+        wait(lambda: session(user), 10)
+        active = monitors() - old_monitors
+        if len(active) != 1 or frozen.poll() is not None:
+            raise RuntimeError('The replacement native session did not start its monitor.')
+        unit = active.pop()
+        stopped_at = time.monotonic()
+        g(shlex.join(['sudo', 'systemctl', 'kill', '--signal=SIGSTOP', '--kill-whom=main', unit]))
+        wait(lambda: not session(user) and frozen.poll() is not None, 14.5)
+        outage = round((time.monotonic() - stopped_at)*1000)
+        log = g(shlex.join(['sudo', 'journalctl', '--no-pager', '-u', unit])).decode()
+        (report / 'desktop-native-watchdog.log').write_text(log)
+        if outage > 15_000 or 'Watchdog timeout' not in log:
+            raise RuntimeError(f'The watchdog did not close the stalled monitor session within 15 seconds. Measured {outage} ms.')
+        with (report / 'desktop-native-revocation.tsv').open('a') as results:
+            results.write(f'native-monitor-watchdog-closed-session\tPASS\t{outage}\n')
+    elif assigned.wait(13) != 0:
         raise RuntimeError('The native client exited unexpectedly after the desktop opened.')
     remove_session(user)
     (report / 'desktop-native-rdp.tsv').write_text('case\tresult\tduration_ms\n'
@@ -780,11 +842,14 @@ def main():
     parser.add_argument('--domain-sid', type=Path)
     parser.add_argument('--browser-password', type=Path)
     parser.add_argument('--native-other-password', type=Path)
+    parser.add_argument('--native-revocation', action='store_true')
     args = parser.parse_args()
     if args.gateway_failover and not args.live_keycloak:
         parser.error('Gateway failover requires the live Keycloak and regional ARM fixture.')
     if args.native_other_password and not args.live_keycloak:
         parser.error('Native admission requires the live Samba and regional ARM fixture.')
+    if args.native_revocation and not args.native_other_password:
+        parser.error('Native revocation requires the private RDP fixture.')
     endpoint = urls.urlsplit(args.etcd)
     if (endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1' or not endpoint.port or
             endpoint.username is not None or endpoint.path or endpoint.query or endpoint.fragment):
@@ -810,7 +875,7 @@ def main():
     helper = '/usr/libexec/ocean/ocean-desktop-guest'
     configuration = '/etc/ocean-desktop/guest.json'
     original = g('sudo -n cat ' + stage)
-    if b'ocean-desktop-guest' in original or original.count(b'@include common-auth') != 1:
+    if b'ocean-desktop-guest' in original or original.count(b'@include common-auth') != 1 or original.count(b'@include common-session') != 1:
         raise RuntimeError('unexpected PAM stack')
     g('test ! -e ' + helper + ' && test ! -e ' + configuration + ' && test ! -e /var/lib/ocean-desktop/replay')
     changed = False
@@ -874,7 +939,9 @@ def main():
             install(configuration, json.dumps(settings).encode(), '0600')
             g('sudo install -d -m0700 /var/lib/ocean-desktop/replay')
             snippet = Path('packaging/debian/ocean-desktop-pam').read_bytes()
-            install(stage, original.replace(b'@include common-auth', snippet + b'@include common-auth'), '0644')
+            session_hook = Path('packaging/debian/ocean-desktop-pam-session').read_bytes()
+            pam = original.replace(b'@include common-auth', snippet + b'@include common-auth')
+            install(stage, pam.replace(b'@include common-session\n', b'@include common-session\n' + session_hook), '0644')
             changed = True
             g('sudo systemctl start xrdp-sesman xrdp')
             pin = g('sudo openssl x509 -in /etc/xrdp/cert.pem -noout -fingerprint -sha256').decode().strip().split('=', 1)[1]

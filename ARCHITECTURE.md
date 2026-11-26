@@ -163,7 +163,10 @@ and then requests admission from the region with the guest's client
 certificate. Its fingerprint binds one tenant, subscription, desktop and
 machine ID. The region checks the current AD user or group grant, the running
 VM and its private NIC. A managed guest admits raw passwords only with the
-native admission hook configured.
+native admission hook configured. A root-owned systemd service pins each
+logind session scope and renews a lease of at most 12 seconds every four
+seconds. Denial, expiry or a changed assignment closes that scope. A local
+watchdog closes the scope if the monitor stops refreshing it.
 
 For desktops with SMB enabled, the guest exchanges the short-lived launch
 credential for a personal CIFS service ticket over mTLS. The region pins the

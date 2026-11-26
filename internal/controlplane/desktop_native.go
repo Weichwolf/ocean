@@ -66,22 +66,28 @@ func configureDesktopNative(settings []desktopNativeConfig) (map[[sha256.Size]by
 	return bindings, string(data), err
 }
 
-func (r *Region) AuthorizeNativeDesktop(ctx context.Context, certificate []byte, input desktop.NativeAdmissionRequest) error {
+func (r *Region) AuthorizeNativeDesktop(ctx context.Context, certificate []byte, input desktop.NativeAdmissionRequest) (desktop.NativeLease, error) {
+	var empty desktop.NativeLease
+	expires := time.Now().Add(desktop.NativeLeaseLifetime)
 	if r.desktopLaunch == nil || len(certificate) == 0 || !desktop.ValidNativeAccount(input.User) {
-		return arm.ErrDesktopDenied
+		return empty, arm.ErrDesktopDenied
 	}
 	guest, bound := r.desktopLaunch.nativeGuests[sha256.Sum256(certificate)]
 	if !bound {
-		return arm.ErrDesktopDenied
+		return empty, arm.ErrDesktopDenied
 	}
 	tenant, err := r.LookupTenant(ctx, guest.scope.TenantID)
 	if err != nil {
-		return err
+		return empty, err
 	}
 	if tenant == nil || !tenant.Valid(guest.scope.TenantID) || tenant.SubscriptionID != guest.scope.SubscriptionID {
-		return arm.ErrDesktopDenied
+		return empty, arm.ErrDesktopDenied
 	}
-	_, err = r.resolvePersonalDesktop(ctx, identity.DesktopPrincipal{Tenant: *tenant, ExpiresAt: time.Now().Add(desktop.LaunchLifetime)},
-		guest.address, desktopAccessOptions{nativeUser: input.User, machineID: guest.machineID})
-	return err
+	access, err := r.resolvePersonalDesktop(ctx, identity.DesktopPrincipal{Tenant: *tenant, ExpiresAt: expires},
+		guest.address, desktopAccessOptions{nativeUser: input.User, machineID: guest.machineID, nativeLease: input.Lease})
+	if err != nil {
+		return empty, err
+	}
+	return desktop.NativeLease{AssignmentID: access.AssignmentID, MachineID: access.MachineID, UserID: access.PrincipalID,
+		Generation: access.Generation, ExpiresAt: access.ExpiresAt}, nil
 }

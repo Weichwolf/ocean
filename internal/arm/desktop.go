@@ -59,6 +59,7 @@ type DesktopLaunchStore interface {
 type DesktopSession struct {
 	DesktopAdmission
 	User             string     `json:"user"`
+	PrincipalID      string     `json:"-"`
 	PrivateIP        netip.Addr `json:"privateIp"`
 	NetworkInterface string     `json:"networkInterfaceId"`
 	SubnetID         string     `json:"subnetId"`

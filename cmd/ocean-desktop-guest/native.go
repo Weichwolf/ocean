@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -76,16 +74,7 @@ func authorizeAccount(path, account string) bool {
 		return false
 	}
 	defer client.CloseIdleConnections()
-	body, err := json.Marshal(desktop.NativeAdmissionRequest{User: account})
-	if err != nil {
-		return false
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, settings.Native.Region+desktop.NativeAdmissionPath, bytes.NewReader(body))
-	if err != nil {
-		return false
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(request)
+	response, err := requestNativeAdmission(ctx, client, settings.Native.Region, account, false)
 	if err != nil {
 		return false
 	}
