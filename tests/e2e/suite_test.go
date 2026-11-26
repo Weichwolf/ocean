@@ -294,6 +294,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool { return c.ID == "PROFILE-04" || c.ID == "PROFILE-06" }
 	case "ipsec-gateway":
 		available = func(c harness.Case) bool { return c.ID == "IPSEC-01" }
+	case "ipsec-control":
+		available = func(c harness.Case) bool { return c.ID == "IPSEC-02" }
 	case "domain-join":
 		available = func(c harness.Case) bool {
 			return slices.Contains([]string{"WORKPLACE-01", "WORKPLACE-02", "WORKPLACE-03"}, c.ID)

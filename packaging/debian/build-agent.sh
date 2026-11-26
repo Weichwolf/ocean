@@ -25,6 +25,7 @@ install -D -m 0644 "$source_dir/ocean-smb-agent.service" "$staging/usr/lib/syste
 install -D -m 0644 "$source_dir/ocean-vm-agent.service" "$staging/usr/lib/systemd/system/ocean-vm-agent.service"
 install -D -m 0644 "$source_dir/ocean-container-network.service" "$staging/usr/lib/systemd/system/ocean-container-network.service"
 install -D -m 0644 "$source_dir/ocean-wireguard-agent.service" "$staging/usr/lib/systemd/system/ocean-wireguard-agent.service"
+install -D -m 0644 "$source_dir/ocean-ipsec-agent.service" "$staging/usr/lib/systemd/system/ocean-ipsec-agent.service"
 install -D -m 0644 "$source_dir/agent.json" "$staging/etc/ocean-agent/config.json"
 install -d -m 0755 "$staging/DEBIAN"
 install -m 0755 "$source_dir/postinst" "$source_dir/prerm" "$staging/DEBIAN/"
@@ -37,7 +38,7 @@ Section: admin
 Priority: optional
 Maintainer: ocean contributors <development@ocean.invalid>
 Depends: podman, uidmap, passt | slirp4netns, fuse-overlayfs, passwd (>= 1:4.15), systemd, dbus-user-session, iproute2, nftables
-Suggests: haproxy, dnsmasq-base, keepalived, curl, wireguard-tools, iputils-ping, iputils-arping, qemu-system-x86, qemu-utils, ovmf, ceph-common, cryptsetup-bin, samba, winbind, libnss-winbind, acl, quota
+Suggests: haproxy, dnsmasq-base, keepalived, curl, wireguard-tools, strongswan-charon, strongswan-swanctl, iputils-ping, iputils-arping, qemu-system-x86, qemu-utils, ovmf, ceph-common, cryptsetup-bin, samba, winbind, libnss-winbind, acl, quota
 Description: ocean node agent
  Runs the ocean node agent under a dedicated systemd user manager and checks
  the host's rootless Podman runtime before reporting readiness. Includes a

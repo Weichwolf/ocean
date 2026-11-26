@@ -52,7 +52,8 @@ func TestRoutedIPsec(t *testing.T) {
 		run("ip", "-n", leftNS, "link", "set", left, "up")
 		run("ip", "-n", rightNS, "link", "set", right, "up")
 	}
-	attach(cloud, "wan0", "198.18.24.1/30", site, "wan0", "198.18.24.2/30")
+	attach(cloud, "wan0", "198.18.24.9/32", site, "wan0", "198.18.24.2/30")
+	run("ip", "-n", cloud, "route", "add", "198.18.24.2/32", "dev", "wan0", "scope", "link")
 	attach(cloud, "lan0", "10.91.1.1/24", workload, "eth0", "10.91.1.4/24")
 	attach(site, "lan0", "10.92.1.1/24", customer, "eth0", "10.92.1.4/24")
 	run("ip", "-n", workload, "route", "add", "default", "via", "10.91.1.1")
@@ -70,6 +71,12 @@ func TestRoutedIPsec(t *testing.T) {
 	siteSide.LocalEndpoint, siteSide.RemoteEndpoint = cloudSide.RemoteEndpoint, cloudSide.LocalEndpoint
 	siteSide.LocalPrefixes, siteSide.RemotePrefixes = cloudSide.RemotePrefixes, cloudSide.LocalPrefixes
 	siteSide.Socket = startIPsecLabDaemon(t, ctx, site)
+	if err := cloudSide.SetPublicAddress(ctx, cloud, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cloudSide.CheckAttachment(ctx, cloud, prefix("10.91.1.1/24")); err != nil {
+		t.Fatal(err)
+	}
 	key, wrong := make([]byte, 32), make([]byte, 32)
 	rand.Read(key)
 	rand.Read(wrong)
@@ -155,8 +162,14 @@ func TestRoutedIPsec(t *testing.T) {
 	if exists, err := cloudSide.tunnelPresent(ctx, cloud); err != nil || exists {
 		t.Fatalf("IPsec removal left a tunnel interface: %v", err)
 	}
+	if err := cloudSide.SetPublicAddress(ctx, cloud, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := cloudSide.CheckAttachment(ctx, cloud, prefix("10.91.1.1/24")); err == nil {
+		t.Fatal("IPsec removal left its published address attached")
+	}
 	ping(customer, "", "10.91.1.4", false)
-	t.Log("Kernel lease expiry blocked forwarding, renewal restored traffic, and repeatable removal withdrew the association, route and XFRM interface.")
+	t.Log("Kernel lease expiry blocked forwarding, renewal restored traffic, and repeatable removal withdrew the association, route, XFRM interface and public IPv4 address.")
 }
 
 func startIPsecLabDaemon(t *testing.T, ctx context.Context, namespace string) string {

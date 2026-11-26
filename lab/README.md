@@ -2093,6 +2093,80 @@ checks ARM routing and validation against this fixture. The request-shape
 test uses a substituted key and exercises rejection of foreign gateways,
 unsupported settings, and attempts to project the key into deployment output.
 
+## Regional IPsec reservations
+
+The IPsec profile is opt-in. Each slot binds one subscription, enrolled
+gateway host, reserved public address and attached tenant subnet to a
+dedicated routing namespace. The initial profile has one active endpoint
+and one routed workload subnet alongside `GatewaySubnet`. The worker
+installs the allocated IPv4 address as a /32 on its underlay interface
+and removes it before acknowledging gateway deletion. The operator
+provides the neighboring WAN route, tenant link and tenant return routing.
+
+Set `region.ipsec` identically across the management replicas. Generate
+a random 32-byte envelope key in an owner-only file on each replica.
+The regional manifest checks that the key and configured slot set agree.
+Include the address in `region.publicIPv4Addresses`. Set the configured
+protected prefixes to include the management, storage and other platform
+networks that must stay outside the tenant path.
+
+```json
+{
+  "sharedKeyEnvelopeFile": "/etc/ocean/ipsec-envelope.key",
+  "protectedPrefixes": ["10.231.1.0/24"],
+  "slots": [{
+    "name": "tenant-site",
+    "host": "farm-1-node-01",
+    "tenantId": "<tenant-id>",
+    "subscriptionId": "<subscription-id>",
+    "publicIPv4": "198.18.24.1",
+    "insideIPv4": "10.91.1.1/24"
+  }]
+}
+```
+
+Install the Debian agent package on the approved gateway host. Prepare
+the WAN and tenant interfaces and a confined strongSwan daemon in the
+same dedicated namespace. Give the daemon a private VICI socket under
+an owner-only tmpfs directory. Put the matching binding in the root-owned
+`/etc/ocean-agent/ipsec.json` and start `ocean-ipsec-agent.service`.
+
+```json
+{
+  "slots": {
+    "tenant-site": {
+      "namespace": "tenant-ipsec",
+      "tunnel": "xfrm42",
+      "underlay": "wan0",
+      "inside": "lan0",
+      "socket": "/run/ocean-ipsec-tenant-site/vici.sock",
+      "publicIPv4": "198.18.24.1"
+    }
+  }
+}
+```
+
+The control plane seals shared keys in etcd and provides them only to
+the active assignment's certified host. The worker reports kernel
+forwarding and native SA status over mTLS. The live ARM connection view
+requires a matching observation less than four seconds old. Connection
+deletion withdraws selectors and the kernel route. Gateway deletion
+releases the public address and subnet claims after worker confirmation.
+
+Run `IPSEC-02` against a disposable etcd listener with client certificate
+authentication. Use the same PKI filenames as the regional inventory lab
+(`storage-ca.pem`, `lab-operator.pem`, and `lab-operator.key`). The
+test uses its own regional key prefix and worker fixtures. It inspects
+sealed state and tests credential scope, operation replay, stale status,
+and teardown. `IPSEC-01` supplies the independent packet evidence.
+
+```sh
+OCEAN_E2E_PROFILE=ipsec-control \
+  OCEAN_E2E_ETCD_ENDPOINTS=https://127.0.0.1:2379 \
+  OCEAN_E2E_ETCD_PKI=/path/to/disposable-etcd-pki \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
 ## Routed WireGuard gateway
 
 The `ocean-gateway` command accepts one `wireguard` configuration for a dedicated routing namespace. Attach an underlay link with a route to the peer's IPv4 endpoint and an inside link for its approved local networks. Supply a private /31 for the tunnel, one peer public key, and a root-owned private key file with owner-only permissions. The tunnel addresses and approved local, remote, and protected networks must be disjoint. Each peer needs its own private key. [WireGuard quick start](https://www.wireguard.com/quickstart/)

@@ -221,7 +221,7 @@ func fetchGatewayAssignments[T any](ctx context.Context, client *joinClient, kin
 	return page.Assignments, nil
 }
 
-func (client *joinClient) reportGatewayStatus(ctx context.Context, kind, slot string, status enrollment.GatewayStatus) error {
+func (client *joinClient) reportGatewayStatus(ctx context.Context, kind, slot string, status any) error {
 	payload, _ := json.Marshal(status)
 	path := client.url() + "/" + kind + "-assignments/" + slot + "/status"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(payload))

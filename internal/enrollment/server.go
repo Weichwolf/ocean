@@ -123,6 +123,8 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("POST /ocean/hosts/{host}/wireguard-assignments/{slot}/status", func(w http.ResponseWriter, r *http.Request) {
 		a.reportGatewayStatus(w, r, true)
 	})
+	mux.HandleFunc("GET /ocean/hosts/{host}/ipsec-assignments", a.ipsecAssignment)
+	mux.HandleFunc("POST /ocean/hosts/{host}/ipsec-assignments/{slot}/status", a.ipsecAssignment)
 	mux.HandleFunc("GET /ocean/hosts/{host}", a.getHost)
 	mux.Handle("/", fallback)
 	return mux

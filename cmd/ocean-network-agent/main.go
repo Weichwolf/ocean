@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "firewall", "firewall, https, wireguard, containers, storage, smb, or vm")
+	mode := flag.String("mode", "firewall", "firewall, https, wireguard, ipsec, containers, storage, smb, or vm")
 	vmAction := flag.String("vm-action", "", "internal unprivileged VM control action")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -36,6 +36,8 @@ func main() {
 		err = nodeagent.RunHTTPSGateways(ctx, config+"config.json", config+"https.json", slog.Default())
 	case "wireguard":
 		err = nodeagent.RunWireGuardGateways(ctx, config+"config.json", config+"wireguard.json", slog.Default())
+	case "ipsec":
+		err = nodeagent.RunIPsecGateways(ctx, config+"config.json", config+"ipsec.json", slog.Default())
 	default:
 		slog.Error("unknown network policy service mode", "mode", *mode)
 		os.Exit(2)

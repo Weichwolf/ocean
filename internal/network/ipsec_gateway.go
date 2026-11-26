@@ -53,7 +53,7 @@ func (p IPsecPeer) Validate() error {
 	return nil
 }
 
-func (g IPsecGateway) validate(namespace string) error {
+func (g IPsecGateway) ValidateRuntime(namespace string) error {
 	links := []string{namespace, g.Tunnel, g.Underlay, g.Inside}
 	for _, link := range links {
 		if !linkName.MatchString(link) || link == "lo" {
@@ -63,16 +63,29 @@ func (g IPsecGateway) validate(namespace string) error {
 	if g.Tunnel == g.Underlay || g.Tunnel == g.Inside || g.Underlay == g.Inside {
 		return errors.New("IPsec interfaces must be distinct")
 	}
-	if !g.LocalEndpoint.Is4() || !g.LocalEndpoint.IsGlobalUnicast() || !g.RemoteEndpoint.Is4() ||
-		!g.RemoteEndpoint.IsGlobalUnicast() || g.LocalEndpoint == g.RemoteEndpoint || !filepath.IsAbs(g.Socket) ||
-		filepath.Clean(g.Socket) != g.Socket || strings.ContainsAny(g.Socket, "\x00\r\n") {
-		return errors.New("IPsec requires two distinct IPv4 endpoints and a private absolute charon socket")
+	if !filepath.IsAbs(g.Socket) || filepath.Clean(g.Socket) != g.Socket || strings.ContainsAny(g.Socket, "\x00\r\n") {
+		return errors.New("IPsec requires a private absolute charon socket")
 	}
-	all := []netip.Prefix{netip.PrefixFrom(g.LocalEndpoint, 32), netip.PrefixFrom(g.RemoteEndpoint, 32)}
+	return nil
+}
+
+func (g IPsecGateway) validate(namespace string) error {
+	if err := g.ValidateRuntime(namespace); err != nil {
+		return err
+	}
+	return ValidateIPsecNetworks(g.LocalEndpoint, g.RemoteEndpoint, g.LocalPrefixes, g.RemotePrefixes, g.ProtectedPrefixes)
+}
+
+// ValidateIPsecNetworks checks both peers and their approved selector sets.
+func ValidateIPsecNetworks(local, remote netip.Addr, localPrefixes, remotePrefixes, protected []netip.Prefix) error {
+	if !local.Is4() || !local.IsGlobalUnicast() || !remote.Is4() || !remote.IsGlobalUnicast() || local == remote {
+		return errors.New("IPsec requires two distinct IPv4 endpoints")
+	}
+	all := []netip.Prefix{netip.PrefixFrom(local, 32), netip.PrefixFrom(remote, 32)}
 	for _, group := range []struct {
 		prefixes []netip.Prefix
 		private  bool
-	}{{g.LocalPrefixes, true}, {g.RemotePrefixes, true}, {g.ProtectedPrefixes, false}} {
+	}{{localPrefixes, true}, {remotePrefixes, true}, {protected, false}} {
 		if len(group.prefixes) == 0 || len(group.prefixes) > 32 {
 			return errors.New("IPsec requires one to 32 prefixes in each network set")
 		}
@@ -141,7 +154,7 @@ func (g IPsecGateway) Apply(ctx context.Context, namespace string, secret []byte
 // Remove closes forwarding, clears the isolated daemon's configuration and
 // withdraws the owned XFRM interface and its routes.
 func (g IPsecGateway) Remove(ctx context.Context, namespace string) error {
-	if err := g.validate(namespace); err != nil {
+	if err := g.ValidateRuntime(namespace); err != nil {
 		return err
 	}
 	if err := g.applyIPsecRules(ctx, namespace, false); err != nil {
@@ -172,6 +185,70 @@ func (g IPsecGateway) Remove(ctx context.Context, namespace string) error {
 	}
 	_, err = vpnIP(ctx, namespace, "link", "delete", "dev", g.Tunnel)
 	return err
+}
+
+// CheckAttachment verifies the operator-provisioned interface addresses.
+func (g IPsecGateway) CheckAttachment(ctx context.Context, namespace string, inside netip.Prefix) error {
+	if err := g.ValidateRuntime(namespace); err != nil {
+		return err
+	}
+	for _, link := range []struct {
+		name    string
+		address netip.Addr
+		mask    int
+	}{{g.Underlay, g.LocalEndpoint, 32}, {g.Inside, inside.Addr(), inside.Bits()}} {
+		present, up, err := ipsecLinkAddress(ctx, namespace, link.name, netip.PrefixFrom(link.address, link.mask))
+		if err != nil {
+			return err
+		}
+		if !present || !up {
+			return errors.New("the IPsec slot does not own the approved interface address")
+		}
+	}
+	return nil
+}
+
+// SetPublicAddress reconciles the reserved /32 on the dedicated WAN link.
+func (g IPsecGateway) SetPublicAddress(ctx context.Context, namespace string, desired bool) error {
+	if err := g.ValidateRuntime(namespace); err != nil {
+		return err
+	}
+	if !g.LocalEndpoint.Is4() || !g.LocalEndpoint.IsGlobalUnicast() {
+		return errors.New("the IPsec runtime requires a reserved public IPv4 address")
+	}
+	prefix := netip.PrefixFrom(g.LocalEndpoint, 32)
+	present, _, err := ipsecLinkAddress(ctx, namespace, g.Underlay, prefix)
+	if err != nil || present == desired {
+		return err
+	}
+	verb := "delete"
+	if desired {
+		verb = "add"
+	}
+	_, err = vpnIP(ctx, namespace, "-4", "address", verb, prefix.String(), "dev", g.Underlay)
+	return err
+}
+
+func ipsecLinkAddress(ctx context.Context, namespace, name string, prefix netip.Prefix) (present, up bool, err error) {
+	output, err := vpnIP(ctx, namespace, "-j", "-4", "address", "show", "dev", name)
+	if err != nil {
+		return false, false, err
+	}
+	type address struct {
+		Local netip.Addr `json:"local"`
+		Mask  int        `json:"prefixlen"`
+	}
+	var states []struct {
+		Flags []string  `json:"flags"`
+		Addrs []address `json:"addr_info"`
+	}
+	if err := json.Unmarshal(output, &states); err != nil || len(states) != 1 {
+		return false, false, errors.New("cannot inspect the IPsec slot link addresses")
+	}
+	present = slices.ContainsFunc(states[0].Addrs, func(addr address) bool {
+		return addr.Local == prefix.Addr() && addr.Mask == prefix.Bits()
+	})
+	return present, slices.Contains(states[0].Flags, "UP"), nil
 }
 
 // Connected requires confirmed kernel forwarding and installed IPsec state.

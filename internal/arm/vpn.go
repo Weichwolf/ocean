@@ -49,6 +49,7 @@ type VPNChangeResult struct {
 }
 
 type VPNStore interface {
+	GetVPNResource(context.Context, SubscriptionScope, string, ResourceAddress) (*InventoryResource, error)
 	PutVPNVirtualGateway(context.Context, SubscriptionScope, string, VPNVirtualGatewayRequest) (VPNChangeResult, error)
 	PutVPNLocalGateway(context.Context, SubscriptionScope, string, VPNLocalGatewayRequest) (VPNChangeResult, error)
 	DeployVPNConnection(context.Context, SubscriptionScope, string, VPNConnectionDeployment, bool) (VPNChangeResult, error)
@@ -86,7 +87,7 @@ func (s Server) vpnResource(ctx context.Context, w http.ResponseWriter, r *http.
 	address := ResourceAddress{Group: group, Path: kind + "/" + parts[2]}
 	switch r.Method {
 	case http.MethodGet:
-		resource, err := s.Inventory.GetInventoryResource(ctx, scope, reader, address)
+		resource, err := s.VPN.GetVPNResource(ctx, scope, reader, address)
 		if err != nil {
 			inventoryError(w, err)
 		} else if resource == nil || resource.APIVersion != version {
