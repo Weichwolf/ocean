@@ -46,6 +46,7 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `geo-4x3` | Four independent logical farms and initial WireGuard mesh and federation setup |
 | `geo-4x4` | Enroll one additional node per farm, then exercise node, tunnel, and whole-farm loss |
 | `farm-pairing` | Exercise authenticated farm pairs, allowed routes and path loss over native WireGuard with four local quorums |
+| `farm-routing` | Exercise BGP and BFD route failover and application traffic on both native WireGuard paths |
 | `ipsec-gateway` | Check IKEv2 peer authentication, routed traffic, forwarding expiry, and cleanup in a disposable Debian KVM guest |
 | `ipsec-control` | Check regional VPN reservations, assignment authorization, status freshness, and teardown against real etcd |
 | `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
@@ -74,6 +75,26 @@ The measurement artifact records the time to all pairings and the time
 to observe path lease withdrawal after loss of a WAN or a farm. The
 management probe checks the surviving regional readiness endpoints.
 `PROFILE-04` through `PROFILE-06` cover the KVM service and independent-site gates.
+
+### Farm routing
+
+Install BIRD 2 and procps in addition to the pairing tools. Set
+`OCEAN_E2E_BIRD_BINARY` when its executable is outside the standard
+Debian location and `OCEAN_E2E_BIRDC_BINARY` if birdc is elsewhere.
+
+```sh
+OCEAN_E2E_PROFILE=farm-routing go test -tags=e2e -count=1 -v ./tests/e2e -run '^TestAcceptance$'
+```
+
+`FED-02` runs the generated configuration on each lab gateway and its
+local fabric router. The client and HTTP service have a separate
+workload network. The probe checks the selected Linux next hop and
+the HTTP response before and after gateway process loss, WAN loss and
+recovery. It reports elapsed time and failed requests up to the first
+successful probe on each expected path. A known peer also advertises an
+unapproved prefix, which the receiving gateway filters. Both links of one farm are
+then disconnected. Its prefixes become unreachable, and a workload
+in another farm still answers.
 
 ### Other profile probes
 

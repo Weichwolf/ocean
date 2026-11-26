@@ -46,57 +46,64 @@ func validate(cfg Config) (Config, error) {
 	if err != nil || listener != cfg.Policy.LocalPath[cfg.Path] {
 		return Config{}, errors.New("the listener must match the selected local federation path")
 	}
-	if !label.MatchString(cfg.Policy.Farm) || !validDNSName(cfg.Policy.DNSName) ||
-		len(cfg.Policy.LocalPath) != 2 || len(cfg.Policy.Peers) == 0 || len(cfg.Policy.Peers) > 32 {
-		return Config{}, errors.New("federation requires an identified farm with two paths and one to 32 approved peers")
-	}
 	for _, address := range cfg.DNSServers {
 		if !address.IsValid() || address.Port() == 0 || address.Addr().IsUnspecified() || address.Addr().IsMulticast() {
 			return Config{}, errors.New("invalid federation DNS server")
 		}
 	}
-	loopback := listener.Addr().IsLoopback()
+	cfg.Policy, err = canonicalPolicy(cfg.Policy, listener.Addr().IsLoopback())
+	if err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func canonicalPolicy(policy Policy, loopback bool) (Policy, error) {
+	if !label.MatchString(policy.Farm) || !validDNSName(policy.DNSName) ||
+		len(policy.LocalPath) != 2 || len(policy.Peers) == 0 || len(policy.Peers) > 32 {
+		return Policy{}, errors.New("federation requires an identified farm with two paths and one to 32 approved peers")
+	}
 	addresses := make(map[netip.Addr]bool)
-	for path, endpoint := range cfg.Policy.LocalPath {
+	for path, endpoint := range policy.LocalPath {
 		if !label.MatchString(path) || !validPath(endpoint, loopback) || addresses[endpoint.Addr()] {
-			return Config{}, errors.New("the local federation paths require distinct valid IPv4 endpoints")
+			return Policy{}, errors.New("the local federation paths require distinct valid IPv4 endpoints")
 		}
 		addresses[endpoint.Addr()] = true
 	}
-	routes, err := canonicalRoutes(cfg.Policy.Exports, nil)
+	routes, err := canonicalRoutes(policy.Exports, nil)
 	if err != nil {
-		return Config{}, fmt.Errorf("local federation routes: %w", err)
+		return Policy{}, fmt.Errorf("local federation routes: %w", err)
 	}
-	cfg.Policy.Exports = routes
-	dnsNames := map[string]bool{cfg.Policy.DNSName: true}
-	peers := make(map[string]Peer, len(cfg.Policy.Peers))
-	allRoutes := slices.Clone(cfg.Policy.Exports)
-	for farm, peer := range cfg.Policy.Peers {
-		if !label.MatchString(farm) || farm == cfg.Policy.Farm || !validDNSName(peer.DNSName) || dnsNames[peer.DNSName] || len(peer.Paths) != 2 {
-			return Config{}, errors.New("invalid approved federation peer")
+	policy.Exports = routes
+	dnsNames := map[string]bool{policy.DNSName: true}
+	peers := make(map[string]Peer, len(policy.Peers))
+	allRoutes := slices.Clone(policy.Exports)
+	for farm, peer := range policy.Peers {
+		if !label.MatchString(farm) || farm == policy.Farm || !validDNSName(peer.DNSName) || dnsNames[peer.DNSName] || len(peer.Paths) != 2 {
+			return Policy{}, errors.New("invalid approved federation peer")
 		}
 		dnsNames[peer.DNSName] = true
-		for path := range cfg.Policy.LocalPath {
+		for path := range policy.LocalPath {
 			endpoint := peer.Paths[path]
 			if !validPath(endpoint, loopback) || addresses[endpoint.Addr()] {
-				return Config{}, fmt.Errorf("peer %s requires a distinct endpoint on path %s", farm, path)
+				return Policy{}, fmt.Errorf("peer %s requires a distinct endpoint on path %s", farm, path)
 			}
 			addresses[endpoint.Addr()] = true
 		}
 		peer.Imports, err = canonicalRoutes(peer.Imports, allRoutes)
 		if err != nil {
-			return Config{}, fmt.Errorf("peer %s routes: %w", farm, err)
+			return Policy{}, fmt.Errorf("peer %s routes: %w", farm, err)
 		}
 		allRoutes = append(allRoutes, peer.Imports...)
 		peers[farm] = peer
 	}
 	for address := range addresses {
 		if slices.ContainsFunc(allRoutes, func(prefix netip.Prefix) bool { return prefix.Contains(address) }) {
-			return Config{}, errors.New("advertised routes must exclude federation path endpoints")
+			return Policy{}, errors.New("advertised routes must exclude federation path endpoints")
 		}
 	}
-	cfg.Policy.Peers = peers
-	return cfg, nil
+	policy.Peers = peers
+	return policy, nil
 }
 
 func validPath(endpoint netip.AddrPort, loopback bool) bool {

@@ -117,6 +117,66 @@ isolated Linux network. The KVM and physical geo profiles cover service
 ingress, workload placement, recovery, and autoscaling.
 [Federation probe protocol](../tests/e2e/protocol.md#farm-pairing)
 
+### Routed fabric and gateway failover
+
+Use BIRD 2 for the regional fabric router and both WireGuard gateways.
+Connect the gateways and fabric routers to a dedicated transit LAN.
+Enable IPv4 forwarding on each router and gateway. Keep management and
+storage interfaces outside that transit LAN. On each gateway, keep the
+WireGuard peer's overlay host route and exact AllowedIPs. Let BIRD own
+the imported workload routes in the Linux routing table.
+Permit BGP and BFD on the authorized routing links. Use loose reverse-path
+validation where the two farms prefer different return paths.
+
+Create a routing JSON file with the federation `policy` from the prior
+example as its `policy` member. Add these fields for the first farm.
+Each connected farm and fabric requires a distinct private AS number.
+List one or two fabric routers. Each listed router must have a connected
+path to the exported workload network on the specified export interface.
+
+```json
+{
+  "farmAS": 64513,
+  "peerAS": {"farm-2": 64514},
+  "fabricAS": 64701,
+  "fabricNetwork": "10.247.1.0/24",
+  "fabricLink": "fabric0",
+  "exportLinks": ["work0"],
+  "routers": ["10.247.1.20", "10.247.1.21"],
+  "preferredPath": "wan-a",
+  "gateways": {
+    "wan-a": {"fabricAddress": "10.247.1.11", "wireGuardLink": "mesh0"},
+    "wan-b": {"fabricAddress": "10.247.1.12", "wireGuardLink": "mesh0"}
+  }
+}
+```
+
+Render and validate a BIRD configuration for each host before enabling
+its BIRD service. Select `-path wan-b` on the second gateway and the
+appropriate `-router` address on each fabric router.
+
+```sh
+bin/ocean-federation-routes -config /etc/ocean/routing.json -path wan-a > gateway.conf
+bin/ocean-federation-routes -config /etc/ocean/routing.json -router 10.247.1.20 > fabric.conf
+bird -p -c gateway.conf
+bird -p -c fabric.conf
+```
+
+The gateways exchange exact approved prefixes only with their configured
+peer over WireGuard. The fabric router prefers the first path and switches
+to the available backup on withdrawal. BFD probes the routing sessions
+independently of the federation service's mTLS pairing leases. An
+unavailable peer prefix receives an unreachable route, which prevents
+the host default route from capturing that traffic. Workload clients
+keep using their local LAN gateway. Provide a redundant LAN first hop
+when deploying redundant fabric routers.
+[BIRD 2 BGP and BFD guide](https://bird.nic.cz/doc/bird-2.17.2.html)
+
+The `farm-routing` acceptance profile runs these generated configurations
+on real WireGuard interfaces. It verifies the selected kernel next hop
+and HTTP responses from separate workload namespaces.
+[Routing acceptance protocol](../tests/e2e/protocol.md#farm-routing)
+
 ## Regional management stack
 
 Build the binaries and start a fresh `single-farm-3` lab as shown above. Obtain the [etcd v3.6.17 Linux AMD64 archive](https://github.com/etcd-io/etcd/releases/tag/v3.6.17). The deploy script checks its SHA-256 before installing the binaries. Run the deploy and fault checks locally on the Debian host.

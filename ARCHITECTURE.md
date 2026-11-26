@@ -280,6 +280,13 @@ farms record the same pair identifier and the approved prefixes. Expiring
 path leases track current reachability while the pairing survives WAN loss.
 [Farm federation configuration](lab/README.md#farm-federation-over-wireguard)
 
+The routed fabric uses BIRD with BGP and BFD. Gateway and fabric
+configurations share the federation prefix policy. The LAN routers select
+the preferred live WireGuard gateway per prefix. WireGuard authenticates
+the transport and restricts routed prefixes. BFD withdraws failed
+reachability, and the fabric uses the surviving path without moving the
+workload address. [Routed fabric configuration](lab/README.md#routed-fabric-and-gateway-failover)
+
 Geo placement and autoscaling require tenant authorization and per-farm
 capacity. Stateful takeover requires an acceptable recovery point and
 confirmed fencing before ownership moves.
