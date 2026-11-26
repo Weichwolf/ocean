@@ -37,11 +37,12 @@ type RoleAssignment struct {
 }
 
 type AuditEvent struct {
-	Time    time.Time `json:"time"`
-	Actor   string    `json:"actor"`
-	Action  string    `json:"action"`
-	Target  string    `json:"target"`
-	Outcome string    `json:"outcome"`
+	Time          time.Time `json:"time"`
+	Actor         string    `json:"actor"`
+	Action        string    `json:"action"`
+	Target        string    `json:"target"`
+	Outcome       string    `json:"outcome"`
+	CorrelationID string    `json:"correlationId,omitempty"`
 }
 
 type RoleStore interface {

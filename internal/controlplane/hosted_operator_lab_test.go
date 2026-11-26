@@ -167,6 +167,14 @@ func hostedOperatorLabAPI(t *testing.T, ctx context.Context, r *Region, cli, ope
 
 func hostedOperatorIssuer(t *testing.T, realms ...string) (*httptest.Server, func(string, string, string, string) string) {
 	t.Helper()
+	issuer, sign := hostedClaimsIssuer(t, realms...)
+	return issuer, func(realm, client, subject, audience string) string {
+		return sign(realm, client, subject, audience, nil)
+	}
+}
+
+func hostedClaimsIssuer(t *testing.T, realms ...string) (*httptest.Server, func(string, string, string, string, map[string]any) string) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -186,10 +194,14 @@ func hostedOperatorIssuer(t *testing.T, realms ...string) (*httptest.Server, fun
 		http.NotFound(w, req)
 	}))
 	t.Cleanup(issuer.Close)
-	return issuer, func(realm, client, subject, audience string) string {
+	return issuer, func(realm, client, subject, audience string, extra map[string]any) string {
 		t.Helper()
-		claims, err := json.Marshal(map[string]any{"iss": issuer.URL + "/realms/" + realm, "aud": audience,
-			"azp": client, "sub": subject, "typ": "Bearer", "exp": time.Now().Add(time.Minute).Unix()})
+		fields := map[string]any{"iss": issuer.URL + "/realms/" + realm, "aud": audience,
+			"azp": client, "sub": subject, "typ": "Bearer", "exp": time.Now().Add(time.Minute).Unix()}
+		for name, value := range extra {
+			fields[name] = value
+		}
+		claims, err := json.Marshal(fields)
 		if err != nil {
 			t.Fatal(err)
 		}

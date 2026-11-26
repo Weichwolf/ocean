@@ -52,29 +52,15 @@ func (r *Region) bootstrapHostedTelemetry(ctx context.Context) error {
 	if r.hosted == nil {
 		return nil
 	}
-	key := r.root + "/telemetry/policy"
-	policy := r.hosted.Telemetry
-	if policy == nil {
-		rows, err := r.client.Get(ctx, key, clientv3.WithCountOnly())
-		if err != nil || rows.Count == 0 {
-			return err
-		}
-	} else {
-		expected, err := json.Marshal(policy)
+	var expected []byte
+	if r.hosted.Telemetry != nil {
+		var err error
+		expected, err = json.Marshal(r.hosted.Telemetry)
 		if err != nil {
 			return err
 		}
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(key), "=", 0)).
-			Then(clientv3.OpPut(key, string(expected))).Else(clientv3.OpGet(key)).Commit()
-		if err != nil || result.Succeeded {
-			return err
-		}
-		rows := result.Responses[0].GetResponseRange().Kvs
-		if len(rows) == 1 && string(rows[0].Value) == string(expected) {
-			return nil
-		}
 	}
-	return errors.New("telemetry configuration differs from the persisted hosted regional policy")
+	return r.bootstrapHostedApproval(ctx, r.root+"/telemetry/policy", "telemetry", expected)
 }
 
 func (r *Region) hostedTelemetryAdmission(ctx context.Context, scope arm.SubscriptionScope, hostPool string, revision int64) (bool, error) {

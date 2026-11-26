@@ -181,6 +181,13 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
 				}
+				if region.hosted.Support != nil {
+					support := region.hosted.Support
+					if err := compatibility.EnableHostedSupport(support.ClientID, support.AuthContext, region); err != nil {
+						_ = region.close()
+						return config.Server{}, service.Hooks{}, err
+					}
+				}
 			}
 			if cfg.Region.ManagedDirectories != nil {
 				if err := compatibility.EnableManagedDirectories(region); err != nil {
@@ -350,11 +357,11 @@ func openRegion(cfg regionConfig) (*Region, error) {
 }
 
 func initialRecords(root, name, cell string, hosted *hostedRegionPolicy) ([2]string, [2]string) {
-	if hosted != nil && hosted.Telemetry != nil {
-		// The telemetry approval has a separate record so an established
-		// hosted region can enable it without replacing its topology metadata.
+	if hosted != nil && (hosted.Telemetry != nil || hosted.Support != nil) {
+		// Optional hosted approvals have independent records so an existing
+		// region can enable them without replacing its topology metadata.
 		topology := *hosted
-		topology.Telemetry = nil
+		topology.Telemetry, topology.Support = nil, nil
 		hosted = &topology
 	}
 	region := struct {
@@ -393,6 +400,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapHostedTelemetry(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapHostedSupport(ctx); err != nil {
 		return err
 	}
 	if err := region.bootstrapPublicIPPool(ctx); err != nil {

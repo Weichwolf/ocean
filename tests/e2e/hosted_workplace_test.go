@@ -34,6 +34,10 @@ func hostedWorkplaceSteps() []harness.Step {
 	telemetry.Name, telemetry.Cases = "hosted-telemetry-policy", []string{"WORKPLACE-61"}
 	telemetry.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-run", "^TestHostedTelemetryPolicy$", "./internal/controlplane"}
 	telemetry.Timeout = 4 * time.Minute
+	support := recovery
+	support.Name, support.Cases = "hosted-support-grants", []string{"WORKPLACE-62"}
+	support.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-run", "^TestHostedSupportGrants$", "./internal/controlplane"}
+	support.Timeout = 4 * time.Minute
 	suspension := recovery
 	suspension.Name, suspension.Cases = "hosted-container-suspension", []string{"WORKPLACE-49"}
 	suspension.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedContainerOffboarding$", "./internal/controlplane"}
@@ -98,5 +102,5 @@ func hostedWorkplaceSteps() []harness.Step {
 	}
 	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_HOSTED_KEYCLOAK_CA"), "the Keycloak CA file in OCEAN_E2E_HOSTED_KEYCLOAK_CA")
 	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin secret file in OCEAN_E2E_KEYCLOAK_ADMIN_SECRET")
-	return []harness.Step{step, placement, operator, telemetry, recovery, suspension, volume, smb, ha, vm, directory, keycloak}
+	return []harness.Step{step, placement, operator, telemetry, support, recovery, suspension, volume, smb, ha, vm, directory, keycloak}
 }

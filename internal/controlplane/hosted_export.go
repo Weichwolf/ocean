@@ -198,8 +198,12 @@ func hostedExportRecord(scope arm.SubscriptionScope, kind, key string, value []b
 		if event.Time.After(capturedAt) || !expiry.IsZero() && !event.Time.After(expiry) {
 			return nil, nil
 		}
-		return map[string]any{"id": key, "time": event.Time, "actor": event.Actor, "action": event.Action,
-			"target": event.Target, "outcome": event.Outcome}, nil
+		record := map[string]any{"id": key, "time": event.Time, "actor": event.Actor, "action": event.Action,
+			"target": event.Target, "outcome": event.Outcome}
+		if event.CorrelationID != "" {
+			record["correlationId"] = event.CorrelationID
+		}
+		return record, nil
 	default:
 		return nil, fmt.Errorf("invalid hosted export section %q", kind)
 	}

@@ -23,6 +23,7 @@ type hostedRegionPolicy struct {
 	BackupTargets          map[string]hostedBackupTarget   `json:"backupTargets,omitempty"`
 	DeletionLedger         *hostedLedgerPolicy             `json:"deletionLedger,omitempty"`
 	Telemetry              *hostedTelemetryPolicy          `json:"telemetry,omitempty"`
+	Support                *hostedSupportPolicy            `json:"support,omitempty"`
 }
 
 func euCountry(country string) bool {
@@ -46,6 +47,9 @@ func (p *hostedRegionPolicy) validate() error {
 		return err
 	}
 	if err := p.validateDeletionLedger(); err != nil {
+		return err
+	}
+	if err := p.validateSupport(); err != nil {
 		return err
 	}
 	return p.validateBackupTargets()
@@ -155,4 +159,24 @@ func (r *Region) hostedPlacementAt(ctx context.Context, scope arm.SubscriptionSc
 		return clientv3.Cmp{}, ErrPlacementPolicy
 	}
 	return clientv3.Compare(clientv3.ModRevision(key), "=", version), nil
+}
+
+func (r *Region) bootstrapHostedApproval(ctx context.Context, key, name string, expected []byte) error {
+	if expected == nil {
+		rows, err := r.client.Get(ctx, key, clientv3.WithCountOnly())
+		if err != nil || rows.Count == 0 {
+			return err
+		}
+	} else {
+		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+			Then(clientv3.OpPut(key, string(expected))).Else(clientv3.OpGet(key)).Commit()
+		if err != nil || result.Succeeded {
+			return err
+		}
+		rows := result.Responses[0].GetResponseRange().Kvs
+		if len(rows) == 1 && string(rows[0].Value) == string(expected) {
+			return nil
+		}
+	}
+	return errors.New(name + " configuration differs from the persisted hosted regional policy")
 }

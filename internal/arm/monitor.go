@@ -239,7 +239,11 @@ func (row ActivityRecord) view(scope SubscriptionScope) map[string]any {
 		status = "Failed"
 	}
 	base := "/subscriptions/" + scope.SubscriptionID + "/providers/" + activityType + "/"
-	return map[string]any{"id": base + row.ID, "eventDataId": row.ID, "operationId": row.ID, "correlationId": row.ID,
+	correlation := row.CorrelationID
+	if correlation == "" {
+		correlation = row.ID
+	}
+	return map[string]any{"id": base + row.ID, "eventDataId": row.ID, "operationId": row.ID, "correlationId": correlation,
 		"eventTimestamp": row.Time, "submissionTimestamp": row.Time, "caller": row.Actor, "resourceId": row.Target,
 		"resourceGroupName": group, "resourceProviderName": monitorName(provider), "subscriptionId": scope.SubscriptionID,
 		"operationName": monitorName(row.Action), "status": monitorName(status), "category": monitorName("Administrative"),

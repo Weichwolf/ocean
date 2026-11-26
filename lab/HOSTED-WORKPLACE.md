@@ -37,6 +37,13 @@ and both the API cutoff and backend lease expiry. Record disk encryption,
 compaction and the expiry of independent external copies in the deployment
 review.
 
+For hosted ARM support, retain approval, attributed diagnostic reads and
+revocation from the tenant activity log using the grant UUID. Record the
+MFA flow and verified access-token claims, the controlled support ingress and
+its operator pool, and the expiry and restore checks. Review privileged
+infrastructure access and its records for each deployed bastion and host.
+[Hosted support access](README.md#hosted-support-access)
+
 ## Operating procedures to exercise
 
 1. Run the regional export as the tenant administrator before suspension.

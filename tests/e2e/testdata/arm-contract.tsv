@@ -262,3 +262,10 @@ WORKPLACE-60	hosted-export-suspend	2.93.0	none	2026-11-01	rest --method put --ur
 WORKPLACE-61	hosted-telemetry-query	2.93.0	none	2018-01-01	rest --method get --url {arm}{containerGroupId}/providers/Microsoft.Insights/metrics?api-version=2018-01-01&metricnames=CpuUsage -o json
 WORKPLACE-61	hosted-telemetry-workload-read	2.93.0	none	2024-05-01-preview	rest --method get --url {arm}{containerGroupId}?api-version=2024-05-01-preview -o json
 WORKPLACE-61	hosted-telemetry-outage-group-create	2.93.0	none	2024-11-01	rest --method put --url {arm}{resourceGroupId}?api-version=2024-11-01 --body @{regional_group_request} -o json
+WORKPLACE-62	hosted-support-resource-create	2.93.0	none	2025-07-01	rest --method put --url {arm}{virtualNetworkId}?api-version=2025-07-01 --body @{network_request} -o json
+WORKPLACE-62	hosted-support-approve	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/supportGrants/{grant}?api-version=2026-11-01 --body @{scoped_support_approval} -o json
+WORKPLACE-62	hosted-support-receipt	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/supportGrants/{grant}?api-version=2026-11-01 -o json
+WORKPLACE-62	hosted-support-read	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/supportGrants/{grant}/diagnostic?api-version=2026-11-01 --skip-authorization-header --headers {opaqueSupportBearerHeader} -o json
+WORKPLACE-62	hosted-support-revoke	2.93.0	none	2026-11-01	rest --method delete --url {arm}/ocean/tenants/{tenant}/supportGrants/{grant}?api-version=2026-11-01 -o json
+WORKPLACE-62	hosted-support-activity	2.93.0	none	2015-04-01	rest --method get --url {arm}/subscriptions/{subscription}/providers/Microsoft.Insights/eventtypes/management/values?api-version=2015-04-01&%24filter={resourceTimestampFilter} -o json
+WORKPLACE-62	hosted-support-resource-delete	2.93.0	none	2025-07-01	rest --method delete --url {arm}{virtualNetworkId}?api-version=2025-07-01 -o json

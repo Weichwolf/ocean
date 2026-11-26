@@ -40,6 +40,7 @@ type Compatibility struct {
 	offboarding    HostedOffboardingStore
 	filePurge      HostedFilePurgeStore
 	hostedExport   HostedExportStore
+	hostedSupport  *hostedSupport
 	directories    ManagedDirectoryStore
 }
 
@@ -159,6 +160,12 @@ func (c *Compatibility) Handler() http.Handler {
 	}
 	if c.hostedExport != nil {
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/dataExport", c.tenantDataExport)
+	}
+	if c.hostedSupport != nil {
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/supportGrants/{grant}", c.manageHostedSupport)
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/supportGrants/{grant}", c.manageHostedSupport)
+		mux.HandleFunc("DELETE /ocean/tenants/{tenant}/supportGrants/{grant}", c.manageHostedSupport)
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/supportGrants/{grant}/diagnostic", c.readHostedSupport)
 	}
 	return mux
 }

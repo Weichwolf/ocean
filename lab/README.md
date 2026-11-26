@@ -2341,6 +2341,65 @@ telemetry endpoints, replica site records and backend storage out of the
 regional and deletion-ledger etcd clusters. Telemetry loss leaves regional
 workload operations available.
 
+#### Hosted support access
+
+Configure `region.hostedWorkplace.support` with a dedicated client UUID in
+the operator realm, an OIDC authentication context, and the disjoint source
+prefixes for each approved operator pool. Start the regional API replicas
+with the same approval. Each prefix must identify a controlled support
+bastion or dedicated support ingress with restricted reachability. Ocean
+uses the peer address of the TLS connection. Preserve the actual source
+or use an ingress dedicated to the corresponding support pool.
+
+```json
+{
+  "clientId": "2ddb867a-2b88-47a9-8183-9b9ce410ebd0",
+  "authenticationContext": "ocean-support",
+  "pools": {"primary": ["192.0.2.50/32"]}
+}
+```
+
+In Keycloak, give named support users a dedicated interactive client and
+map the configured ACR to a level that requires MFA. Set this as the
+client's minimum ACR. Configure the browser sign-in flow to enforce the
+required second factor, authorization code with PKCE, and the exact ARM
+audience in the access token. Configure short-lived access tokens and make
+the client available only to those users. Ocean requires a signed bearer
+token with the configured ACR, a recent `auth_time` within 15 minutes, and the
+same named subject as the approval. Review the flow and token claims in the
+deployment before enabling the support ingress.
+[Keycloak ACR and step-up authentication](https://www.keycloak.org/docs/latest/server_admin/#_step-up-flow)
+
+The tenant's registered administrator chooses a new grant UUID, supplies the
+named support subject UUID from the operator realm and authorizes one
+existing ARM resource in a currently allowed operator pool. Use an absolute
+UTC expiry within one hour. Keep the request body fixed when retrying.
+`SUPPORT_GRANT_JSON` names `principalId`, `operatorPool`, `resourceId` and
+`expiresAt`. The administrator can get the same approval receipt and revoke
+it through the same URL. The support user presents the dedicated client
+token from the approved ingress. Keep the token in a protected process
+environment and exclude it from command traces and evidence.
+
+```sh
+support="$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/supportGrants/$SUPPORT_GRANT_ID"
+version="api-version=2026-11-01"
+az rest --method put --url "$support?$version" --body @"$SUPPORT_GRANT_JSON"
+az rest --method get --url "$support/diagnostic?$version" \
+  --skip-authorization-header --headers "Authorization=Bearer $OCEAN_SUPPORT_ACCESS_TOKEN"
+az rest --method get --url "$support?$version"
+az rest --method delete --url "$support?$version"
+```
+
+The diagnostic returns the resource ID, region, provider API version,
+provisioning state and change time. It applies to the approved resource
+generation and checks the active tenant, current pool policy, socket peer,
+identity and approval expiry on every read. The independent ledger retains
+approval and revocation until one day after the grant expires. An older
+regional snapshot continues to honor a revocation. The tenant's Azure
+activity log records the approve, read and revoke operations with the grant
+UUID as the correlation ID. Archive the activity records according to the
+deployment's retention policy.
+
 Set `region.hostedWorkplace` when creating an EU-hosted region. Use the
 physical country of the management services for `country` and the verified
 physical country of each approved pool in `operatorPools`. Set the same
@@ -2758,6 +2817,13 @@ measurements for two tenants. Azure CLI checks scoped reads and revocation.
 The probe verifies pool and endpoint approval, denies a stale replica
 configuration, measures API and etcd expiry, and stops telemetry while
 the regional API continues to serve the workload.
+
+`WORKPLACE-62` uses stock Azure CLI to provision the real ARM resource and
+exercise tenant approval, operator admission, narrow diagnostic output,
+activity correlation, expiry and revocation. Its disposable signed issuer
+exercises the Ocean ACR, audience and sign-in-time checks. The probe tests
+the actual TLS socket source, a forged forwarding header, pool policy
+removal and regional restore with the original independent ledger.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
