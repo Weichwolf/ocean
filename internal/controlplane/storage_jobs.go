@@ -36,6 +36,9 @@ func (r *Region) HostShareJobs(ctx context.Context, host string, certificate []b
 	for _, item := range snapshot.Responses[3].GetResponseRange().Kvs {
 		volume := strings.TrimPrefix(string(item.Key), purgePrefix)
 		decision, err := r.certifyFilePurgeJob(ctx, host, pool, volume, string(item.Value), snapshot.Header.Revision)
+		if err == nil && isHostedSMBPurge(decision) {
+			continue
+		}
 		if err == nil {
 			_, _, err = r.filePurgeBoundary(ctx, decision, snapshot.Header.Revision)
 		}

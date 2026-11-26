@@ -44,7 +44,7 @@ applicable transfer mechanism and location restrictions before enabling a path.
    latest expiry of copies in each backup system. Retain only the evidence
    necessary to prove the actions and comply with applicable obligations.
    Record the decision UUID and completion evidence for each authorized
-   Azure Files share deletion. [Hosted file deletion](README.md#hosted-workplace-placement-and-audit-retention)
+   Azure Files or managed SMB share deletion. [Hosted file deletion](README.md#hosted-workplace-placement-and-audit-retention)
 3. Keep the authoritative deletion ledger independent of the backups it governs.
    Restore into an isolated environment. Verify that regional startup replays
    subsequent suspensions before accepting requests. Verify denied identities,

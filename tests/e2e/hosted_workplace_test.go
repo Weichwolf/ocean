@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Weichwolf/ocean/tests/e2e/internal/harness"
@@ -42,5 +43,18 @@ func hostedWorkplaceSteps() []harness.Step {
 	if volume.BlockedReason == "" && os.Getenv("OCEAN_E2E_HOSTED_CEPH_STATE") == "" {
 		volume.BlockedReason = "Provide the running Ceph lab directory in OCEAN_E2E_HOSTED_CEPH_STATE."
 	}
-	return []harness.Step{step, placement, operator, recovery, suspension, volume}
+	smb := recovery
+	smb.Name, smb.Cases = "hosted-smb-offboarding", []string{"WORKPLACE-53", "WORKPLACE-54"}
+	smb.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedSMBOffboarding$", "./internal/controlplane"}
+	smb.Timeout = 4 * time.Minute
+	if smb.BlockedReason == "" && os.Getenv("OCEAN_E2E_HOSTED_CEPH_STATE") == "" {
+		smb.BlockedReason = "Provide the running AD and Ceph lab in OCEAN_E2E_HOSTED_CEPH_STATE."
+	}
+	fixture := os.Getenv("OCEAN_E2E_SMB_MEMBER_FIXTURE")
+	if smb.BlockedReason == "" && fixture == "" {
+		smb.BlockedReason = "Provide the disposable SMB member fixture in OCEAN_E2E_SMB_MEMBER_FIXTURE."
+	}
+	smb = requireFile(smb, filepath.Join(fixture, "member-rbd.json"), "the disposable SMB member identity")
+	smb = requireFile(smb, filepath.Join(fixture, "smbwriter"), "the disposable SMB writer credential")
+	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb}
 }

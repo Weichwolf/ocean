@@ -2412,13 +2412,18 @@ retention or deletion procedure. Deploy the compatible control plane and
 workload and storage workers together.
 
 After suspension, an authenticated hosted operator can request deletion of a
-completed Azure Files share. Record the controller's approval in the
+completed Azure Files or managed SMB share. Record the controller's approval in the
 deployment review and pass its opaque UUID as `approvalId`. Use a stable UUID
 for the request and retry with the same body. The independent ledger binds
 the decision to the subscription, full share resource ID, exact RBD volume,
 approved storage worker and pool. A pending decision releases no volume
-key. An attached share requires both current writer receipts before the
-storage worker receives the deletion job.
+key. An Azure Files share attached to a workload requires both current
+writer receipts before the storage worker receives its deletion job. For a
+managed SMB member, suspension withdraws Samba, its encrypted mounts and any
+floating member address. Ocean requires the current SMB owner's withdrawal
+receipt before offering a deletion to that member. The member receives no
+share or Samba-state keys. An older SMB agent receives revocation and must
+be upgraded to acknowledge withdrawal and execute the approved deletion.
 
 ```sh
 purge="$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/fileSharePurges/$OCEAN_DECISION_ID?api-version=2026-11-01"
@@ -2430,16 +2435,16 @@ The request file contains `subscriptionId`, `shareId` and `approvalId`.
 It contains no keys. The decision stays `Pending` while the approved worker
 is unavailable, while receipts are missing, or while Ceph snapshots prevent
 removal. The worker uses normal RBD deletion and acknowledges after the image
-is absent. Ocean then removes the live sealed key, inventory and writer grant
-and records `Succeeded`. Preserve access-control audit records under their
+is absent. Ocean then removes the live sealed key, inventory and applicable
+writer grant or SMB share binding and records `Succeeded`. Preserve access-control audit records under their
 own retention policy.
 
 Startup replays the deletion decision before the regional listener opens.
 An older snapshot repeats the checks for the restored writer. A different
 volume at the same share address remains outside the decision. Restore one
 authoritative regional writer at a time and use the approved storage identity
-and pool. Backup retention and physically retired devices have independent
-handling and evidence. The current endpoint covers Azure Files share volumes.
+and pool. SMB membership state stays detached and retained. Backup retention
+and physically retired devices have independent handling and evidence.
 
 Before suspending the tenant, the administrator registered at onboarding can
 export a snapshot of the tenant's regional records. Use that administrator's
@@ -2592,6 +2597,13 @@ the native image inventory and the regional key record. `WORKPLACE-52`
 uses the older regional backup fixture to verify startup replay, the writer
 receipt gates and exact-volume binding through the storage protocol.
 
+`WORKPLACE-53` and `WORKPLACE-54` also need the enrolled standalone Samba
+member on `farm-1-node-04`, its live test domain and the owner-only
+`OCEAN_E2E_SMB_MEMBER_FIXTURE` directory. The native Debian client writes two
+shares. The test withdraws both and deletes the approved image, then reads
+the preserved checkpoint in read-only mode. Startup against an older
+regional snapshot reapplies the same decision with a fresh receipt gate.
+
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
@@ -2599,6 +2611,7 @@ OCEAN_E2E_HOSTED_AZ="$(command -v az)" \
 OCEAN_E2E_HOSTED_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64.tar.gz" \
 OCEAN_E2E_HOSTED_PODMAN_IMAGE="$(podman image inspect --format '{{.ID}}' docker.io/library/debian:trixie-slim)" \
 OCEAN_E2E_HOSTED_CEPH_STATE="$DISPOSABLE_CEPH_LAB_STATE" \
+OCEAN_E2E_SMB_MEMBER_FIXTURE="$DISPOSABLE_SMB_MEMBER_FIXTURE" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 

@@ -31,7 +31,7 @@ func readPlacement() (localPlacement, error) {
 	if err != nil {
 		return placement, err
 	}
-	if json.Unmarshal(content, &placement) != nil || placement.Member.StateVolumeID == "" || placement.Member.Validate() != nil {
+	if json.Unmarshal(content, &placement) != nil || placement.Member.Validate() != nil {
 		return localPlacement{}, errors.New("invalid local SMB placement")
 	}
 	for _, id := range placement.Volumes {
@@ -102,8 +102,9 @@ func preparePlacement(ctx context.Context, backend storage.Backend, plan Plan) e
 	}
 	member := plan.Member
 	member.Shares = nil
-	if prior.Member.StateVolumeID != "" && (prior.Member.StateVolumeID != member.StateVolumeID ||
-		prior.Member.Address != member.Address || prior.Member.ServiceInterface != member.ServiceInterface) {
+	if prior.Member.Address.IsValid() && (prior.Member.StateVolumeID != member.StateVolumeID ||
+		prior.Member.Address != member.Address || prior.Member.ServiceInterface != member.ServiceInterface ||
+		prior.Member.DomainSID != member.DomainSID || prior.Member.ServerName != member.ServerName) {
 		return errors.New("the prior SMB placement must be withdrawn first")
 	}
 	placement := localPlacement{Member: member, Volumes: prior.Volumes}
@@ -114,6 +115,9 @@ func preparePlacement(ctx context.Context, backend storage.Backend, plan Plan) e
 	}
 	if err := writePlacement(placement); err != nil {
 		return err
+	}
+	if member.StateVolumeID == "" {
+		return nil
 	}
 	if err := backend.OpenSMBMemberState(ctx, member.StateVolumeID, plan.StateKey); err != nil {
 		return fmt.Errorf("mount trusted Samba membership state: %w", err)
@@ -128,24 +132,28 @@ func Withdraw(ctx context.Context, backend storage.Backend) error {
 		return err
 	}
 	placement, err := readPlacement()
-	if err != nil || placement.Member.StateVolumeID == "" {
+	if err != nil || !placement.Member.Address.IsValid() {
 		return err
 	}
 	member := placement.Member
 	if _, err := run(ctx, "/usr/bin/systemctl", "stop", "winbind.service"); err != nil {
 		return err
 	}
-	present, err := serviceAddressPresent(member)
-	if err != nil {
-		return err
-	}
-	if present {
-		prefix := netip.PrefixFrom(member.Address, 32).String()
-		if _, err := run(ctx, "/usr/sbin/ip", "-4", "address", "delete", prefix, "dev", member.ServiceInterface); err != nil {
+	volumes := placement.Volumes
+	if member.StateVolumeID != "" {
+		present, err := serviceAddressPresent(member)
+		if err != nil {
 			return err
 		}
+		if present {
+			prefix := netip.PrefixFrom(member.Address, 32).String()
+			if _, err := run(ctx, "/usr/sbin/ip", "-4", "address", "delete", prefix, "dev", member.ServiceInterface); err != nil {
+				return err
+			}
+		}
+		volumes = append(volumes, member.StateVolumeID)
 	}
-	for _, id := range append(placement.Volumes, member.StateVolumeID) {
+	for _, id := range volumes {
 		if err := backend.Unmount(ctx, id); err != nil {
 			return err
 		}

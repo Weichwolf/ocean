@@ -62,6 +62,12 @@ func TestHostedContainerOffboarding(t *testing.T) {
 
 func openHostedOffboardingLab(t *testing.T, ctx context.Context, archive, name string) (*Region, regionConfig) {
 	t.Helper()
+	cfg := hostedOffboardingLabConfig(t, ctx, archive, name)
+	return openHostedLabRegion(t, ctx, cfg), cfg
+}
+
+func hostedOffboardingLabConfig(t *testing.T, ctx context.Context, archive, name string) regionConfig {
+	t.Helper()
 	dir := t.TempDir()
 	base, cert, certKey, etcd, _ := prepareSMBRecoveryEtcd(t, ctx, archive, dir)
 	regional, _, _ := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, filepath.Join(dir, "region"), nil)
@@ -73,12 +79,16 @@ func openHostedOffboardingLab(t *testing.T, ctx context.Context, archive, name s
 		t.Fatal(err)
 	}
 	clear(key)
-	cfg := regionConfig{Name: name, InitialCell: "cell-1", Etcd: regional, DeletionLedgerEtcd: &ledger,
+	return regionConfig{Name: name, InitialCell: "cell-1", Etcd: regional, DeletionLedgerEtcd: &ledger,
 		HostedWorkplace: &hostedRegionPolicy{Country: "DE", OperatorPools: map[string]string{"primary": "DE"},
 			DeletionLedger: &hostedLedgerPolicy{OperatorPool: "primary", ClusterID: fmt.Sprintf("%x", id), Endpoints: ledger.Endpoints}},
 		Workloads: &workloadConfig{SecretsKeyFile: wrapping, DefaultPlacement: PlacementPolicy{Pools: []string{"primary"},
 			Quota: enrollment.Capacity{CPUMillis: 4000, MemoryMiB: 2048}}},
 		Storage: &storageConfig{KeyFile: wrapping, Workers: []string{hostedSuspensionHost, "worker-b"}}}
+}
+
+func openHostedLabRegion(t *testing.T, ctx context.Context, cfg regionConfig) *Region {
+	t.Helper()
 	r, err := openRegion(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +97,7 @@ func openHostedOffboardingLab(t *testing.T, ctx context.Context, archive, name s
 	if err := r.bootstrap(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return r, cfg
+	return r
 }
 
 func registerHostedOffboardingWorker(t *testing.T, ctx context.Context, r *Region, hostCert []byte) enrollment.Host {

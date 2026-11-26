@@ -50,6 +50,14 @@ type Plan struct {
 	Volumes    []VolumeGrant   `json:"volumes"`
 	StateKey   []byte          `json:"stateKey,omitempty"`
 	Directory  DirectoryWriter `json:"directoryWriter,omitzero"`
+	Suspension *SuspensionPlan `json:"suspension,omitempty"`
+}
+
+// SuspensionPlan withdraws the entire certified member without disclosing
+// any keys. PurgeVolume identifies one separately approved deletion job.
+type SuspensionPlan struct {
+	Volumes     []string `json:"volumes"`
+	PurgeVolume string   `json:"purgeVolume,omitempty"`
 }
 
 // DirectoryWriter identifies the region's current directory write authority.
@@ -63,6 +71,20 @@ func (w DirectoryWriter) ValidFor(member Member) bool {
 }
 
 func (p Plan) Valid() bool {
+	if p.Suspension != nil {
+		if !p.Receipt().Valid() || len(p.Volumes) != 0 || len(p.StateKey) != 0 || len(p.Member.Shares) != 0 ||
+			p.Member.StateVolumeID != "" || len(p.Suspension.Volumes) > MaxShares+1 {
+			return false
+		}
+		seen := make(map[string]bool, len(p.Suspension.Volumes))
+		for _, id := range p.Suspension.Volumes {
+			if seen[id] || !(storage.ValidSMBStateVolumeID(id) || storage.ValidID(id) && strings.HasPrefix(id, "vol-")) {
+				return false
+			}
+			seen[id] = true
+		}
+		return true
+	}
 	if !storage.ValidID(p.Generation) || p.Revision < 0 || p.Revision == 0 && len(p.Volumes) != 0 ||
 		len(p.Volumes) > MaxShares || p.Member.Validate() != nil {
 		return false
@@ -112,12 +134,26 @@ func (p Plan) ClearKeys() {
 }
 
 type Receipt struct {
-	Revision   int64           `json:"revision"`
-	Generation string          `json:"generation"`
-	Directory  DirectoryWriter `json:"directoryWriter,omitzero"`
+	Revision    int64           `json:"revision"`
+	Generation  string          `json:"generation"`
+	Directory   DirectoryWriter `json:"directoryWriter,omitzero"`
+	Suspended   bool            `json:"suspended,omitempty"`
+	PurgeVolume string          `json:"purgeVolume,omitempty"`
 }
 
-func (r Receipt) Valid() bool { return r.Revision > 0 && storage.ValidID(r.Generation) }
+func (p Plan) Receipt() Receipt {
+	r := Receipt{Revision: p.Revision, Generation: p.Generation, Directory: p.Directory}
+	if p.Suspension != nil {
+		r.Suspended, r.PurgeVolume = true, p.Suspension.PurgeVolume
+	}
+	return r
+}
+
+func (r Receipt) Valid() bool {
+	return r.Revision > 0 && storage.ValidID(r.Generation) &&
+		(!r.Suspended || r.Directory == (DirectoryWriter{})) &&
+		(r.PurgeVolume == "" || r.Suspended && storage.ValidID(r.PurgeVolume) && strings.HasPrefix(r.PurgeVolume, "vol-"))
+}
 
 // FenceAttestation authorizes moving one member generation and every share
 // it owns after the independent site supervisor has fenced its old host.

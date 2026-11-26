@@ -79,7 +79,7 @@ func (j *joinClient) syncSMB(ctx context.Context, backend storage.Backend, autho
 		return err
 	}
 	defer plan.ClearKeys()
-	receipt := smb.Receipt{Revision: plan.Revision, Generation: plan.Generation, Directory: plan.Directory}
+	receipt := plan.Receipt()
 	if *applied != receipt {
 		apply, cancel := context.WithTimeout(ctx, 90*time.Second)
 		err := authorization.ApplyPlan(apply, backend, plan)
@@ -103,6 +103,7 @@ func (j *joinClient) smbPlan(ctx context.Context) (smb.Plan, error) {
 	if err != nil {
 		return smb.Plan{}, err
 	}
+	request.Header.Set("Ocean-SMB-Suspension", "1")
 	response, err := j.client.Do(request)
 	if err != nil {
 		return smb.Plan{}, err

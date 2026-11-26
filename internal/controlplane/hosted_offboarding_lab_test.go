@@ -32,6 +32,12 @@ import (
 func seedHostedRestoreTenant(t *testing.T, ctx context.Context, r *Region) identity.TenantReservation {
 	t.Helper()
 	tenant := identity.TenantReservation{TenantID: operationID(), SubscriptionID: operationID(), Administrator: operationID(), Fingerprint: operationID()}
+	seedHostedLabTenant(t, ctx, r, tenant)
+	return tenant
+}
+
+func seedHostedLabTenant(t *testing.T, ctx context.Context, r *Region, tenant identity.TenantReservation) {
+	t.Helper()
 	if _, err := r.ReserveTenant(ctx, tenant); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +49,6 @@ func seedHostedRestoreTenant(t *testing.T, ctx context.Context, r *Region) ident
 	if _, _, err := r.PutGroup(ctx, scope, arm.Group{Name: "retained-fixture", Location: r.name, Tags: map[string]string{}}, tenant.Administrator); err != nil {
 		t.Fatal(err)
 	}
-	return tenant
 }
 
 func seedHostedRestoreAssignments(t *testing.T, ctx context.Context, r *Region, tenant, neighbor identity.TenantReservation, quota enrollment.Capacity) {
@@ -171,7 +176,7 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 }
 
 func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfig, cli, operatorRealm, operatorClient, issuer string,
-	issuerCert *x509.Certificate) (string, *http.Client, func(string, string, string, string, string) []byte, func(string) (string, []byte)) {
+	issuerCert *x509.Certificate, workers ...enrollment.Approval) (string, *http.Client, func(string, string, string, string, string) []byte, func(string) (string, []byte)) {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name string, data []byte) string {
@@ -200,11 +205,8 @@ func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfi
 	caFile := pemFile("api-ca.pem", "CERTIFICATE", ca.Raw)
 	tlsSettings := &config.TLS{CertificateFile: pemFile("api.pem", "CERTIFICATE", server.Certificate[0]), KeyFile: keyFile("api.key", server.PrivateKey),
 		ClientCAFile: caFile, OptionalClientCA: true}
-	var workers []enrollment.Approval
-	for index, id := range region.Storage.Workers {
-		workers = append(workers, enrollment.Approval{HostID: id, MAC: fmt.Sprintf("02:00:00:00:00:%02x", index+1), Address: fmt.Sprintf("10.80.0.%d", index+1),
-			Profile: "restore-lab", Cell: region.InitialCell, Pool: "primary", Roles: []string{"compute"}, MinimumCPU: 1, MinimumMemoryMiB: 512,
-			TokenSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(rand.Text()))), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)})
+	if len(workers) == 0 {
+		workers = hostedLabInventory(region)
 	}
 	inventory, err := json.Marshal(map[string][]enrollment.Approval{"hosts": workers})
 	if err != nil {
@@ -278,4 +280,14 @@ func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfi
 		return write("worker-"+host+".json", agent), certificate.Certificate[0]
 	}
 	return origin, client, regionalWorkerCLI(t, ctx, origin, caFile, cli), hostIdentity
+}
+
+func hostedLabInventory(region regionConfig) []enrollment.Approval {
+	workers := make([]enrollment.Approval, 0, len(region.Storage.Workers))
+	for index, id := range region.Storage.Workers {
+		workers = append(workers, enrollment.Approval{HostID: id, MAC: fmt.Sprintf("02:00:00:00:00:%02x", index+1), Address: fmt.Sprintf("10.80.0.%d", index+1),
+			Profile: "restore-lab", Cell: region.InitialCell, Pool: "primary", Roles: []string{"compute"}, MinimumCPU: 1, MinimumMemoryMiB: 512,
+			TokenSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(rand.Text()))), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)})
+	}
+	return workers
 }

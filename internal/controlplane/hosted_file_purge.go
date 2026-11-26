@@ -11,6 +11,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
+	"github.com/Weichwolf/ocean/internal/smb"
 	"github.com/Weichwolf/ocean/internal/storage"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -21,11 +22,22 @@ func purgeScope(decision identity.HostedFilePurge) arm.SubscriptionScope {
 
 func hostedFileShareAddress(scope arm.SubscriptionScope, id string) (arm.ResourceAddress, bool) {
 	parts := strings.Split(id, "/")
+	if len(parts) == 9 {
+		address := arm.ResourceAddress{Group: parts[4], Path: smb.ResourceType + "/" + parts[8]}
+		_, valid := smbShareName(address)
+		return address, valid && strings.EqualFold(address.ID(scope), id)
+	}
 	if len(parts) != 13 {
 		return arm.ResourceAddress{}, false
 	}
 	address := arm.ResourceAddress{Group: parts[4], Path: storage.AccountType + "/" + parts[8] + "/fileServices/default/shares/" + parts[12]}
 	return address, address.Valid() && storage.ValidAccount(parts[8]) && storage.ValidShare(parts[12]) && strings.EqualFold(address.ID(scope), id)
+}
+
+func isHostedSMBPurge(decision identity.HostedFilePurge) bool {
+	address, _ := hostedFileShareAddress(purgeScope(decision), decision.ShareID)
+	_, ok := smbShareName(address)
+	return ok
 }
 
 func (r *Region) filePurgeKey(tenant, id string) string {
@@ -131,17 +143,17 @@ func (r *Region) RequestHostedFilePurge(ctx context.Context, tenant, id, actor s
 	if suspension.SubscriptionID != subscription {
 		return nil, identity.ErrPlacementTenantGone
 	}
-	record, pool, err := r.purgeFileTarget(ctx, scope, address)
+	target, pool, err := r.purgeFileTarget(ctx, scope, address)
 	if err != nil {
 		return nil, err
 	}
-	decision := identity.HostedFilePurge{ID: id, TenantID: tenant, SubscriptionID: subscription, ShareID: record.Address.ID(scope),
-		VolumeID: record.Volume.ID, Worker: record.Host, Pool: pool, Actor: actor, ApprovalID: approval, DecidedAt: time.Now().UTC()}
+	decision := identity.HostedFilePurge{ID: id, TenantID: tenant, SubscriptionID: subscription, ShareID: target.address.ID(scope),
+		VolumeID: target.volume, Worker: target.host, Pool: pool, Actor: actor, ApprovalID: approval, DecidedAt: time.Now().UTC()}
 	if decision.DecidedAt.Before(suspension.DecidedAt) {
 		decision.DecidedAt = suspension.DecidedAt
 	}
 	key := l.filePurgePrefix() + tenant + "/" + id
-	volume := l.prefix + "file-purge-volumes/" + tenant + "/" + record.Volume.ID
+	volume := l.prefix + "file-purge-volumes/" + tenant + "/" + target.volume
 	result, err := l.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(parentKey), "=", parent.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.Version(key), "=", 0), clientv3.Compare(clientv3.Version(volume), "=", 0)).
 		Then(putJSON(key, decision), clientv3.OpPut(volume, id)).Else(clientv3.OpGet(key)).Commit()
@@ -164,46 +176,78 @@ func (r *Region) RequestHostedFilePurge(ctx context.Context, tenant, id, actor s
 	return &decision, r.applyHostedFilePurge(ctx, decision)
 }
 
-func (r *Region) purgeFileTarget(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress) (storageShareRecord, string, error) {
+type hostedPurgeTarget struct {
+	address      arm.ResourceAddress
+	volume, host string
+	at           int64
+}
+
+func (r *Region) purgeFileTarget(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress) (hostedPurgeTarget, string, error) {
+	var target hostedPurgeTarget
+	var err error
+	if _, ok := smbShareName(address); ok {
+		target, err = r.purgeSMBTarget(ctx, scope, address)
+	} else {
+		target, err = r.purgeAzureFilesTarget(ctx, scope, address)
+	}
+	if err != nil {
+		return target, "", err
+	}
+	hosts, err := r.client.Get(ctx, r.hostKey("registered", target.host), clientv3.WithRev(target.at))
+	if err != nil {
+		return target, "", err
+	}
+	var host enrollment.Host
+	if len(hosts.Kvs) != 1 || json.Unmarshal(hosts.Kvs[0].Value, &host) != nil || host.HostID != target.host ||
+		host.RevokedAt != nil || !r.hosted.allowsPool(host.Pool) {
+		return target, "", identity.ErrHostedPurgeState
+	}
+	if _, err := r.hostedPlacementAt(ctx, scope, host.Pool, target.at); err != nil {
+		return target, "", err
+	}
+	return target, host.Pool, nil
+}
+
+func (r *Region) purgeAzureFilesTarget(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress) (hostedPurgeTarget, error) {
+	var target hostedPurgeTarget
 	var record storageShareRecord
 	rows, err := r.client.Get(ctx, r.shareKey(scope, address))
 	if err != nil {
-		return record, "", err
+		return target, err
 	}
 	if len(rows.Kvs) == 0 {
-		return record, "", identity.ErrPlacementTenantGone
+		return target, identity.ErrPlacementTenantGone
 	}
 	if json.Unmarshal(rows.Kvs[0].Value, &record) != nil || record.Scope != scope || record.Address.Key() != address.Key() ||
 		!ownedShare(record.Address, record.Account) || !storage.ValidID(record.Volume.ID) || !strings.HasPrefix(record.Volume.ID, "vol-") ||
 		!slices.Contains(r.storage.workers, record.Host) {
-		return record, "", errors.New("invalid file deletion target")
+		return target, errors.New("invalid file deletion target")
 	}
 	op, err := r.operationAt(ctx, scope, record.Operation, rows.Header.Revision)
 	if err != nil {
-		return record, "", err
+		return target, err
 	}
 	if record.Deleting || op.Kind != createFileShare || op.Status != arm.OperationSucceeded {
-		return record, "", identity.ErrHostedPurgeState
+		return target, identity.ErrHostedPurgeState
 	}
-	hosts, err := r.client.Get(ctx, r.hostKey("registered", record.Host), clientv3.WithRev(rows.Header.Revision))
-	if err != nil {
-		return record, "", err
+	return hostedPurgeTarget{address: record.Address, volume: record.Volume.ID, host: record.Host, at: rows.Header.Revision}, nil
+}
+
+func (r *Region) eligiblePurgeWorker(decision identity.HostedFilePurge) bool {
+	if isHostedSMBPurge(decision) {
+		if r.smb == nil {
+			return false
+		}
+		binding, ok := r.smb.bindings[purgeScope(decision)]
+		return ok && (binding.HostID == decision.Worker || binding.StandbyHostID == decision.Worker)
 	}
-	var host enrollment.Host
-	if len(hosts.Kvs) != 1 || json.Unmarshal(hosts.Kvs[0].Value, &host) != nil || host.HostID != record.Host ||
-		host.RevokedAt != nil || !r.hosted.allowsPool(host.Pool) {
-		return record, "", identity.ErrHostedPurgeState
-	}
-	if _, err := r.hostedPlacementAt(ctx, scope, host.Pool, rows.Header.Revision); err != nil {
-		return record, "", err
-	}
-	return record, host.Pool, nil
+	return r.storage != nil && slices.Contains(r.storage.workers, decision.Worker)
 }
 
 func (r *Region) applyHostedFilePurge(ctx context.Context, decision identity.HostedFilePurge) error {
 	key := r.filePurgeKey(decision.TenantID, decision.ID)
 	job := r.filePurgeJobKey(decision.Worker, decision.VolumeID)
-	if r.storage == nil || !slices.Contains(r.storage.workers, decision.Worker) || !r.hosted.allowsPool(decision.Pool) {
+	if !r.eligiblePurgeWorker(decision) || !r.hosted.allowsPool(decision.Pool) {
 		return errors.New("file deletion requires its approved storage worker and pool")
 	}
 	audit := r.auditOp(purgeScope(decision), arm.AuditEvent{Time: decision.DecidedAt, Actor: decision.Actor,

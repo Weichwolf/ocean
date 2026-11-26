@@ -40,6 +40,10 @@ func (a *Authority) smbPlan(w http.ResponseWriter, r *http.Request) {
 			replySMBPlanError(w, err)
 			return
 		}
+		if plan.Suspension != nil && r.Header.Get("Ocean-SMB-Suspension") != "1" {
+			replySMBPlanError(w, ErrHostDenied)
+			return
+		}
 		respond(w, http.StatusOK, plan)
 		return
 	}
@@ -61,7 +65,7 @@ func replySMBPlanError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrHostDenied):
 		reject(w, http.StatusForbidden, "HostIdentityDenied")
-	case errors.Is(err, ErrSMBPlanChanged):
+	case errors.Is(err, ErrSMBPlanChanged), errors.Is(err, ErrWorkloadChanged):
 		reject(w, http.StatusConflict, "SMBPlanChanged")
 	default:
 		reject(w, http.StatusServiceUnavailable, "SMBPlanUnavailable")

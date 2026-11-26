@@ -29,6 +29,10 @@ func (a *Authorization) ApplyPlan(ctx context.Context, backend storage.Backend, 
 	if !plan.Valid() {
 		return ErrInvalidPlan
 	}
+	if plan.Suspension != nil {
+		*a = Authorization{}
+		return applySuspension(ctx, backend, *plan.Suspension)
+	}
 	if a.generation == plan.Generation && a.writer == plan.Directory && reflect.DeepEqual(a.member, plan.Member) {
 		return a.Refresh(ctx)
 	}
@@ -38,10 +42,8 @@ func (a *Authorization) ApplyPlan(ctx context.Context, backend storage.Backend, 
 		return err
 	}
 	*a = Authorization{}
-	if plan.Member.StateVolumeID != "" {
-		if err := preparePlacement(ctx, backend, plan); err != nil {
-			return err
-		}
+	if err := preparePlacement(ctx, backend, plan); err != nil {
+		return err
 	}
 	for _, grant := range plan.Volumes {
 		if !grant.Withdraw {
@@ -80,22 +82,38 @@ func (a *Authorization) ApplyPlan(ctx context.Context, backend storage.Backend, 
 			return fmt.Errorf("delete SMB volume %s: %w", grant.Volume.ID, err)
 		}
 	}
-	if plan.Member.StateVolumeID != "" {
-		placement, err := readPlacement()
-		if err != nil {
-			return err
-		}
-		placement.Volumes = slices.DeleteFunc(placement.Volumes, func(id string) bool {
-			return slices.ContainsFunc(plan.Volumes, func(grant VolumeGrant) bool {
-				return grant.Volume.ID == id && grant.Withdraw
-			})
+	placement, err := readPlacement()
+	if err != nil {
+		return err
+	}
+	placement.Volumes = slices.DeleteFunc(placement.Volumes, func(id string) bool {
+		return slices.ContainsFunc(plan.Volumes, func(grant VolumeGrant) bool {
+			return grant.Volume.ID == id && grant.Withdraw
 		})
-		if err := writePlacement(placement); err != nil {
-			return err
-		}
+	})
+	if err := writePlacement(placement); err != nil {
+		return err
 	}
 	a.member, a.writer, a.generation, a.checked = plan.Member, plan.Directory, plan.Generation, time.Now()
 	return EnsureActive(ctx, member)
+}
+
+func applySuspension(ctx context.Context, backend storage.Backend, plan SuspensionPlan) error {
+	if err := Withdraw(ctx, backend); err != nil {
+		return err
+	}
+	if _, err := run(ctx, "/usr/bin/systemctl", "stop", "winbind.service"); err != nil {
+		return err
+	}
+	for _, id := range plan.Volumes {
+		if err := backend.Unmount(ctx, id); err != nil {
+			return fmt.Errorf("release suspended SMB volume %s: %w", id, err)
+		}
+	}
+	if plan.PurgeVolume != "" {
+		return backend.Remove(ctx, plan.PurgeVolume)
+	}
+	return nil
 }
 
 // Refresh reevaluates membership with the directory writer even if the

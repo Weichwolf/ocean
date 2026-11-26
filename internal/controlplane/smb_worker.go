@@ -22,6 +22,8 @@ type smbWorkerState struct {
 	directory       smb.DirectoryWriter
 	placementRev    int64
 	placementGuards []clientv3.Cmp
+	suspended       bool
+	pool            string
 }
 
 func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate []byte) (smbWorkerState, error) {
@@ -34,18 +36,43 @@ func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate
 	}
 	read, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.hostKey("registered", host)), clientv3.OpGet(r.hostKey("live", host)),
 		clientv3.OpGet(r.smbMemberKey(binding)), clientv3.OpGet(r.managedDirectoryKey(binding.TenantID)),
-		clientv3.OpGet(r.smbOwnerKey(binding)), clientv3.OpGet(r.managedDirectoryPlacementKey(binding.TenantID))).Commit()
+		clientv3.OpGet(r.smbOwnerKey(binding)), clientv3.OpGet(r.managedDirectoryPlacementKey(binding.TenantID)),
+		clientv3.OpGet(r.filePurgeJobKey(host, ""), clientv3.WithPrefix())).Commit()
 	if err != nil {
 		return smbWorkerState{}, err
 	}
-	if err := r.authorizeHostRole(host, certificate, "compute", read); err != nil {
+	pool, err := r.authorizeStorageJobHost(host, certificate, read)
+	if err != nil {
 		return smbWorkerState{}, err
 	}
 	owner, revision, err := readSMBOwner(binding, read.Responses[4].GetResponseRange().Kvs)
 	if err != nil {
 		return smbWorkerState{}, err
 	}
-	if owner.HostID != host || !smbDirectoryMatches(binding, read.Responses[3].GetResponseRange().Kvs) {
+	if owner.HostID != host {
+		return smbWorkerState{}, enrollment.ErrHostDenied
+	}
+	worker := smbWorkerState{binding: binding, owner: owner, ownerRevision: revision, read: read, pool: pool}
+	decision, err := r.HostedOffboarding(ctx, binding.TenantID)
+	if err != nil {
+		return smbWorkerState{}, err
+	}
+	if decision != nil {
+		if decision.SubscriptionID != binding.SubscriptionID {
+			return smbWorkerState{}, enrollment.ErrHostDenied
+		}
+		policy, err := r.hostedPlacementAt(ctx, binding.scope(), pool, read.Header.Revision)
+		if errors.Is(err, ErrPlacementPolicy) {
+			return smbWorkerState{}, enrollment.ErrHostDenied
+		}
+		if err != nil {
+			return smbWorkerState{}, err
+		}
+		worker.suspended = true
+		worker.placementGuards = []clientv3.Cmp{policy}
+		return worker, nil
+	}
+	if !smbDirectoryMatches(binding, read.Responses[3].GetResponseRange().Kvs) {
 		return smbWorkerState{}, enrollment.ErrHostDenied
 	}
 	guards, err := r.hostedHostGuards(ctx, binding.scope(), host, read.Header.Revision)
@@ -55,7 +82,7 @@ func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate
 	if err != nil {
 		return smbWorkerState{}, err
 	}
-	worker := smbWorkerState{binding: binding, owner: owner, ownerRevision: revision, read: read, placementGuards: guards}
+	worker.placementGuards = guards
 	record := read.Responses[3].GetResponseRange().Kvs[0]
 	placements := read.Responses[5].GetResponseRange().Kvs
 	var native identity.ManagedDirectory
@@ -84,6 +111,9 @@ func (r *Region) HostSMBPlan(ctx context.Context, host string, certificate []byt
 	records, revision, err := smbRecords(binding, worker.read.Responses[2].GetResponseRange().Kvs)
 	if err != nil {
 		return smb.Plan{}, err
+	}
+	if worker.suspended {
+		return r.hostedSMBSuspensionPlan(ctx, worker, records, revision)
 	}
 	plan := smb.Plan{Revision: revision, Generation: worker.owner.Generation, Member: binding.Member, Directory: worker.directory}
 	if binding.Member.StateVolumeID != "" {
@@ -128,6 +158,12 @@ func (r *Region) CompleteSMBPlan(ctx context.Context, host string, certificate [
 	if err != nil {
 		return err
 	}
+	if receipt.Suspended != worker.suspended {
+		return enrollment.ErrSMBPlanChanged
+	}
+	if worker.suspended {
+		return r.completeHostedSMBSuspension(ctx, worker, records, current, receipt)
+	}
 	if receipt.Revision != current || receipt.Generation != worker.owner.Generation || receipt.Directory != worker.directory {
 		return enrollment.ErrSMBPlanChanged
 	}
@@ -139,6 +175,7 @@ func (r *Region) CompleteSMBPlan(ctx context.Context, host string, certificate [
 		clientv3.Compare(clientv3.ModRevision(r.hostKey("live", host)), "=", read.Responses[1].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.managedDirectoryKey(binding.TenantID)), "=", read.Responses[3].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.managedDirectoryPlacementKey(binding.TenantID)), "=", worker.placementRev),
+		clientv3.Compare(clientv3.Version(r.offboardingMarker(binding.TenantID)), "=", 0),
 	)
 	now := time.Now().UTC()
 	scope := binding.scope()

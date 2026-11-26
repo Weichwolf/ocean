@@ -308,7 +308,7 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 	case "hosted-workplace":
 		available = func(c harness.Case) bool {
 			return slices.Contains([]string{"WORKPLACE-42", "WORKPLACE-43", "WORKPLACE-44", "WORKPLACE-45", "WORKPLACE-46",
-				"WORKPLACE-47", "WORKPLACE-48", "WORKPLACE-49", "WORKPLACE-50", "WORKPLACE-51", "WORKPLACE-52"}, c.ID)
+				"WORKPLACE-47", "WORKPLACE-48", "WORKPLACE-49", "WORKPLACE-50", "WORKPLACE-51", "WORKPLACE-52", "WORKPLACE-53", "WORKPLACE-54"}, c.ID)
 		}
 	default:
 		t.Fatalf("unknown acceptance profile %q", profile)

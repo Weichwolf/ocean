@@ -244,6 +244,17 @@ func verifyHostedVolumeReceipts(t *testing.T, ctx context.Context, r *Region, sc
 
 func stageHostedVolumeWorker(t *testing.T, ctx context.Context, root, image, remote, agentRun string, run func(string, io.Reader)) {
 	t.Helper()
+	stageHostedWorkerExecutable(t, ctx, root, remote, run)
+	save := exec.CommandContext(ctx, "nice", "-n", "10", "/usr/bin/podman", "save", "--format", "oci-archive", "--", image)
+	archive, err := save.Output()
+	if err != nil {
+		t.Fatalf("package the pinned local Debian image: %v", err)
+	}
+	run(agentRun+"podman load", bytes.NewReader(archive))
+}
+
+func stageHostedWorkerExecutable(t *testing.T, ctx context.Context, root, remote string, run func(string, io.Reader)) {
+	t.Helper()
 	bin := filepath.Join(t.TempDir(), "worker")
 	build := exec.CommandContext(ctx, "go", "test", "-mod=readonly", "-tags=e2e", "-c", "-o", bin, "./internal/nodeagent")
 	build.Dir = root
@@ -256,12 +267,6 @@ func stageHostedVolumeWorker(t *testing.T, ctx context.Context, root, image, rem
 		t.Fatal(err)
 	}
 	run("sudo install -m 0755 /dev/stdin "+remote+"/worker", bytes.NewReader(data))
-	save := exec.CommandContext(ctx, "nice", "-n", "10", "/usr/bin/podman", "save", "--format", "oci-archive", "--", image)
-	archive, err := save.Output()
-	if err != nil {
-		t.Fatalf("package the pinned local Debian image: %v", err)
-	}
-	run(agentRun+"podman load", bytes.NewReader(archive))
 }
 
 func stageHostedVolumeIdentity(t *testing.T, local, remote string, run func(string, io.Reader)) {
@@ -321,6 +326,11 @@ func stageHostedFileShare(t *testing.T, ctx context.Context, r *Region, scope ar
 
 func verifyHostedVolumeCheckpoint(t *testing.T, remote, rbd, volume, mapper string, key []byte, run func(string, io.Reader)) {
 	t.Helper()
+	verifyHostedReadOnlyCheckpoint(t, remote, rbd, volume, mapper, "checkpoint", "hosted-encrypted-checkpoint", key, run)
+}
+
+func verifyHostedReadOnlyCheckpoint(t *testing.T, remote, rbd, volume, mapper, checkpoint, value string, key []byte, run func(string, io.Reader)) {
+	t.Helper()
 	path := remote + "/verify"
 	offlineMapper := mapper + "-verify"
 	run("set -eu\nsudo install -d -m 0700 "+path+"\n"+
@@ -329,5 +339,5 @@ func verifyHostedVolumeCheckpoint(t *testing.T, remote, rbd, volume, mapper stri
 		"sudo cryptsetup isLuks --type luks2 \"$device\"\n"+
 		"sudo cryptsetup open --readonly --type luks2 --key-file - \"$device\" "+offlineMapper+"\n"+
 		"sudo mount -t ext4 -o ro,noload /dev/mapper/"+offlineMapper+" "+path+"\n"+
-		"printf 'hosted-encrypted-checkpoint\\n' | sudo cmp -s - "+path+"/checkpoint\n", bytes.NewReader(key))
+		"printf '%s\\n' '"+value+"' | sudo cmp -s - "+path+"/"+checkpoint+"\n", bytes.NewReader(key))
 }

@@ -31,6 +31,8 @@ func TestHostedWorkerProcess(t *testing.T) {
 		err = RunStorage(ctx, filepath.Join(directory, "storage.json"), agent, slog.Default())
 	case "containers":
 		err = RunContainerOffboardingE2E(ctx, agent, slog.Default(), make(chan struct{}))
+	case "smb":
+		err = RunSMB(ctx, filepath.Join(directory, "storage.json"), agent, slog.Default())
 	default:
 		t.Fatal("unknown fixture worker mode")
 	}
