@@ -47,6 +47,76 @@ overrides:
 
 The launcher checks requested memory for new guests against host `MemAvailable` and retains the memory headroom specified by `-reserve-mib`. The default is 2048 MiB. Record measured host headroom, CPU allocation, and disk use for acceptance runs. The lab provisions the guests, addresses, and network segments used by the protocol. Product readiness, quorum, join, and workload results come from the corresponding acceptance checks on a deployed ocean build.
 
+## Farm federation over WireGuard
+
+Run one `ocean-federation` instance per gateway path. Each instance listens
+on its own WireGuard overlay address. Use independent underlays and keys
+for the two gateways, and limit WireGuard AllowedIPs to each peer's overlay
+address and approved routed prefixes. Configure routes to the overlay
+endpoints through their respective interfaces. Preserve the peer overlay
+source address for incoming federation sessions.
+[WireGuard cryptokey routing](https://www.wireguard.com/#cryptokey-routing)
+
+Provision a federation CA separately from ARM ingress and node enrollment.
+Give each gateway its own server and client keypair. Both gateway
+certificates for a farm include its discovery DNS name and the URI SAN
+`spiffe://ocean/farms/<farm-id>`. Publish both overlay addresses as A records
+under that DNS name. Use independent DNS readers for the two paths.
+
+Both gateway instances share the same policy and connect to their farm's
+existing regional etcd quorum. Use the same farm ID as the regional
+control plane. Their `path` and listener address select different
+entries in `localPaths`. The following example is the first gateway for
+farm 1 with one approved peer.
+
+```json
+{
+  "listenAddress": "10.245.1.1:9443",
+  "tls": {
+    "certificateFile": "/etc/ocean/federation-a.pem",
+    "keyFile": "/etc/ocean/federation-a.key",
+    "clientCAFile": "/etc/ocean/federation-ca.pem"
+  },
+  "path": "wan-a",
+  "dnsServers": ["10.231.1.90:53", "10.231.1.91:53"],
+  "policy": {
+    "farm": "farm-1",
+    "dnsName": "farm-1.ocean.example.net",
+    "exports": ["10.246.1.0/24"],
+    "localPaths": {"wan-a": "10.245.1.1:9443", "wan-b": "10.245.2.1:9443"},
+    "peers": {
+      "farm-2": {
+        "dnsName": "farm-2.ocean.example.net",
+        "imports": ["10.246.2.0/24"],
+        "paths": {"wan-a": "10.245.1.2:9443", "wan-b": "10.245.2.2:9443"}
+      }
+    }
+  },
+  "etcd": {
+    "endpoints": ["https://10.231.1.11:2379", "https://10.231.1.12:2379", "https://10.231.1.13:2379"],
+    "caFile": "/etc/ocean/storage-ca.pem",
+    "certificateFile": "/etc/ocean/federation-etcd.pem",
+    "keyFile": "/etc/ocean/federation-etcd.key"
+  }
+}
+```
+
+After `make build`, run `bin/ocean-federation -config /etc/ocean/federation.json`
+on each gateway once its local WireGuard address and the local regional store
+exist. Set the reciprocal peer policy at the other farm. A successful
+exchange validates the DNS answer, certificate identity, path addresses, and
+matching import and export prefixes before storing the farm pair. A
+failure stops renewal of the affected path's 15-second lease. Local
+readiness and the durable farm pair survive a WAN partition. Operators
+can inspect `/ocean/v1/regions/<farm-id>/federation/pairs/` and
+`/ocean/v1/regions/<farm-id>/federation/paths/` in local etcd.
+
+Run `FED-01` with the `farm-pairing` acceptance profile. It exercises
+native WireGuard, live DNS and four independent etcd quorums in an
+isolated Linux network. The KVM and physical geo profiles cover service
+ingress, workload placement, recovery, and autoscaling.
+[Federation probe protocol](../tests/e2e/protocol.md#farm-pairing)
+
 ## Regional management stack
 
 Build the binaries and start a fresh `single-farm-3` lab as shown above. Obtain the [etcd v3.6.17 Linux AMD64 archive](https://github.com/etcd-io/etcd/releases/tag/v3.6.17). The deploy script checks its SHA-256 before installing the binaries. Run the deploy and fault checks locally on the Debian host.

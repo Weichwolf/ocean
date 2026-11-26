@@ -45,6 +45,7 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `scale-16` | Sixteen small nodes, mixed RAM and CPU profiles, placement, and worker drain |
 | `geo-4x3` | Four independent logical farms and initial WireGuard mesh and federation setup |
 | `geo-4x4` | Enroll one additional node per farm, then exercise node, tunnel, and whole-farm loss |
+| `farm-pairing` | Exercise authenticated farm pairs, allowed routes and path loss over native WireGuard with four local quorums |
 | `ipsec-gateway` | Check IKEv2 peer authentication, routed traffic, forwarding expiry, and cleanup in a disposable Debian KVM guest |
 | `ipsec-control` | Check regional VPN reservations, assignment authorization, status freshness, and teardown against real etcd |
 | `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
@@ -55,6 +56,26 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 | `vm-worker` | Exercise stock Azure CLI VM lifecycle, tenant boundaries and quota accounting, then confirm out-of-band fencing and read a persisted Windows checkpoint on the replacement |
+
+### Farm pairing
+
+The `farm-pairing` profile starts two independent test underlays, eight
+WireGuard gateways, and four three-voter etcd stores. It runs inside new
+Linux user and network namespaces. Install WireGuard tools, dnsmasq, iproute2,
+iputils, bind9-dnsutils, OpenSSL, and etcd with etcdctl. Override tool paths using
+`OCEAN_E2E_WG_BINARY`, `OCEAN_E2E_DNSMASQ_BINARY`,
+`OCEAN_E2E_ETCD_BINARY`, and `OCEAN_E2E_ETCDCTL_BINARY` if needed.
+
+```sh
+OCEAN_E2E_PROFILE=farm-pairing go test -tags=e2e -count=1 -v ./tests/e2e -run '^TestAcceptance$'
+```
+
+The measurement artifact records the time to all pairings and the time
+to observe path lease withdrawal after loss of a WAN or a farm. The
+management probe checks the surviving regional readiness endpoints.
+`PROFILE-04` through `PROFILE-06` cover the KVM service and independent-site gates.
+
+### Other profile probes
 
 Set `OCEAN_E2E_IPSEC_LAB_STATE` to the prepared guest state from the
 [IPsec lab guide](../../lab/README.md#routed-ipsec-gateway-probe) to run

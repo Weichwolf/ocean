@@ -272,16 +272,22 @@ after the worker confirms removal. [IPsec lab and acceptance](lab/README.md#regi
 
 ## Federation and physical deployment
 
-The planned federation profile keeps management, identity and storage quorums
-local to each farm. Redundant WireGuard paths between gateway pairs provide
-inter-farm transport. After a path becomes reachable, pre-authorized farms
-discover each other, authenticate with mTLS and reconcile durable pairings.
-Cross-farm placement follows tenant authorization. Stateful takeover requires
-an acceptable recovery point and confirmed fencing before ownership moves.
+The federation service uses each farm's local management quorum. Two
+WireGuard paths on separate gateways carry the federation traffic. Each
+gateway resolves the approved peer's DNS name, dials its authorized address
+on that path, and verifies the peer's farm identity over mutual TLS. Both
+farms record the same pair identifier and the approved prefixes. Expiring
+path leases track current reachability while the pairing survives WAN loss.
+[Farm federation configuration](lab/README.md#farm-federation-over-wireguard)
+
+Geo placement and autoscaling require tenant authorization and per-farm
+capacity. Stateful takeover requires an acceptable recovery point and
+confirmed fencing before ownership moves.
 
 The lab has topology definitions for four farms of three nodes and for adding
-a fourth node to each farm. Those topologies support future mesh, pairing,
-whole-farm outage and geo-scaling acceptance. Physical rack provisioning
+a fourth node to each farm. The network namespace probe exercises pairing
+over the native WireGuard mesh with independent lab quorums. The KVM
+topologies support full service outage and geo-scaling acceptance. Physical rack provisioning
 adds a trusted hardware inventory, out-of-band management and unattended
 Debian installation to the demonstrated first-boot enrollment path. Physical
 qualification also covers fencing, independent infrastructure failure

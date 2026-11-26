@@ -2,7 +2,13 @@
 
 package e2e
 
-import "github.com/Weichwolf/ocean/tests/e2e/internal/harness"
+import (
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"github.com/Weichwolf/ocean/tests/e2e/internal/harness"
+)
 
 func resilienceSteps(options labOptions) []harness.Step {
 	restore := regional(options, "independent-restore", "verify_storage_mounts.py", []string{"HA-04"},
@@ -15,5 +21,31 @@ func resilienceSteps(options labOptions) []harness.Step {
 		regional(options, "workload-quorum-loss", "verify_workload_quorum.py", []string{"HA-03"}, []string{"workload-quorum.json"}),
 		regional(options, "region-failover", "verify_region.py", []string{"HA-05", "HA-06"}, []string{"region-failover.json"}, "--profile", "lab/profiles/storage-ha.yaml", "--cli"),
 		restore,
+		farmPairingStep(options.evidence),
 	}
+}
+
+func farmPairingStep(evidence string) harness.Step {
+	output := filepath.Join(evidence, "farm-pairing.json")
+	step := harness.Step{
+		Name: "wireguard-farm-pairing", Cases: []string{"FED-01"}, Timeout: 3 * time.Minute,
+		Command:  []string{"unshare", "-Urn", "--", "python3", "-B", "lab/verify_farm_pairing.py", "--output", output},
+		Evidence: []harness.EvidenceSource{{Name: "farm-pairing.json", Path: output}},
+	}
+	for _, tool := range []struct{ flag, variable, name string }{
+		{"--etcd", "OCEAN_E2E_ETCD_BINARY", "etcd"}, {"--etcdctl", "OCEAN_E2E_ETCDCTL_BINARY", "etcdctl"},
+		{"--wg", "OCEAN_E2E_WG_BINARY", "wg"}, {"--dnsmasq", "OCEAN_E2E_DNSMASQ_BINARY", "/usr/sbin/dnsmasq"},
+	} {
+		path, err := exec.LookPath(envOr(tool.variable, tool.name))
+		if err != nil && step.BlockedReason == "" {
+			step.BlockedReason = "Install " + tool.name + " or provide " + tool.variable + "."
+		}
+		step.Command = append(step.Command, tool.flag, path)
+	}
+	for _, name := range []string{"unshare", "nsenter", "ip", "openssl", "curl", "ping", "dig"} {
+		if _, err := exec.LookPath(name); err != nil && step.BlockedReason == "" {
+			step.BlockedReason = "Install " + name + " for the WireGuard federation probe."
+		}
+	}
+	return step
 }
