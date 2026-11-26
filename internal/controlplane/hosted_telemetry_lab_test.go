@@ -85,6 +85,20 @@ func TestHostedTelemetryPolicy(t *testing.T) {
 	origin, client, az, worker := startHostedRestoreAPI(t, ctx, cfg, cli, operator, operatorClient, issuer.URL, issuer.Certificate())
 	workerConfig, workerCert := worker(hostedSuspensionHost)
 	host := registerHostedOffboardingWorker(t, ctx, r, workerCert)
+	// The telemetry expiry probe can outlast the enrolled fixture's first
+	// heartbeat lease. Keep the reporter online throughout the observation.
+	live, err := r.client.Get(ctx, r.hostKey("live", host.HostID))
+	if err != nil || len(live.Kvs) != 1 || live.Kvs[0].Lease == 0 {
+		t.Fatalf("the reporting fixture lacks an active heartbeat lease: %v", err)
+	}
+	heartbeats, err := r.client.KeepAlive(ctx, clientv3.LeaseID(live.Kvs[0].Lease))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range heartbeats {
+		}
+	}()
 	post := hostedTelemetryClient(t, ctx, origin, client, workerConfig, host.HostID)
 
 	reader, grant := operationID(), operationID()
