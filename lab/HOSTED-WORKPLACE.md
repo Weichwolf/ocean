@@ -39,7 +39,8 @@ applicable transfer mechanism and location restrictions before enabling a path.
    Verify a foreign request is denied. [Regional tenant export](README.md#hosted-workplace-placement-and-audit-retention)
 2. For offboarding, record the frozen tenant scope and the controller's return,
    deletion and any retention decisions. Revoke access and credentials,
-   withdraw workload assignments, and track deletion of live data and the
+   withdraw workload assignments, verify the worker acknowledgements or
+   fence unreachable workers, and track deletion of live data and the
    latest expiry of copies in each backup system. Retain only the evidence
    necessary to prove the actions and comply with applicable obligations.
 3. Keep the authoritative deletion ledger independent of the backups it governs.

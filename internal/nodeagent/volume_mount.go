@@ -107,6 +107,9 @@ func (j *joinClient) applyVolumeMount(ctx context.Context, backend storage.Backe
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if task.Suspend {
+			return nil
+		}
 		return j.sendUnmountReceipt(ctx, task)
 	}
 	if mountReady(task.VolumeID, task.Generation) {
@@ -146,7 +149,7 @@ func (j *joinClient) volumeMountAssignments(ctx context.Context) ([]storage.Moun
 	for _, task := range page.Mounts {
 		if !storage.ValidID(task.VolumeID) || !storage.ValidID(task.PlacementID) || !storage.ValidID(task.Generation) ||
 			!storage.ValidID(task.TenantID) || !storage.ValidID(task.SubscriptionID) || !storage.ValidID(task.Revision) || task.Remove && len(task.VolumeKey) != 0 ||
-			!task.Remove && len(task.VolumeKey) != storage.KeySize {
+			!task.Remove && (task.Suspend || len(task.VolumeKey) != storage.KeySize) {
 			return nil, errors.New("invalid encrypted volume mount assignment")
 		}
 	}

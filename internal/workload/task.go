@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	Running = "Running"
-	Stopped = "Stopped"
-	Removed = "Removed"
-	Failed  = "Failed"
+	Running   = "Running"
+	Stopped   = "Stopped"
+	Removed   = "Removed"
+	Failed    = "Failed"
+	Suspended = "Suspended"
 )
 
 type AssignmentID struct {

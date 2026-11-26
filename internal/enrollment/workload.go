@@ -67,7 +67,8 @@ func (a *Authority) containerStatus(w http.ResponseWriter, r *http.Request) {
 	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF ||
 		!hostName.MatchString(report.ID) || !hostName.MatchString(report.TenantID) || !hostName.MatchString(report.SubscriptionID) ||
 		!hostName.MatchString(report.Generation) || !hostName.MatchString(report.Revision) || len(report.Logs) > workload.MaxLogs ||
-		!slices.Contains([]string{workload.Running, workload.Stopped, workload.Failed, workload.Removed}, report.State) {
+		!slices.Contains([]string{workload.Running, workload.Stopped, workload.Failed, workload.Removed, workload.Suspended}, report.State) ||
+		report.State == workload.Suspended && (report.Logs != "" || report.Function != nil || report.FunctionReady) {
 		reject(w, http.StatusBadRequest, "InvalidWorkloadStatus")
 		return
 	}

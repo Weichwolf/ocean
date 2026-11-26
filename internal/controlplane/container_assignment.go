@@ -10,7 +10,6 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
-	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -46,10 +45,8 @@ func (r *Region) HostContainerTasks(ctx context.Context, host string, certificat
 		if !validScope(scope) || !strings.HasPrefix(recordKey, r.armPrefix(scope)+"containers/") {
 			return workload.Page{}, errors.New("workload task does not match its scope")
 		}
-		if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
-			if errors.Is(err, identity.ErrTenantSuspended) {
-				continue
-			}
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
 			return workload.Page{}, err
 		}
 		records, err := r.client.Get(ctx, recordKey, clientv3.WithRev(snapshot.Header.Revision))
@@ -61,8 +58,22 @@ func (r *Region) HostContainerTasks(ctx context.Context, host string, certificat
 			r.containerKey(scope, record.Address) != recordKey || record.Reservation.ID != parts[2] || record.Reservation.HostID != host {
 			return workload.Page{}, errors.New("invalid workload task")
 		}
-		task := workload.Task{AssignmentID: workload.AssignmentID{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, ID: record.Reservation.ID,
-			Generation: record.Reservation.Generation, Revision: record.Operation}, State: record.Desired, Address: record.endpoint(),
+		assignment := workload.AssignmentID{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, ID: record.Reservation.ID,
+			Generation: record.Reservation.Generation, Revision: record.Operation}
+		if suspension != nil {
+			if suspension.SubscriptionID != scope.SubscriptionID {
+				return workload.Page{}, errors.New("workload subscription does not match the suspended tenant")
+			}
+			if !networkOnly {
+				task := workload.Task{AssignmentID: assignment, State: workload.Suspended}
+				if record.Volume != nil {
+					task.VolumeID = record.Volume.ID
+				}
+				page.Tasks = append(page.Tasks, task)
+			}
+			continue
+		}
+		task := workload.Task{AssignmentID: assignment, State: record.Desired, Address: record.endpoint(),
 			Port: record.Port, Restart: record.Restart, BlockPublicIngress: isFunctionRecord(record)}
 		if networkOnly && record.Desired != workload.Removed && record.Reservation.SubnetID != "" {
 			placement := enrollment.Assignment{Generation: record.Reservation.Generation, SubnetID: record.Reservation.SubnetID,
@@ -134,6 +145,18 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(hostRecord), "=", snapshot.Responses[0].GetResponseRange().Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Version(liveKey), ">", 0), clientv3.Compare(clientv3.ModRevision(hostKey), "=", items[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(key), "=", revision)}
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
+			return err
+		}
+		if suspension != nil || report.State == workload.Suspended {
+			if suspension == nil || suspension.SubscriptionID != scope.SubscriptionID || report.State != workload.Suspended ||
+				report.Logs != "" || report.Function != nil || report.FunctionReady {
+				return enrollment.ErrWorkloadChanged
+			}
+			return r.recordContainerSuspension(ctx, scope, host, record, checks)
+		}
+		checks = append(checks, clientv3.Compare(clientv3.Version(r.offboardingMarker(scope.TenantID)), "=", 0))
 		if record.Desired == workload.Removed {
 			if report.State != workload.Removed {
 				return enrollment.ErrWorkloadChanged
@@ -203,6 +226,22 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 		}
 	}
 	return enrollment.ErrWorkloadChanged
+}
+
+func (r *Region) recordContainerSuspension(ctx context.Context, scope arm.SubscriptionScope, host string, record containerRecord, checks []clientv3.Cmp) error {
+	receipt := r.armPrefix(scope) + "hosted-suspensions/containers/" + record.Reservation.ID + "/" + record.Reservation.Generation
+	audit := r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: host, Action: "Ocean.Hosted/offboarding/stopContainer",
+		Target: record.Address.ID(scope), Outcome: workload.Suspended})
+	checks = append(checks, clientv3.Compare(clientv3.Version(receipt), "=", 0))
+	result, err := r.client.Txn(ctx).If(checks...).Then(clientv3.OpPut(receipt, host), audit).Else(clientv3.OpGet(receipt)).Commit()
+	if err != nil || result.Succeeded {
+		return err
+	}
+	rows := result.Responses[0].GetResponseRange().Kvs
+	if len(rows) != 1 || string(rows[0].Value) != host {
+		return enrollment.ErrWorkloadChanged
+	}
+	return nil
 }
 
 func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.SubscriptionScope, record containerRecord, op arm.Operation,

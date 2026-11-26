@@ -112,7 +112,7 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 	if err != nil || before.Responses[0].GetResponseRange().Count != 1 || before.Responses[1].GetResponseRange().Count != 0 {
 		t.Fatalf("test requires a pre-suspension subscription from the snapshot: %v", err)
 	}
-	origin, apiClient, az := startHostedRestoreAPI(t, ctx, cfg, cli, operatorRealm, operatorClient, issuer.URL, issuer.Certificate())
+	origin, apiClient, az, _ := startHostedRestoreAPI(t, ctx, cfg, cli, operatorRealm, operatorClient, issuer.URL, issuer.Certificate())
 	after, err := restored.client.Get(ctx, marker)
 	if err != nil || len(after.Kvs) != 1 || !check(after.Kvs[0].Value).DecidedAt.Equal(decision.DecidedAt) {
 		t.Fatalf("the restoration did not replay the independent decision: %v", err)
@@ -161,7 +161,7 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 }
 
 func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfig, cli, operatorRealm, operatorClient, issuer string,
-	issuerCert *x509.Certificate) (string, *http.Client, func(string, string, string, string, string) []byte) {
+	issuerCert *x509.Certificate) (string, *http.Client, func(string, string, string, string, string) []byte, func(string) (string, []byte)) {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name string, data []byte) string {
@@ -246,5 +246,26 @@ func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfi
 		_ = reply.Body.Close()
 		return reply.StatusCode == http.StatusNoContent
 	})
-	return origin, client, regionalWorkerCLI(t, ctx, origin, caFile, cli)
+	hostIdentity := func(host string) (string, []byte) {
+		t.Helper()
+		state := t.TempDir()
+		certificate := directoryFixtureHostCertificate(t, ca, signer, host, 20)
+		raw, err := x509.MarshalPKCS8PrivateKey(certificate.PrivateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer clear(raw)
+		for name, data := range map[string][]byte{"identity.key": raw, "identity.crt": certificate.Certificate[0]} {
+			if err := os.WriteFile(filepath.Join(state, name), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		agent, err := json.Marshal(map[string]any{"enrollment": map[string]string{"origin": origin, "hostId": host, "managementInterface": "lab",
+			"caFile": caFile, "tokenFile": filepath.Join(state, "unused"), "stateDirectory": state}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return write("worker-"+host+".json", agent), certificate.Certificate[0]
+	}
+	return origin, client, regionalWorkerCLI(t, ctx, origin, caFile, cli), hostIdentity
 }

@@ -34,7 +34,14 @@ func validContainerTask(task workload.Task) bool {
 			return false
 		}
 	}
-	return (task.VolumeID == "" || storage.ValidID(task.VolumeID)) && task.Address.Is4() && task.Port >= 1 && task.Port <= 65535 &&
+	if task.VolumeID != "" && !storage.ValidID(task.VolumeID) {
+		return false
+	}
+	if task.State == workload.Suspended {
+		return !task.Address.IsValid() && task.Port == 0 && task.Container == nil && task.Function == nil && task.Policy == nil &&
+			!task.Start && !task.Restart && !task.BlockPublicIngress && task.RestartPolicy == ""
+	}
+	return task.Address.Is4() && task.Port >= 1 && task.Port <= 65535 &&
 		(task.State == workload.Running || task.State == workload.Stopped || task.State == workload.Removed)
 }
 
@@ -49,7 +56,8 @@ func (j *joinClient) containerTasks(ctx context.Context, networkOnly bool) ([]wo
 		path = "/container-network"
 	}
 	var tasks []workload.Task
-	for cursor := ""; ; {
+	cursor := ""
+	for range 256 {
 		end := j.url() + path
 		if cursor != "" {
 			end += "?continuation=" + url.QueryEscape(cursor)
@@ -69,11 +77,11 @@ func (j *joinClient) containerTasks(ctx context.Context, networkOnly bool) ([]wo
 		}
 		err = json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&page)
 		_ = response.Body.Close()
-		if err != nil || len(page.Tasks) > 16 || page.Next != "" && (page.Next <= cursor || len(page.Tasks) == 0) || len(tasks) > 4096 {
+		if err != nil || len(page.Tasks) > 16 || page.Next != "" && page.Next <= cursor {
 			return nil, errors.New("invalid workload task page")
 		}
 		for _, task := range page.Tasks {
-			if !validContainerTask(task) || networkOnly && task.Container != nil {
+			if !validContainerTask(task) || networkOnly && (task.Container != nil || task.State == workload.Suspended) {
 				return nil, errors.New("invalid workload task")
 			}
 		}
@@ -83,6 +91,7 @@ func (j *joinClient) containerTasks(ctx context.Context, networkOnly bool) ([]wo
 		}
 		cursor = page.Next
 	}
+	return nil, errors.New("workload assignments exceed the page limit")
 }
 
 func (j *joinClient) reportContainer(ctx context.Context, report workload.Report) error {
@@ -108,8 +117,13 @@ func (j *joinClient) reconcileContainers(ctx context.Context, logger *slog.Logge
 	// reconciling, with a bounded number of runtime calls in flight.
 	ticker := time.NewTicker(650 * time.Millisecond)
 	defer ticker.Stop()
-	inFlight := make(map[string]bool)
+	type containerJob struct {
+		state  string
+		cancel context.CancelFunc
+	}
+	inFlight := make(map[string]containerJob)
 	completed := make(chan string, 8)
+	next := 0
 	for {
 		for waiting := true; waiting; {
 			select {
@@ -130,13 +144,26 @@ func (j *joinClient) reconcileContainers(ctx context.Context, logger *slog.Logge
 		}
 		for _, task := range tasks {
 			name := containerName(task.AssignmentID)
-			if inFlight[name] || len(inFlight) >= cap(completed) {
+			if job, busy := inFlight[name]; busy && task.State == workload.Suspended && job.state != workload.Suspended {
+				job.cancel()
+			}
+		}
+		start := next
+		for offset := range len(tasks) {
+			if len(inFlight) >= cap(completed) {
+				break
+			}
+			index := (start + offset) % len(tasks)
+			task := tasks[index]
+			name := containerName(task.AssignmentID)
+			if _, busy := inFlight[name]; busy {
 				continue
 			}
-			inFlight[name] = true
+			next = index + 1
+			work, cancel := context.WithTimeout(ctx, time.Minute)
+			inFlight[name] = containerJob{state: task.State, cancel: cancel}
 			go func() {
 				defer func() { completed <- name }()
-				work, cancel := context.WithTimeout(ctx, time.Minute)
 				defer cancel()
 				report, err := j.applyContainer(work, name, task)
 				if report.State != "" {
@@ -204,6 +231,17 @@ func networkReady(name string, pid int) bool {
 
 func (j *joinClient) applyContainer(ctx context.Context, name string, task workload.Task) (workload.Report, error) {
 	report := workload.Report{AssignmentID: task.AssignmentID}
+	if task.State == workload.Suspended {
+		// Keep writable layers and function storage until a separate deletion decision.
+		if err := podmanAction(ctx, "stop", "--ignore", "--time", "5", name+"-telemetry", name+"-storage", name); err != nil {
+			return report, err
+		}
+		_, networkErr := os.Stat(filepath.Join(workloadRuntimeDirectory, name+".network"))
+		if errors.Is(networkErr, os.ErrNotExist) && (task.VolumeID == "" || !writerMounted(task.VolumeID)) {
+			report.State = workload.Suspended
+		}
+		return report, nil
+	}
 	status, present, err := inspectContainer(ctx, name, localPodman)
 	if err != nil {
 		return report, err

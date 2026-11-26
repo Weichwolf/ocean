@@ -155,6 +155,16 @@ func (r *Region) HostVolumeMounts(ctx context.Context, host string, certificate 
 		grant := writerFor(record)
 		mount := storage.MountTask{VolumeID: record.Volume.ID, TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID,
 			PlacementID: grant.PlacementID, Generation: grant.Generation, Revision: record.Operation, Remove: record.Desired == workload.Removed}
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		if suspension != nil {
+			if suspension.SubscriptionID != scope.SubscriptionID {
+				return nil, errors.New("volume subscription does not match the suspended tenant")
+			}
+			mount.Remove, mount.Suspend = true, true
+		}
 		if !mount.Remove {
 			if _, err := r.hostedHostGuards(ctx, scope, host, snapshot.Header.Revision); err != nil {
 				if errors.Is(err, ErrPlacementPolicy) {

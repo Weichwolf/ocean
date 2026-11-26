@@ -2392,6 +2392,20 @@ az rest --method put --url "$offboarding" --body "$OCEAN_OFFBOARDING_REQUEST"
 az rest --method get --url "$offboarding"
 ```
 
+After suspension, a connected container worker receives a suspension task
+bound to the current placement generation. It stops the Podman workload and
+any Function storage or telemetry companions. The network worker drops the
+assignment and the volume worker receives an unmount request without a key.
+The container worker reports completion after stopping the processes and
+observing that the local network and mount markers are gone. Ocean records
+one scoped `Ocean.Hosted/offboarding/stopContainer` event per acknowledged
+generation. The API's `Suspended` decision precedes host acknowledgements.
+Check those acknowledgements or arrange independent fencing for unreachable
+workers before relying on runtime shutdown. Suspension preserves container
+layers, encrypted volumes and their regional writer grants for the tenant's
+retention or deletion procedure. Deploy the compatible control plane and
+workload and storage workers together.
+
 Before suspending the tenant, the administrator registered at onboarding can
 export a snapshot of the tenant's regional records. Use that administrator's
 ARM token. Each successful page records a scoped `Ocean.Hosted/dataExports/read`
@@ -2523,13 +2537,19 @@ SMB writer generation and signed operator authorization. `WORKPLACE-45`
 through `WORKPLACE-48` start disposable mutual TLS etcd clusters from the
 pinned archive and exercise backup, retention, recovery, offboarding replay
 and the tenant export.
-The harness writes Markdown and TSV reports and logs.
+`WORKPLACE-49` also uses the production control-plane binary, authenticated
+agent reconciliation and rootless Podman. Use a locally available Debian
+image containing `/bin/sh` and `sleep`. The lab starts disposable container
+processes and representative Function companions. It verifies the encrypted
+volume authorization transition through the regional API. The harness writes
+Markdown and TSV reports and logs.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
 OCEAN_E2E_HOSTED_AZ="$(command -v az)" \
 OCEAN_E2E_HOSTED_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64.tar.gz" \
+OCEAN_E2E_HOSTED_PODMAN_IMAGE="$(podman image inspect --format '{{.ID}}' docker.io/library/debian:trixie-slim)" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 

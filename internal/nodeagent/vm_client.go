@@ -37,9 +37,10 @@ func validVMTask(t workload.VMTask) bool {
 func (j *joinClient) vmTasks(ctx context.Context) ([]workload.VMTask, error) {
 	var tasks []workload.VMTask
 	seen := make(map[string]bool)
-	for cursor := ""; ; {
+	cursor := ""
+	for range 512 {
 		page, err := j.vmTaskPage(ctx, cursor)
-		if err == nil && len(page.Tasks) <= 8 && (page.Next == "" || page.Next > cursor && len(page.Tasks) != 0) {
+		if err == nil && len(page.Tasks) <= 8 && (page.Next == "" || page.Next > cursor) {
 			for _, task := range page.Tasks {
 				if !validVMTask(task) || seen[task.MachineID] || len(tasks) >= 4096 {
 					err = errors.New("invalid VM assignment page")
@@ -65,6 +66,10 @@ func (j *joinClient) vmTasks(ctx context.Context) ([]workload.VMTask, error) {
 		}
 		cursor = page.Next
 	}
+	for _, task := range tasks {
+		clear(task.VolumeKey)
+	}
+	return nil, errors.New("VM assignments exceed the page limit")
 }
 
 func (j *joinClient) vmTaskPage(ctx context.Context, cursor string) (workload.VMTaskPage, error) {

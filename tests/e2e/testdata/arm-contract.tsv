@@ -230,3 +230,4 @@ WORKPLACE-47	hosted-suspension-get	2.93.0	none	2026-11-01	rest --method get --ur
 WORKPLACE-47	hosted-suspension-arm	2.93.0	none	2024-11-01	rest --method get --url {arm}/subscriptions/{subscription}/resourcegroups?api-version=2024-11-01 -o json
 WORKPLACE-48	hosted-tenant-export	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/dataExport?api-version=2026-11-01 -o json
 WORKPLACE-48	hosted-tenant-export-next	2.93.0	none	2026-11-01	rest --method get --url {export_next_link} -o json
+WORKPLACE-49	hosted-container-suspension	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json

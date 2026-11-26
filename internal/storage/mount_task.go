@@ -10,6 +10,7 @@ type MountTask struct {
 	Revision       string `json:"revision"`
 	VolumeKey      []byte `json:"volumeKey,omitempty"`
 	Remove         bool   `json:"remove,omitempty"`
+	Suspend        bool   `json:"suspend,omitempty"`
 }
 
 // UnmountReceipt identifies the removed mount and lifecycle revision.
