@@ -15,7 +15,7 @@ sys.dont_write_bytecode = True
 from build_functions_java import build
 from enrollment import publish
 from prepare_storage_provider import WORKERS
-from region import DOMAIN, ca, leaf, ssh, upload
+from region import DEST as REGION, DOMAIN, OPERATOR, VIP, ca, eventually, leaf, ssh, upload
 from verify_agent_package import INSTALL
 from verify_function_fixtures import build_fixture
 from verify_enrollment import agent_command, wait_ready
@@ -23,6 +23,8 @@ from verify_enrollment import agent_command, wait_ready
 REGISTRY_IMAGE = "docker.io/library/registry@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8"
 REGISTRY_NAME = "registry." + DOMAIN
 FUNCTION_DOMAIN = "functions." + DOMAIN
+SCM_DOMAIN = "scm." + DOMAIN
+ZIP_RUNTIME = "mcr.microsoft.com/azure-functions/node@sha256:76b0a2318403992100bdc72f2698e9d938e1a3b1e210c28c11aaaeb57221a6c1"
 AZURITE = "mcr.microsoft.com/azure-storage/azurite@sha256:dae2a5f96553962901304b94e72ef87e299d0825e4b679673bcc527a25076fe4"
 
 
@@ -124,14 +126,39 @@ def prepare(state, package, cache, registry_port):
     print("Staged digest-pinned Java and Node.js Function images on both storage-capable workers.", flush=True)
 
 
+def prepare_zip_slots(state, package):
+    payload = package.read_bytes()
+
+    def provision(node):
+        ensure_boot_capacity(state, node)
+        ssh(state, node, INSTALL, payload)
+        ssh(state, node, "sudo systemctl restart ocean-container-network.service ocean-storage-agent.service")
+        wait_ready(state, node)
+        for image in (ZIP_RUNTIME, AZURITE):
+            agent_command(state, node, "sh", "-ec",
+                          'podman image exists "$1" || exec nice -n 10 podman pull --quiet "$1"', "sh", image)
+
+    with ThreadPoolExecutor(max_workers=len(WORKERS)) as pool:
+        list(pool.map(provision, WORKERS))
+    publish(state, function_plans=True, function_domain=FUNCTION_DOMAIN, function_scm_domain=SCM_DOMAIN)
+    host = f"fixture.{SCM_DOMAIN}"
+    eventually(lambda: ssh(state, OPERATOR, f"curl -fsS --max-time 4 --cacert {REGION}/pki/ingress-ca.pem "
+                           f"--resolve {host}:443:{VIP} https://{host}/readyz"))
+    print("Both enrolled storage workers have the native ZIP runtime and the SCM certificate is trusted by the CLI guest.", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--registry-port", type=int, default=5443)
+    parser.add_argument("--zip-slots", action="store_true", help="prepare the pinned Node.js ZIP runtime and regional SCM/slot endpoints")
     args = parser.parse_args()
-    prepare(args.state.resolve(), args.package.resolve(), args.cache, args.registry_port)
+    if args.zip_slots:
+        prepare_zip_slots(args.state.resolve(), args.package.resolve())
+    else:
+        prepare(args.state.resolve(), args.package.resolve(), args.cache, args.registry_port)
 
 
 if __name__ == "__main__":

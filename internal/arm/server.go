@@ -23,6 +23,7 @@ type Server struct {
 	Origin              string
 	Location            string
 	Authenticate        func(context.Context, *http.Request) (identity.ARMPrincipal, error)
+	AuthenticateSCM     func(context.Context, *http.Request) (identity.ARMPrincipal, error)
 	AuthenticateDesktop func(context.Context, *http.Request) (identity.DesktopPrincipal, error)
 	Groups              GroupStore
 	Roles               RoleStore
@@ -269,7 +270,7 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-		principal, ok := s.subscriptionPrincipal(ctx, w, r, segments[1])
+		principal, ok := subscriptionPrincipal(ctx, w, r, segments[1], s.Authenticate)
 		if !ok {
 			return
 		}
@@ -433,8 +434,9 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 	return false
 }
 
-func (s Server) subscriptionPrincipal(ctx context.Context, w http.ResponseWriter, r *http.Request, subscription string) (identity.ARMPrincipal, bool) {
-	principal, err := s.Authenticate(ctx, r)
+func subscriptionPrincipal(ctx context.Context, w http.ResponseWriter, r *http.Request, subscription string,
+	authenticate func(context.Context, *http.Request) (identity.ARMPrincipal, error)) (identity.ARMPrincipal, bool) {
+	principal, err := authenticate(ctx, r)
 	if err != nil {
 		if errors.Is(err, identity.ErrInvalidARMToken) {
 			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)

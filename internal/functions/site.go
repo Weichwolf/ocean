@@ -38,7 +38,14 @@ type SiteProperties struct {
 	VNetContentShareEnabled bool             `json:"vnetContentShareEnabled"`
 	VirtualNetworkSubnetID  string           `json:"virtualNetworkSubnetId,omitempty"`
 	OutboundVNetRouting     *OutboundRouting `json:"outboundVnetRouting,omitempty"`
+	HostNameSSLStates       []HostNameState  `json:"hostNameSslStates,omitempty"`
 	Config                  SiteConfig       `json:"siteConfig"`
+}
+
+type HostNameState struct {
+	Name     string `json:"name"`
+	HostType string `json:"hostType"`
+	SSLState string `json:"sslState"`
 }
 
 type OutboundRouting struct {

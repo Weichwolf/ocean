@@ -107,7 +107,7 @@ func TestCloudMetadataForAzureCLI(t *testing.T) {
 	compat, err := (Config{
 		Authority: authority,
 		Provider:  "https://oauth.ocean.test",
-		Cloud:     &CloudEndpoints{ResourceManager: arm, MicrosoftGraph: graph, FunctionsSCM: true},
+		Cloud:     &CloudEndpoints{ResourceManager: arm, MicrosoftGraph: graph, FunctionsSCMDomain: "scm.ocean.test"},
 	}).OpenCompatibility()
 	if err != nil {
 		t.Fatal(err)

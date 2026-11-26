@@ -300,6 +300,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool { return c.ID == "PROFILE-01" }
 	case "functions-zip-foundation":
 		available = func(c harness.Case) bool { return strings.HasPrefix(c.ID, "ZIP-") }
+	case "functions-zip-slots":
+		available = func(c harness.Case) bool { return c.ID == "PROFILE-02" }
 	case "domain-join":
 		available = func(c harness.Case) bool {
 			return slices.Contains([]string{"WORKPLACE-01", "WORKPLACE-02", "WORKPLACE-03"}, c.ID)

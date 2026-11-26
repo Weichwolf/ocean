@@ -47,6 +47,10 @@ func (s Server) functionSlot(ctx context.Context, w http.ResponseWriter, r *http
 	case "basicpublishingcredentialspolicies/scm":
 		s.functionSCMPolicy(ctx, w, r, scope, reader, address)
 	default:
+		if lower := strings.ToLower(child); lower == "functions" || strings.HasPrefix(lower, "functions/") {
+			s.functionKeysAndDiscovery(ctx, w, r, scope, actor, reader, address, child)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "UnsupportedOperation", "The Functions slot operation is unsupported.")
 	}
 }

@@ -2471,6 +2471,39 @@ asynchronous ARM slot operations and SCM polling from Azure CLI 2.93.0
 against a loopback protocol fixture. End-to-end CLI uploads and slot
 promotion have their own acceptance case, `PROFILE-02`.
 
+#### Regional ZIP and slot acceptance
+
+Use the running identity and storage lab with both enrolled storage workers,
+a healthy Ceph pool and Azure CLI 2.93.0 on the operator guest. Set up the
+private workload network and the regional public address pool as for the
+OCI Functions contract. The ZIP setup preloads the Node.js 22 runtime by
+digest and adds the SCM hostname pattern to the regional TLS certificates.
+The verifier installs DNS records and quota for its disposable tenant and
+removes them during cleanup.
+
+```sh
+make deb-agent
+python3 lab/prepare_functions.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev12_amd64.deb --zip-slots
+OCEAN_E2E_STATE="$LAB_STATE" OCEAN_E2E_PROFILE=functions-zip-slots \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The operator guest uses the native CLI with a fresh cache and a signed tenant
+session. It publishes two packages via trusted SCM HTTPS and checks the
+completion statuses. An independent network namespace invokes both private
+endpoints with valid, missing and wrong Function keys. After a failed package
+activation the previous release must serve again. The slot swap must move
+code and ordinary settings, preserve each endpoint's sticky settings and key,
+and retain each address. Cleanup deletes the slot, app, plan, and disposable
+storage resources. The verifier records command timings, deployment
+operation IDs, response bodies without credentials, and the cleanup result in
+`evidence/functions-zip-slots.json`. [CLI command matrix](../tests/e2e/testdata/arm-contract.tsv)
+
+Azure CLI 2.93.0 attempts an automatic log configuration write after a
+failed ZIP activation. Ocean explicitly rejects the unsupported write
+and includes the recorded deployment failure in the response.
+
 ### Regional observability
 
 Use the regional lab with installed compute agents, replicated storage, and the

@@ -6,6 +6,16 @@ PROFILE-01	connection-show	2.93.0	none	2025-01-01	network vpn-connection show --
 PROFILE-01	connection-delete	2.93.0	none	2025-01-01	network vpn-connection delete --resource-group {group} --name {connection}
 PROFILE-01	local-gateway-delete	2.93.0	none	2021-08-01	network local-gateway delete --resource-group {group} --name {local_gateway}
 PROFILE-01	virtual-gateway-delete	2.93.0	none	2025-01-01	network vnet-gateway delete --resource-group {group} --name {virtual_gateway}
+PROFILE-02	functions-zip-production	2.93.0	none	2023-12-01+2025-05-01	functionapp deployment source config-zip --resource-group {group} --name {app} --src {package} --timeout 85 -o none
+PROFILE-02	functions-zip-slot	2.93.0	none	2023-12-01+2025-05-01	functionapp deployment source config-zip --resource-group {group} --name {app} --slot {slot} --src {package} --timeout 85 -o none
+PROFILE-02	functions-slot-create	2.93.0	none	2024-11-01+2025-05-01	functionapp deployment slot create --resource-group {group} --name {app} --slot {slot} -o json
+PROFILE-02	functions-slot-list	2.93.0	none	2025-05-01	functionapp deployment slot list --resource-group {group} --name {app} -o json
+PROFILE-02	functions-slot-swap	2.93.0	none	2024-11-01+2025-05-01	functionapp deployment slot swap --resource-group {group} --name {app} --slot {slot} --target-slot production -o none
+PROFILE-02	functions-slot-delete	2.93.0	none	2025-05-01	functionapp deployment slot delete --resource-group {group} --name {app} --slot {slot} -o none
+PROFILE-02	functions-production-settings	2.93.0	none	2023-12-01+2025-05-01	functionapp config appsettings set --resource-group {group} --name {app} --settings OCEAN_SETTING={setting} --slot-settings OCEAN_STICKY={sticky} -o none
+PROFILE-02	functions-slot-settings	2.93.0	none	2023-12-01+2025-05-01	functionapp config appsettings set --resource-group {group} --name {app} --slot {slot} --settings OCEAN_SETTING={setting} --slot-settings OCEAN_STICKY={sticky} -o none
+PROFILE-02	functions-slot-discovery	2.93.0	none	2025-05-01	rest --method get --url {slot_url}/functions?api-version={api_version} -o json
+PROFILE-02	functions-slot-key-set	2.93.0	none	2025-05-01	rest --method put --url {slot_url}/functions/hello/keys/e2e?api-version={api_version} --body @{key_file} -o none
 CONTRACT-02	provider-show	2.93.0	none	2024-11-01	provider show --namespace Microsoft.Resources -o json
 CONTRACT-02	group-create	2.93.0	none	2024-11-01	group create --name {group} --location {location} --tags ocean-fixture={tag} -o json
 CONTRACT-02	group-show	2.93.0	none	2024-11-01	group show --name {group} -o json

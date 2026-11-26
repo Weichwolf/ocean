@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Weichwolf/ocean/internal/functions"
 )
 
 const subscriptionAPIVersion = "2022-12-01"
@@ -146,7 +148,21 @@ func (c *Compatibility) readSubscription(w http.ResponseWriter, r *http.Request)
 // AuthenticateARM resolves the registered tenant and verifies its signed access
 // token. An authenticated subject may still have no rights on the subscription.
 func (c *Compatibility) AuthenticateARM(ctx context.Context, r *http.Request) (ARMPrincipal, error) {
-	if c.subscriptions == nil || !strings.EqualFold(r.Host, strings.TrimPrefix(c.cloud.ResourceManager, "https://")) {
+	if !strings.EqualFold(r.Host, strings.TrimPrefix(c.cloud.ResourceManager, "https://")) {
+		return ARMPrincipal{}, ErrInvalidARMToken
+	}
+	return c.authenticateResourcePrincipal(ctx, r)
+}
+
+func (c *Compatibility) AuthenticateFunctionSCM(ctx context.Context, r *http.Request) (ARMPrincipal, error) {
+	if _, ok := functions.SCMLabel(r.Host, c.cloud.FunctionsSCMDomain); !ok {
+		return ARMPrincipal{}, ErrInvalidARMToken
+	}
+	return c.authenticateResourcePrincipal(ctx, r)
+}
+
+func (c *Compatibility) authenticateResourcePrincipal(ctx context.Context, r *http.Request) (ARMPrincipal, error) {
+	if c.subscriptions == nil {
 		return ARMPrincipal{}, ErrInvalidARMToken
 	}
 	raw, issuer, tenant := c.bearerRealm(r)

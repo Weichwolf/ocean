@@ -107,7 +107,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			return config.Server{}, service.Hooks{}, errors.New("tenant onboarding requires a regional store")
 		}
 		if cfg.Region != nil && cfg.Region.FunctionSCMDomain != "" {
-			cfg.Identity.Cloud.FunctionsSCM = true
+			cfg.Identity.Cloud.FunctionsSCMDomain = cfg.Region.FunctionSCMDomain
 		}
 		compatibility, err = cfg.Identity.OpenCompatibility()
 		if err != nil {
@@ -216,6 +216,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					if cfg.Region.FunctionSCMDomain != "" {
 						resources.FunctionPackages = region
 						resources.FunctionSCMDomain = cfg.Region.FunctionSCMDomain
+						resources.AuthenticateSCM = compatibility.AuthenticateFunctionSCM
 					}
 					if cfg.Region.FunctionSlots {
 						resources.FunctionSlots = region

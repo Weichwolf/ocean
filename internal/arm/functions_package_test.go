@@ -54,7 +54,7 @@ func TestFunctionsSCMCLIRequestShape(t *testing.T) {
 			}
 			return functions.DeploymentStatus{ID: "deployment"}, nil
 		}},
-		Authenticate: func(_ context.Context, request *http.Request) (identity.ARMPrincipal, error) {
+		AuthenticateSCM: func(_ context.Context, request *http.Request) (identity.ARMPrincipal, error) {
 			token := request.Header.Get("Authorization")
 			if token != "Bearer owner" && token != "Bearer reader" {
 				return identity.ARMPrincipal{}, identity.ErrInvalidARMToken

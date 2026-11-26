@@ -43,7 +43,7 @@ func TestAuthenticateARM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compat.cloud = CloudEndpoints{ResourceManager: arm, MicrosoftGraph: graph}
+	compat.cloud = CloudEndpoints{ResourceManager: arm, MicrosoftGraph: graph, FunctionsSCMDomain: "scm.ocean.test"}
 	entry := Subscription{TenantID: testTenant, SubscriptionID: subscriptionID, DisplayName: "Test Subscription"}
 	compat.EnableSubscriptions("farm-1", func(_ context.Context, tenant string) (*Subscription, error) {
 		if tenant != testTenant {
@@ -90,14 +90,25 @@ func TestAuthenticateARM(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, arm+"/subscriptions?api-version="+subscriptionAPIVersion, nil)
 			request.Header.Set("Authorization", "Bearer "+token+"."+encode(signature))
 			principal, err := compat.AuthenticateARM(request.Context(), request)
+			scm := request.Clone(request.Context())
+			scm.Host = "slot.scm.ocean.test"
+			publisher, scmErr := compat.AuthenticateFunctionSCM(scm.Context(), scm)
 			if !tc.valid {
-				if !errors.Is(err, ErrInvalidARMToken) || principal.Subject != "" {
+				if !errors.Is(err, ErrInvalidARMToken) || principal.Subject != "" ||
+					!errors.Is(scmErr, ErrInvalidARMToken) || publisher.Subject != "" {
 					t.Fatal("invalid token resolved a principal")
 				}
 				return
 			}
 			if err != nil || principal.Subject != subject || principal.Subscription.SubscriptionID != subscriptionID {
 				t.Fatalf("expected the verified tenant principal: %v", err)
+			}
+			if scmErr != nil || publisher.Subject != subject || publisher.Subscription.SubscriptionID != subscriptionID {
+				t.Fatalf("expected the verified SCM tenant principal: %v", scmErr)
+			}
+			scm.Host = "slot.scm.ocean.test.invalid"
+			if _, err := compat.AuthenticateFunctionSCM(scm.Context(), scm); !errors.Is(err, ErrInvalidARMToken) {
+				t.Fatal("a token was accepted on an unconfigured SCM authority")
 			}
 			response := httptest.NewRecorder()
 			compat.Handler().ServeHTTP(response, request)

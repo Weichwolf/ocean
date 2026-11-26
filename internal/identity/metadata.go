@@ -4,10 +4,10 @@ import "net/http"
 
 // CloudEndpoints are the public service endpoints advertised to Azure CLI.
 type CloudEndpoints struct {
-	ResourceManager string `json:"resourceManager"`
-	MicrosoftGraph  string `json:"microsoftGraph"`
-	StorageEndpoint string `json:"storageEndpoint,omitempty"`
-	FunctionsSCM    bool   `json:"-"`
+	ResourceManager    string `json:"resourceManager"`
+	MicrosoftGraph     string `json:"microsoftGraph"`
+	StorageEndpoint    string `json:"storageEndpoint,omitempty"`
+	FunctionsSCMDomain string `json:"-"`
 }
 
 func (c *Compatibility) cloudMetadata(w http.ResponseWriter, r *http.Request) {
@@ -34,7 +34,7 @@ func (c *Compatibility) cloudMetadata(w http.ResponseWriter, r *http.Request) {
 		},
 		"suffixes": suffixes,
 	}
-	if c.cloud.FunctionsSCM {
+	if c.cloud.FunctionsSCMDomain != "" {
 		metadata["appServiceResourceId"] = c.cloud.ResourceManager
 	}
 	writeJSON(w, http.StatusOK, metadata)

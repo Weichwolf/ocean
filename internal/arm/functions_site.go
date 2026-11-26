@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/Weichwolf/ocean/internal/functions"
@@ -68,6 +69,8 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 		s.functionLifecycle(ctx, w, scope, actor, address, strings.ToLower(child))
 	case "config/slotconfignames":
 		s.functionSlotSettings(ctx, w, r, scope, actor, reader, address)
+	case "config/logs":
+		s.rejectFunctionLogConfiguration(ctx, w, r, scope, reader, address)
 	case "config/web", "config/appsettings", "config/appsettings/list":
 		s.functionConfiguration(ctx, w, r, scope, actor, reader, address, strings.ToLower(child))
 	case "publishxml":
@@ -152,7 +155,7 @@ func (s Server) putFunctionSite(ctx context.Context, w http.ResponseWriter, scop
 		return
 	}
 	account, key, valid := functions.ParseHostCredential(settings["AzureWebJobsStorage"], s.StorageSuffix)
-	if !valid || len(settings) != 7 || p.Name != "" || p.Enabled != nil || p.ProvisioningState != "" ||
+	if !valid || len(settings) != 7 || p.Name != "" || p.Enabled != nil || p.ProvisioningState != "" || len(p.HostNameSSLStates) != 0 ||
 		settings["AzureWebJobsDashboard"] != settings["AzureWebJobsStorage"] ||
 		settings["FUNCTIONS_EXTENSION_VERSION"] != "~4" || settings["FUNCTION_APP_EDIT_MODE"] != "readOnly" ||
 		settings["DOCKER_CUSTOM_IMAGE_NAME"] != image || settings["WEBSITES_ENABLE_APP_SERVICE_STORAGE"] != "false" ||
@@ -401,6 +404,7 @@ func (s Server) putFunctionIntegration(ctx context.Context, w http.ResponseWrite
 	wanted := input.Properties
 	if props.ServerFarmID != planID || props.Config.LinuxFxVersion != wanted.Config.LinuxFxVersion ||
 		!maps.Equal(current.Tags, input.Tags) || wanted.VirtualNetworkSubnetID == "" ||
+		len(wanted.HostNameSSLStates) != 0 && !slices.Equal(wanted.HostNameSSLStates, s.functionSCMStates(address)) ||
 		wanted.Name != "" && wanted.Name != props.Name || wanted.Enabled != nil && (props.Enabled == nil || *wanted.Enabled != *props.Enabled) ||
 		wanted.ProvisioningState != "" && wanted.ProvisioningState != props.ProvisioningState {
 		containerError(w, functions.ErrInvalidSite)
@@ -430,21 +434,29 @@ func functionNativeError(w http.ResponseWriter, status int) {
 
 func (s Server) functionSiteView(scope SubscriptionScope, resource InventoryResource) map[string]any {
 	view := resource.view(scope)
-	host, _, _ := resource.Address.parts()
 	if app, slot, ok := functions.SlotNames(resource.Address.Path); ok {
 		view["name"] = app + "/" + slot
-		host = app + "-" + slot
 	}
 	var properties map[string]any
 	if json.Unmarshal(resource.Properties, &properties) == nil && properties != nil {
 		properties["sku"] = "Basic"
-		if s.FunctionPackages != nil && s.FunctionSCMDomain != "" {
-			properties["hostNameSslStates"] = []map[string]string{{"name": host + "." + s.FunctionSCMDomain,
-				"hostType": "Repository", "sslState": "Disabled"}}
+		if states := s.functionSCMStates(resource.Address); len(states) != 0 {
+			properties["hostNameSslStates"] = states
 		}
 		view["properties"] = properties
 	}
 	return view
+}
+
+func (s Server) functionSCMStates(address ResourceAddress) []functions.HostNameState {
+	if s.FunctionPackages == nil || s.FunctionSCMDomain == "" {
+		return nil
+	}
+	host, _, _ := address.parts()
+	if app, slot, ok := functions.SlotNames(address.Path); ok {
+		host = app + "-" + slot
+	}
+	return []functions.HostNameState{{Name: host + "." + s.FunctionSCMDomain, HostType: "Repository", SSLState: "Disabled"}}
 }
 
 func (s Server) functionPublishProfile(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope,

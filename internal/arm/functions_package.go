@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/functions"
@@ -20,14 +18,10 @@ type FunctionPackageDeployments interface {
 }
 
 func (s Server) functionSCMHost(host string) (string, bool) {
-	if s.FunctionPackages == nil || s.FunctionSCMDomain == "" {
+	if s.FunctionPackages == nil || s.AuthenticateSCM == nil {
 		return "", false
 	}
-	if name, _, err := net.SplitHostPort(host); err == nil {
-		host = name
-	}
-	app, ok := strings.CutSuffix(strings.ToLower(host), "."+s.FunctionSCMDomain)
-	return app, ok && functions.ValidName(app)
+	return functions.SCMLabel(host, s.FunctionSCMDomain)
 }
 
 func (s Server) functionSCM(w http.ResponseWriter, r *http.Request, app string) {
@@ -38,7 +32,7 @@ func (s Server) functionSCM(w http.ResponseWriter, r *http.Request, app string) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	principal, ok := s.subscriptionPrincipal(ctx, w, r, "")
+	principal, ok := subscriptionPrincipal(ctx, w, r, "", s.AuthenticateSCM)
 	if !ok {
 		return
 	}
@@ -117,4 +111,39 @@ func (s Server) functionSCMPolicy(ctx context.Context, w http.ResponseWriter, r 
 			"name": "scm", "type": functions.SiteType + "/basicPublishingCredentialsPolicies",
 			"properties": map[string]bool{"allow": false}})
 	}
+}
+
+// The CLI attempts a log configuration write before presenting a failed ZIP
+// deployment. Preserve the failure context while explicitly rejecting the write.
+func (s Server) rejectFunctionLogConfiguration(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope,
+	reader string, address ResourceAddress) {
+	message := "Functions log configuration is unsupported."
+	if r.Method == http.MethodPut && s.FunctionPackages != nil {
+		var input struct {
+			Properties struct {
+				ApplicationLogs *struct{} `json:"applicationLogs"`
+				HTTPLogs        struct {
+					Filesystem struct {
+						Enabled       bool `json:"enabled"`
+						RetentionDays int  `json:"retentionInDays"`
+						RetentionMB   int  `json:"retentionInMb"`
+					} `json:"fileSystem"`
+				} `json:"httpLogs"`
+			} `json:"properties"`
+		}
+		if err := strictJSON(http.MaxBytesReader(w, r.Body, 4096), &input); err == nil && input.Properties.ApplicationLogs != nil {
+			logs := input.Properties.HTTPLogs.Filesystem
+			if logs.Enabled && logs.RetentionDays == 3 && logs.RetentionMB == 100 {
+				if s.getFunctionSite(ctx, w, scope, reader, address) == nil {
+					return
+				}
+				name, _, _ := address.parts()
+				deployment, err := s.FunctionPackages.FunctionZIPStatus(ctx, scope, name+"."+s.FunctionDomain)
+				if err == nil && deployment.Status == functions.DeploymentFailed {
+					message = "Zip deployment failed. " + deployment.Message + " " + message
+				}
+			}
+		}
+	}
+	writeError(w, http.StatusBadRequest, "UnsupportedOperation", message)
 }

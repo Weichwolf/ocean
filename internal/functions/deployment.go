@@ -1,6 +1,9 @@
 package functions
 
-import "strings"
+import (
+	"net"
+	"strings"
+)
 
 const (
 	DeploymentPending   = 0
@@ -25,4 +28,16 @@ func ValidSCMDomain(domain string) bool {
 		}
 	}
 	return true
+}
+
+// SCMLabel extracts a single approved deployment label from an HTTP authority.
+func SCMLabel(authority, domain string) (string, bool) {
+	if domain == "" {
+		return "", false
+	}
+	if name, _, err := net.SplitHostPort(authority); err == nil {
+		authority = name
+	}
+	label, matched := strings.CutSuffix(strings.ToLower(authority), "."+domain)
+	return label, matched && ValidName(label)
 }

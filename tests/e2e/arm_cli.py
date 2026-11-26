@@ -77,13 +77,13 @@ def verify_group(group, path, name, tag):
         raise RuntimeError("the resource group did not round-trip with its ARM ID, tags, and provisioning state")
 
 
-def create_customers(config):
+def create_customers(config, count=2):
     customers = []
     with tempfile.TemporaryDirectory(prefix="ocean-arm-operator-") as directory:
         operator = AzureCLI(config, directory)
         operator.login_service_principal(config["app"], config["secret"])
         request_file = Path(directory) / "tenant-request.json"
-        for _ in range(2):
+        for _ in range(count):
             tenant, data = fixture()
             allocation = put(operator, tenant, data, request_file)
             customers.append(dict(config, tenant=tenant, subscription=allocation["subscriptionId"], location="farm-1",

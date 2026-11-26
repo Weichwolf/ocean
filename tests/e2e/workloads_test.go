@@ -41,6 +41,7 @@ func workloadSteps(options labOptions) []harness.Step {
 			[]string{"rbd-encryption.json", "rbd-encryption.log"}),
 		regional(options, "functions", "verify_functions.py", []string{"FUNCTION-01", "FUNCTION-02", "NETWORK-03", "LAB-03", "CONTRACT-03"},
 			[]string{"http-functions.json"}, "--parallel-create"),
+		regional(options, "functions-zip-slots", "verify_functions_zip.py", []string{"PROFILE-02"}, []string{"functions-zip-slots.json"}),
 		regional(options, "monitor", "verify_monitor_controlplane.py", []string{"OBS-01", "OBS-03"},
 			[]string{"monitor-controlplane.json"}),
 		regional(options, "application-insights", "verify_insights.py", []string{"OBS-02"}, []string{"application-insights.json"}),

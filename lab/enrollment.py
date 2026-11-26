@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from region import ARM, DEST, NODES, ROOT, ca, ssh, upload
+from region import ARM, DEST, GRAPH, IDENTITY, NODES, ROOT, ca, leaf, ssh, upload
 from verify_operations import wait_api
 
 
@@ -45,7 +45,7 @@ def deploy(state, node, public_ips=None):
     publish(state, public_ips)
 
 
-def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None, function_plans=None, function_domain=None, function_registry=None, telemetry=None):
+def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None, function_plans=None, function_domain=None, function_registry=None, telemetry=None, function_scm_domain=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
@@ -83,6 +83,14 @@ def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wiregu
         if workloads is not None:
             config["region"]["workloads"] = {**workloads, "secretsKeyFile": f"{DEST}/pki/workload-secrets.key"}
             extra["pki/workload-secrets.key"] = workload_key.read_bytes()
+        if function_scm_domain is not None:
+            config["region"].update(functionScmDomain=function_scm_domain, functionSlots=True)
+            pki = state / "region-pki"
+            ingress = (pki / "ingress-ca.pem", pki / "ingress-ca.key")
+            name = member + "-api-functions-scm"
+            extra.update(leaf(pki, name, ingress, "serverAuth",
+                              f"DNS:{ARM},DNS:{IDENTITY},DNS:{GRAPH},DNS:*.{function_scm_domain},IP:{NODES[member]}"))
+            config["tls"].update(certificateFile=f"{DEST}/pki/{name}.pem", keyFile=f"{DEST}/pki/{name}.key")
         if public_ips is not None:
             config["region"]["publicIPv4Addresses"] = public_ips
         config["tls"]["clientCAFile"] = f"{DEST}/pki/host-enrollment.pem"
