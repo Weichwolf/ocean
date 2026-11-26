@@ -31,6 +31,7 @@ var (
 	ErrVMOperationBusy        = errors.New("the VM has a different operation in progress")
 	ErrVMQuotaExceeded        = errors.New("the subscription has insufficient VM capacity")
 	ErrVMHostUnavailable      = errors.New("no eligible KVM host has sufficient capacity")
+	ErrVMSizeUnsupported      = errors.New("the VM size is unsupported for the selected image operating system")
 	vmResourceName            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$`)
 )
 
@@ -84,8 +85,9 @@ func ValidVMImageURI(raw string) bool {
 
 func (p VMImageRequest) valid(location string) bool {
 	disk := p.Properties.StorageProfile.OSDisk
-	return p.Location == location && validTags(p.Tags) && p.Properties.HyperVGeneration == "V2" && disk.OSType == "Windows" &&
-		disk.OSState == "Specialized" && ValidVMImageURI(disk.BlobURI) && (disk.DiskSizeGB == 0 || disk.DiskSizeGB >= 32 && disk.DiskSizeGB <= 128)
+	return p.Location == location && validTags(p.Tags) && p.Properties.HyperVGeneration == "V2" &&
+		(disk.OSType == workload.VMWindows || disk.OSType == workload.VMLinux) && disk.OSState == "Specialized" &&
+		ValidVMImageURI(disk.BlobURI) && (disk.DiskSizeGB == 0 || workload.ValidVMImageDiskSize(disk.OSType, disk.DiskSizeGB))
 }
 
 type VMNetworkInterfaceRequest struct {
@@ -365,6 +367,8 @@ func vmError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "QuotaExceeded", err.Error())
 	case errors.Is(err, ErrVMHostUnavailable):
 		writeError(w, http.StatusConflict, "AllocationFailed", err.Error())
+	case errors.Is(err, ErrVMSizeUnsupported):
+		writeError(w, http.StatusBadRequest, "InvalidParameter", err.Error())
 	default:
 		inventoryError(w, err)
 	}

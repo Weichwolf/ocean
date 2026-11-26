@@ -329,6 +329,25 @@ mutation for the old handle and a new connection using only the cached
 ticket to lose access. An unaffected reader must still read the
 checkpoint and receive a denial on writes.
 
+Select `WORKPLACE-32` to exercise the desktop credential path in the
+disposable Samba and SMB lab. The controller creates a temporary service
+account with protocol transition and one CIFS delegation target. It obtains
+a service-only cache through MIT Kerberos S4U and rejects a request for the
+controller's LDAP service. The Debian fixture runs as the mapped AD user,
+writes and reads back a file over encrypted SMB, and verifies the personal
+identity in Samba's file audit. The probe measures the service ticket lifetime
+with a maximum of five minutes. The temporary broker account, keytab and
+caches are removed after the run. This is a credential probe for the
+desktop workflow. Browser admission, RDP session authentication and active
+session revocation are separate acceptance requirements.
+[MIT Kerberos kvno](https://web.mit.edu/Kerberos/www/krb5-1.21/doc/user/user_commands/kvno.html)
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-32 \
+  OCEAN_E2E_DOMAIN_STATE="$OCEAN_AD_STATE" \
+  go test -mod=readonly -tags=e2e -count=1 -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Windows and Debian SMB access
 
 For `WORKPLACE-28`, start the joined Server Core fixture on the same
@@ -677,11 +696,405 @@ OCEAN_E2E_PROFILE=vm-worker \
     -run '^TestAcceptance$' ./tests/e2e
 ```
 
+### Personal desktop assignment
+
+Select `WORKPLACE-33` with disposable etcd and locally built Samba and
+Debian directory client images. The test seeds prepared VM metadata and
+sends stock Azure CLI requests through the regional API. The enrolled
+directory worker checks the user and group in the live Samba database. The
+test exercises the two assignments, cross-subscription denial, updates, and
+VM deletion guards. It checks admission against live AD membership and account
+status using the native object ID. The launch probe uses two client certificates
+over real mTLS and a fixture browser principal. It rejects a missing, unlisted
+or replaced certificate, an ARM bearer, a foreign subscription and an invalid
+NIC binding. After revoking the first gateway it verifies that the other can
+obtain a credential the guest verifier accepts. It checks that renewal requires
+the same enrolled gateway identity and returns the session binding without an
+RDP credential. Removing the user from the application's AD group denies
+renewal even when the desktop was assigned directly to that user. Use a Samba
+worker image with the desktop session and native admission operations. Native
+admission tests use two guest certificates, check direct and group access,
+and reject missing, unbound and foreign identities. The companion case `VM-03`
+boots the small Debian VM and verifies profile persistence.
+
+```sh
+OCEAN_E2E_PROFILE=managed-directory OCEAN_E2E_CASES=WORKPLACE-33 \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_ETCD_ENDPOINT" \
+  OCEAN_E2E_SAMBA_IMAGE="$LOCAL_SAMBA_IMAGE_ID" OCEAN_E2E_ADCLI_IMAGE="$LOCAL_ADCLI_IMAGE_ID" \
+  go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+For the internal launch API, configure `region.desktopLaunch.signingKeyFile`
+with a private file containing a 32-byte Ed25519 seed and
+`region.desktopLaunch.gateways` with 2 to 16 distinct enrolled gateway host
+IDs. Use the same seed and allowlist on every regional API replica. Provision
+the corresponding raw Ed25519 public key as standard Base64 in the guest
+configuration and bind it to the VM's stable machine ID.
+
+The gateway calls `POST {desktopId}/launch?api-version=2026-11-01` at the
+regional HTTPS endpoint with its enrolled client certificate and the workforce
+user's dedicated desktop application access token. Send an empty request body.
+The no-store response contains the authorized user, a 15-second maximum
+single-use RDP credential and the NIC and subnet of the destination. The
+gateway must establish the connection in that tenant subnet and keep the
+credential within the gateway-to-guest connection.
+
+### HTTPS desktop gateway
+
+Run `ocean-desktop-gateway -config gateway.json` on an enrolled gateway.
+Deploy two instances with independent host identities behind the redundant
+HTTPS frontend. Configure the same public origin, OIDC client and desktop
+routes on both. Each route maps an allowlisted browser slug to one assignment
+and to the guest's expected subnet and SHA-256 XRDP certificate fingerprint.
+Run Apache Guacamole 1.6.0 `guacd` locally with access to the private subnet
+and expose it only on loopback. The reference linux/amd64 image is
+`docker.io/guacamole/guacd@sha256:f39258e35244b6bf79bc6ac4e60eee176aea6f6a5adb13e8c3090e48df8ae515`.
+
+Register `https://desktop.example.test/oauth/callback` in the dedicated
+desktop application and set that application's object ID as
+`desktopApplicationId` in the tenant's regional identity configuration.
+Apply the existing web application policy to enable sign-in and the desktop
+refresh profile. The gateway uses the application's client ID in its own
+settings. Obtain `guacamole-common-js/all.min.js` from the verified
+[Apache Guacamole 1.6.0 release WAR](https://guacamole.apache.org/releases/1.6.0/).
+
+```json
+{
+  "listenAddress": "0.0.0.0:8443",
+  "tls": {
+    "certificateFile": "/etc/ocean-desktop/tls.pem",
+    "keyFile": "/etc/ocean-desktop/tls.key"
+  },
+  "publicOrigin": "https://desktop.example.test",
+  "hostConfigFile": "/etc/ocean-agent/config.json",
+  "identity": {
+    "issuer": "https://identity.example.test/realms/84b678b0-0a39-47d3-a355-ff4d84de4a83",
+    "caFile": "/etc/ocean-desktop/identity-ca.pem",
+    "clientId": "49ed3571-cafa-493d-9001-7fb492b8be44"
+  },
+  "guacamoleScriptFile": "/usr/local/share/ocean-desktop/guacamole.min.js",
+  "guacamoleScriptSha256": "cc89f710ecc544477dbe6bfea453fab752dafa1b1ab9770f523676e7b744b44a",
+  "maximumConcurrent": 32,
+  "desktops": {
+    "personal": {
+      "desktopId": "/subscriptions/310dee94-5876-489a-a5a9-4e25515f30e6/resourceGroups/workplace/providers/Ocean.Desktop/personalDesktops/personal",
+      "subnetId": "/subscriptions/310dee94-5876-489a-a5a9-4e25515f30e6/resourceGroups/workplace/providers/Microsoft.Network/virtualNetworks/office/subnets/desktop",
+      "fingerprint": "12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34:56:78:90:12:34",
+      "guacd": "127.0.0.1:4822"
+    }
+  }
+}
+```
+
+Open `https://desktop.example.test/d/personal`. Provision the fingerprint
+from the intended guest certificate over an authenticated channel. The
+gateway uses TLS on the public listener and for the private XRDP connection.
+The browser tunnel closes within the current authorization window of at most
+15 seconds. An active tunnel is local to its gateway. After a disconnect,
+the viewer reloads once and can also reconnect on request. A replacement
+gateway establishes a new tunnel using the user's existing IdP session.
+
+### Personal SMB access from the browser desktop
+
+Add a broker entry to `region.desktopLaunch.smbBrokers` for each enabled
+tenant and subscription. The region derives the CIFS service principal from
+that tenant's configured SMB member. Provision a dedicated Samba account
+for constrained delegation with protocol transition and grant exactly that
+CIFS service. Install the account's keytab with mode `0600` and a trusted
+Kerberos configuration on each regional replica. The Kerberos configuration
+selects the tenant's KDCs. The broker uses MIT `kinit`, `kvno` and `klist`
+from Debian's `krb5-user` package.
+
+```json
+{
+  "tenantId": "84b678b0-0a39-47d3-a355-ff4d84de4a83",
+  "subscriptionId": "310dee94-5876-489a-a5a9-4e25515f30e6",
+  "account": "desktop-broker",
+  "keytabFile": "/etc/ocean-desktop/tenant-broker.keytab",
+  "kerberosConfigFile": "/etc/ocean-desktop/tenant-krb5.conf",
+  "guests": [
+    {
+      "machineId": "9feab7c2-1302-4622-a932-729678cd61ee",
+      "certificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+Provision a separate TLS client certificate for each VM under the regional
+listener's client CA. Pin its DER SHA-256 fingerprint in the broker entry.
+Place the certificate and private key inside the guest, readable by root.
+Add a `kerberos` object to the root-owned `/etc/ocean-desktop/guest.json`.
+It contains `region` for the regional ARM HTTPS origin, `caFile` for its
+trusted CA, `certificateFile` and `keyFile` for the guest's TLS identity,
+and `service` for the expected CIFS SPN including the Kerberos realm.
+Install `packaging/debian/60-ocean-desktop-cifs` as
+`/etc/X11/Xsession.d/60-ocean-desktop-cifs` in the Debian desktop.
+
+The signed XRDP login fails if a configured broker cannot obtain and verify
+the personal cache. The guest places the verified cache in its volatile
+runtime directory. A fresh signed login or reconnect obtains a new cache.
+Private password-based RDP uses the native admission hook described below.
+
+Select `WORKPLACE-34` with the disposable joined desktop and SMB member
+used by `WORKPLACE-32`. The gateway host needs the pinned `guacd` image
+available to rootless Podman. The development host needs Chromium and the
+Debian Python packages `python3-cryptography` and `python3-websocket`.
+The probe uses a test OIDC issuer and launch responder alongside the real
+gateway, guest and replicated Kerberos endpoint. It verifies a file
+round-trip and its Samba audit with the actual mapped AD user. It also
+checks guest certificate binding and replay rejection across replicas.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-32,WORKPLACE-34 \
+  OCEAN_E2E_DOMAIN_STATE="$LAB_STATE" OCEAN_E2E_DESKTOP_JS="$GUACAMOLE_JS" \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_LOOPBACK_ETCD" OCEAN_E2E_SAMBA_IMAGE="$LOCAL_SAMBA_IMAGE_ID" \
+  go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
+Select `WORKPLACE-35` to run the same browser and file-service sequence
+through real Keycloak MFA and regional ARM launch and renewal. The case
+uses the active LDAPS listeners on the two domain controllers from
+`WORKPLACE-23`, the same joined Debian desktop and the SMB writer
+fixture. It starts a local SSH bridge to run the production Samba Graph
+operation on the current writer and seeds the lab VM metadata. It
+creates a disposable Keycloak realm and a separate Samba application
+grant. Removing just that group membership must close the active
+browser tunnel within 15 seconds. The regional audit records the native
+directory object and the desktop resource. The SMB audit records the
+personal account and the checkpoint activity.
+
+Use a disposable Keycloak HTTPS listener on loopback with both LDAPS
+controller certificates trusted. Provide the Keycloak admin client and
+secret through the same environment variables as `WORKPLACE-20`, plus
+`SSL_CERT_FILE` with the Keycloak lab TLS certificate,
+`OCEAN_E2E_JOINED_WEB_STATE` with `reader` and `sid`, and
+`OCEAN_E2E_SMB_MEMBER_FIXTURE` with `smbwriter`. Install `socat` for the
+private fixture admin connection. Run the preceding command with
+`OCEAN_E2E_CASES=WORKPLACE-35`.
+
+Select `WORKPLACE-36` for desktop gateway failover with the same fixtures.
+Prepare `farm-1-node-07` and `farm-1-node-08` with Debian's `keepalived`,
+`curl` and rootless Podman, and pull the pinned `guacd` image on both.
+The two gateway VMs must share the lab management segment and each reach
+the private desktop network. The probe uses unicast VRRP on `mgmt0` and
+reserves `10.231.1.210` on that disposable segment. An SSH forward from
+`farm-1-node-05` gives the local Chromium a stable HTTPS origin.
+
+The probe kills the active gateway process after opening the personal
+desktop and proving the encrypted SMB data path. It measures address
+transfer and browser recovery, checks both HTTP 101 upgrades and regional
+ARM launches under separate gateway certificates, and confirms the same
+window manager stays running across reconnection. The browser uses its
+existing Keycloak session. Removing the desktop application grant must
+still disconnect the replacement tunnel within 15 seconds. The guest
+VM and regional test endpoint remain running during this gateway test.
+
+### Native access on the private RDP network
+
+Use the complete `packaging/debian/ocean-desktop-pam` snippet in
+`/etc/pam.d/xrdp-sesman` before `common-auth`. Insert
+`packaging/debian/ocean-desktop-pam-session` after `common-session`.
+Replace earlier copies of the snippets during upgrade. Keep Debian's
+`common-auth`, `common-account` and session stack with `pam_systemd`.
+Start fresh sessions after upgrading the PAM configuration. The managed
+guest admits signed browser launches by default. Enabling native RDP requires
+a `native` object in its root-owned guest configuration with the regional
+`region` HTTPS origin, `caFile`, `certificateFile` and `keyFile`. Protect
+the certificate's key with mode `0600` and root ownership.
+
+Add a binding like this to `region.desktopLaunch.nativeGuests` on every
+regional replica. Use the existing personal desktop and its VM machine ID.
+Register the guest certificate's DER SHA-256 fingerprint. A guest can use its
+existing SMB broker client certificate for the same machine.
+
+```json
+{
+  "tenantId": "84b678b0-0a39-47d3-a355-ff4d84de4a83",
+  "subscriptionId": "310dee94-5876-489a-a5a9-4e25515f30e6",
+  "desktopId": "/subscriptions/310dee94-5876-489a-a5a9-4e25515f30e6/resourceGroups/workplace/providers/Ocean.Desktop/personalDesktops/personal",
+  "machineId": "9feab7c2-1302-4622-a932-729678cd61ee",
+  "certificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+On the private network, connect with the canonical workforce UPN
+(`user@example.test`) and the normal AD password. PAM authenticates the
+password locally. The account hook then submits only the canonical UPN to
+`POST /ocean/desktops/native-admission` with guest mutual TLS. The region
+looks up the bound tenant and desktop, verifies the current AD grant and
+private VM attachment, and audits successful admission under the native
+directory object ID. An unavailable dependency or a revoked grant denies
+the login. The public desktop entry point is the HTTPS gateway.
+
+The session hook binds the native display to its logind session scope and
+requires a running root-managed monitor before starting the desktop. The
+monitor requests a lease of at most 12 seconds from the same mutual TLS
+endpoint and renews it every four seconds. Explicit denial or a changed
+assignment, workforce object, or placement generation ends the display.
+Unavailability can use the remaining lease only. On Debian's unified cgroup
+hierarchy the monitor pins the session's kernel kill control. The systemd
+watchdog also uses that control if the monitor stalls. The lab bounds both
+revocation and a stalled monitor at 15 seconds from the injected event.
+
+Select `WORKPLACE-38` using the live browser fixtures from `WORKPLACE-35`.
+Place the disposable `smbreader` password in
+`OCEAN_E2E_SMB_MEMBER_FIXTURE/smbreader`. Install `pamtester` inside the
+desktop and `freerdp3-x11`, `xvfb`, and `xauth` on `farm-1-node-08`.
+The probe proves both passwords are valid when the native feature is enabled,
+then verifies the assigned account opens a native X session and the other
+account reaches a regional admission denial. The browser and encrypted SMB
+check exercise the same guest with the native admission hook installed.
+
+Select `WORKPLACE-39` with the same inputs to hold a native connection
+beyond its initial lease, remove the user from the separate desktop
+assignment group, and measure the end of the display and client connection.
+After restoring the assignment, the probe freezes the next session monitor
+and measures watchdog recovery. The browser application grant stays in
+place during the native cases.
+
+### Small Debian desktop VM
+
+For `VM-03`, prepare a disposable Debian 13 UEFI cloud image on an 8 GiB
+raw disk with its own OVMF variables file. Boot it with a temporary NoCloud
+seed that sets the fixture's SSH public key, then run
+`lab/prepare_debian_desktop.sh` as root. Power the guest off before hashing
+the raw disk and OVMF variables. Stage the two files on the primary compute
+worker under their SHA-256 names with mode `0600`. Use the pinned host key
+for `10.232.1.20` in the fixture's known-hosts file. Use this snapshot in
+the isolated lab with a single provisioned guest.
+
+The worker must run the current Debian package. The isolated Ceph pool must
+be available and the private client on `farm-1-node-07` needs SSH TCP
+forwarding and `nc`. The case uses stock Azure CLI 2.93.0 and a test ARM
+identity to register the Linux image, allocate a private NIC, and create and
+operate a `Standard_B1s` VM. It checks that XRDP accepts a private TCP
+connection and recovers an acknowledged home directory file after a power
+cycle. The case exercises the VM data path and the RDP listener.
+
+```sh
+OCEAN_E2E_PROFILE=vm-worker-linux \
+  OCEAN_E2E_VM_LINUX_STATE="$LAB_STATE" \
+  OCEAN_E2E_VM_LINUX_DISK_PIN="$DEBIAN_DISK_SHA256" \
+  OCEAN_E2E_VM_LINUX_VARS_PIN="$DEBIAN_VARS_SHA256" \
+  OCEAN_E2E_VM_LINUX_SSH_KEY="$DEBIAN_FIXTURE_SSH_KEY" \
+  OCEAN_E2E_VM_LINUX_KNOWN_HOSTS="$DEBIAN_FIXTURE_KNOWN_HOSTS" \
+  OCEAN_E2E_VM_ETCD="$DISPOSABLE_ETCD_ENDPOINT" OCEAN_E2E_VM_AZ="$(command -v az)" \
+  go test -mod=readonly -tags=e2e -count=1 -timeout=20m -v \
+    -run '^TestAcceptance$' ./tests/e2e
+```
+
+Run `WORKPLACE-37` with the same disk, firmware and SSH inputs and
+`OCEAN_E2E_PROFILE=vm-worker-linux-fence`. Set
+`OCEAN_E2E_VM_FENCE_PROFILE` to the original profile used to start the
+two-worker lab. Keep both compute workers and all three Ceph guests running.
+Install `freerdp3-x11`, `xvfb` and `xauth` on the private observer
+`farm-1-node-07`. Install the current Ocean package on both compute workers.
+
+The fixture creates a temporary password for the disposable Debian account
+and pins the guest's XRDP certificate using the existing SSH trust. A native
+FreeRDP session writes a checkpoint from the user's X session. The probe
+partitions the initial compute worker from ARM and checks that an expired
+lease cannot transfer the disk. The out-of-band KVM supervisor then confirms
+the worker stopped. The fence API rejects a forged proof and accepts the
+signed proof and its replay. The new FreeRDP session must report a new boot
+and the previous checkpoint. The restarted worker must have neither an
+assignment nor a writable map for the desktop disk. The probe writes lease,
+boot and reconnect measurements to `desktop-vm-fence.tsv`.
+
+Run `WORKPLACE-40` with the `VM-03` inputs and
+`OCEAN_E2E_PROFILE=vm-worker-desktop-pair`. Keep the primary compute worker
+and all three Ceph guests running. The private observer `farm-1-node-07`
+needs `socat`, `nc`, `freerdp3-x11`, `xvfb`, and `xauth`. On the dedicated
+`farm-1-node-01`, install `samba-ad-dc`, `ldb-tools`, `krb5-user`, and
+`bind9-dnsutils`. Prepare the isolated Samba domain before running the case.
+This setup changes the controller's hostname and network configuration.
+Use a disposable guest reserved for this test.
+
+```sh
+bin/ocean-lab ssh -state "$LAB_STATE" farm-1-node-01 -- 'sudo sh -s' \
+  < lab/prepare_desktop_pair_directory.sh
+```
+
+Samba listens on `10.232.1.29` for the desktop subnet `10.232.1.16/28`.
+The case seeds regional directory placement and uses a test ARM identity.
+It creates the test Samba accounts through Ocean's directory Graph worker.
+Stock `az rest` registers the pinned image, allocates two private NICs,
+provisions two `Standard_B1s` desktops and assigns a different directory
+user to each. The probe verifies the running guests' DMI and boot IDs over
+pinned SSH and tests native admission over separate guest mTLS identities.
+It joins both desktops to Samba and installs the Ocean XRDP PAM hooks.
+FreeRDP pins each server certificate and attempts assigned, crossed, and
+unassigned logins. The probe observes the running Openbox sessions and
+checks that XRDP denies valid crossed and unassigned credentials at
+account admission. The test removes the ARM resources and verifies quota
+recovery. It records provisioning and admission timings in
+`desktop-pair.tsv` and `desktop-pair-rdp.tsv`.
+
+Run `WORKPLACE-41` with `OCEAN_E2E_PROFILE=vm-worker-desktop-windows` and the
+same packaged VM prerequisites. Set `OCEAN_E2E_VM_RDP_WINDOWS_STATE` to the
+absolute private state directory of the Windows 11 workstation fixture.
+Connect that fixture to the same workload switch, set its IPv4 address to
+`10.232.1.28/28` without a default gateway, and leave the desktop unlocked.
+The fixture needs its QMP socket, probe drive and serial capture. The host
+needs Python 3 and `genisoimage`.
+The case checks that the native Windows session responds before provisioning
+any virtual machines.
+Resolve `desk-one.ad.pair.ocean.test` and `desk-two.ad.pair.ocean.test`
+on the Windows client to `10.232.1.20` and `10.232.1.21` respectively, using
+the lab's private DNS or the disposable Windows hosts file. The case checks
+each name against the address allocated by ARM.
+
+Generate a separate short-lived RSA test root. Keep `rdp-root.key` on the
+host with mode `0600`. Copy only `rdp-root.cer` to Windows and import it
+into the disposable workstation's local machine root store. Verify the
+SHA-256 of the copied file before importing it.
+
+```sh
+umask 077
+openssl req -x509 -newkey rsa:2048 -noenc -days 2 -outform DER \
+  -subj '/CN=Ocean desktop pair lab root' \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -keyout "$OCEAN_E2E_VM_RDP_WINDOWS_STATE/rdp-root.key" \
+  -out "$OCEAN_E2E_VM_RDP_WINDOWS_STATE/rdp-root.cer"
+sha256sum "$OCEAN_E2E_VM_RDP_WINDOWS_STATE/rdp-root.cer"
+```
+
+```powershell
+Get-FileHash -Algorithm SHA256 -LiteralPath .\rdp-root.cer
+Import-Certificate -FilePath .\rdp-root.cer -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+The case gives each XRDP server a separate certificate for its private
+DNS name and assigned IPv4 address. The observer serves the signed lab
+revocation list at `10.232.1.17:18711`. Windows verifies the chain and
+revocation status before the installed Microsoft RDP control authenticates
+the server. The probe passes disposable passwords through a temporary private
+optical image in the guest and restores the original probe medium.
+It verifies the matching PAM log and Openbox process on the actual Linux
+host for each attempt. The TSV includes the Windows edition, build and
+`mstscax.dll` version. Remove the fixture root from the Windows trust store
+before reusing the workstation for other work.
+[Microsoft RDP control](https://learn.microsoft.com/en-us/windows/win32/termserv/remote-desktop-activex-control-classes)
+
+For the browser identity path, configure `desktopApplicationId` with the
+published Graph application object ID in
+`identity.onboarding.webDirectories[tenantId]`. The configured application
+uses the tenant's dedicated MFA-protected web flow. The authorization action is
+`POST {desktopId}/authorize?api-version=2026-11-01` with the application's
+access token and an empty body. The result is a short-lived decision with an
+assignment ID and machine ID. `WORKPLACE-20` exercises the native Keycloak
+token binding and rejects a token issued to the second web application.
+
 ### Regional VM store probe
 
 The optional `region.virtualMachines` configuration registers the catalog
 for the regional ARM routes. Each `images` entry specifies `tenantId`,
 `subscriptionId`, `blobUri`, `sizeGiB`, `imageSha256` and `firmwareSha256`.
+Set `osType` to `Linux` for a qualified Linux image. Existing catalog entries
+without `osType` default to Windows. A registered image must use the OS in its
+catalog entry. The minimum disk is 8 GiB for Linux and 32 GiB for Windows.
 The HTTPS URI identifies an operator-prepared image in that subscription.
 Catalog lookups use the URI as an identifier. Workers use the paired digests
 to verify the files staged by the operator. The optional `diskQuotaGiB`
@@ -1412,8 +1825,9 @@ until the native client is enabled and confirmed.
 
 Use the returned `issuer`, the Graph `appId`, the exact registered callback,
 and OIDC authorization code with S256 PKCE. The browser client requires the
-`ocean-web` assurance claim, issues no refresh tokens, and uses a 120-second
-access-token lifetime. Validate the issuer, client audience, nonce and
+`ocean-web` assurance claim and uses a 120-second access-token lifetime.
+The dedicated desktop gateway uses a refresh token held in process memory.
+Validate the issuer, client audience, nonce and
 expiry when consuming tokens. The LDAP group filter uses native object
 GUIDs, so a recreated group with the same name requires its own policy grant.
 

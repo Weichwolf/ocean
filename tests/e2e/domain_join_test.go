@@ -283,7 +283,80 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "machine.json"), "the joined Windows Server Core identity")
 	smbRestore = requireFile(smbRestore, filepath.Join(options.domain, "server-core", "guest-serial.log"), "the Windows Kerberos serial capture")
+	desktopKerberos := probe("desktop-kerberos-delegation", options.domain, stateVariable, "verify_desktop_kerberos.py",
+		[]string{"WORKPLACE-32"}, []string{"desktop-kerberos-delegation.json"})
+	desktopAssignments := harness.Step{Name: "regional-desktop-assignments", Cases: []string{"WORKPLACE-33"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+			"-run", "^TestRegionalDesktopAssignments$", "./internal/controlplane"},
+		BlockedReason: regionalJoin.BlockedReason}
+	desktopJS, desktopEtcd := os.Getenv("OCEAN_E2E_DESKTOP_JS"), os.Getenv("OCEAN_E2E_DIRECTORY_ETCD")
+	desktopBrowserSMB := probe("desktop-browser-smb", options.domain, stateVariable, "verify_desktop_browser_smb.py",
+		[]string{"WORKPLACE-34"}, []string{"desktop-smb-results.tsv", "desktop-smb-browser.tsv",
+			"desktop-smb-session.log", "desktop-smb-audit.log", "desktop-smb-broker-security.tsv"},
+		"--guacamole-js", desktopJS, "--samba-image", options.sambaImage, "--etcd", desktopEtcd)
+	desktopBrowserSMB.Timeout = 4 * time.Minute
+	desktopBrowserSMB = requireFile(desktopBrowserSMB, desktopJS, "OCEAN_E2E_DESKTOP_JS with the pinned Guacamole browser bundle")
+	if desktopBrowserSMB.BlockedReason == "" && (desktopEtcd == "" || options.sambaImage == "") {
+		desktopBrowserSMB.BlockedReason = "Provide disposable loopback etcd and the local Samba controller image."
+	}
+	for _, program := range []string{"chromium", "podman", "openssl", "ssh"} {
+		if _, err := exec.LookPath(program); err != nil && desktopBrowserSMB.BlockedReason == "" {
+			desktopBrowserSMB.BlockedReason = "Install " + program + " for the desktop browser and SMB probe."
+		}
+	}
+	desktopLive := desktopBrowserSMB
+	desktopLive.Name, desktopLive.Cases = "desktop-browser-live-keycloak", []string{"WORKPLACE-35"}
+	desktopLive.Evidence = append(append([]harness.EvidenceSource(nil), desktopLive.Evidence...),
+		harness.EvidenceSource{Name: "desktop-smb-broker-a.log", Path: filepath.Join(options.domain, "evidence", "desktop-smb-broker-a.log")})
+	origin, client := os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN"), os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT")
+	ca, secret := os.Getenv("SSL_CERT_FILE"), os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET")
+	reader, sid := filepath.Join(joinedState, "reader"), filepath.Join(joinedState, "sid")
+	password := filepath.Join(smbFixture, "smbwriter")
+	if desktopLive.BlockedReason == "" && (origin == "" || client == "" || joinedState == "" || smbFixture == "") {
+		desktopLive.BlockedReason = "Provide the disposable Keycloak admin endpoint, the joined web fixture and the SMB writer fixture."
+	}
+	for _, input := range []struct{ path, name string }{
+		{ca, "SSL_CERT_FILE with the Keycloak lab CA"}, {secret, "OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"},
+		{reader, "the Samba federation reader credential"}, {sid, "the existing Samba domain SID"}, {password, "the disposable SMB writer credential"},
+	} {
+		desktopLive = requireFile(desktopLive, input.path, input.name)
+	}
+	if _, err := exec.LookPath("socat"); err != nil && desktopLive.BlockedReason == "" {
+		desktopLive.BlockedReason = "Install socat for the private lab Keycloak admin connection."
+	}
+	desktopLive.Command = append(append([]string(nil), desktopLive.Command...), "--live-keycloak",
+		"--keycloak-origin", origin, "--keycloak-ca", ca, "--keycloak-client", client, "--keycloak-secret", secret,
+		"--ldap-reader", reader, "--domain-sid", sid, "--browser-password", password)
+	desktopGatewayHA := desktopLive
+	desktopGatewayHA.Name, desktopGatewayHA.Cases = "desktop-browser-gateway-failover", []string{"WORKPLACE-36"}
+	desktopGatewayHA.Timeout = 5 * time.Minute
+	desktopGatewayHA.Command = append(append([]string(nil), desktopGatewayHA.Command...), "--gateway-failover")
+	desktopGatewayHA.Evidence = append([]harness.EvidenceSource(nil), desktopGatewayHA.Evidence...)
+	for _, filename := range []string{"desktop-gateway-failover.tsv", "desktop-gateway-reconnect-state.json",
+		"desktop-gateway-farm-1-node-07.log", "desktop-gateway-farm-1-node-08.log", "desktop-smb-xrdp.log"} {
+		desktopGatewayHA.Evidence = append(desktopGatewayHA.Evidence,
+			harness.EvidenceSource{Name: filename, Path: filepath.Join(options.domain, "evidence", filename)})
+	}
+	desktopNative := desktopLive
+	desktopNative.Name, desktopNative.Cases = "desktop-native-admission", []string{"WORKPLACE-38"}
+	desktopNative.Timeout = 5 * time.Minute
+	readerPassword := filepath.Join(smbFixture, "smbreader")
+	desktopNative = requireFile(desktopNative, readerPassword, "the disposable SMB reader credential")
+	desktopNative.Command = append(append([]string(nil), desktopNative.Command...), "--native-other-password", readerPassword)
+	desktopNative.Evidence = append([]harness.EvidenceSource(nil), desktopNative.Evidence...)
+	for _, filename := range []string{"desktop-native-rdp.tsv", "desktop-native-assigned.log", "desktop-native-unassigned.log"} {
+		desktopNative.Evidence = append(desktopNative.Evidence, harness.EvidenceSource{Name: filename, Path: filepath.Join(options.domain, "evidence", filename)})
+	}
+	desktopNativeRevocation := desktopNative
+	desktopNativeRevocation.Name, desktopNativeRevocation.Cases = "desktop-native-revocation", []string{"WORKPLACE-39"}
+	desktopNativeRevocation.Command = append(append([]string(nil), desktopNative.Command...), "--native-revocation")
+	desktopNativeRevocation.Evidence = append([]harness.EvidenceSource(nil), desktopNative.Evidence...)
+	for _, filename := range []string{"desktop-native-revocation.tsv", "desktop-native-monitor.log", "desktop-native-watchdog.log", "desktop-native-watchdog-client.log"} {
+		desktopNativeRevocation.Evidence = append(desktopNativeRevocation.Evidence,
+			harness.EvidenceSource{Name: filename, Path: filepath.Join(options.domain, "evidence", filename)})
+	}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
-		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation)
+		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos,
+		desktopAssignments, desktopBrowserSMB, desktopLive, desktopGatewayHA, desktopNative, desktopNativeRevocation)
 }

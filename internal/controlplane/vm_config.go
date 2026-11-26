@@ -9,6 +9,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/storage"
+	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -24,6 +25,15 @@ type vmCatalogImage struct {
 	SizeGiB        int64  `json:"sizeGiB"`
 	ImageSHA256    string `json:"imageSha256"`
 	FirmwareSHA256 string `json:"firmwareSha256"`
+	OSType         string `json:"osType,omitempty"`
+}
+
+func vmOperatingSystem(configured string) string {
+	// Catalog entries and VM records created before Linux support omit osType.
+	if configured == "" {
+		return workload.VMWindows
+	}
+	return configured
 }
 
 func (i vmCatalogImage) disk(id string) storage.VMDisk {
@@ -62,7 +72,8 @@ func openVMControl(cfg *vmConfig, work *workloadControl, disks *storageControl) 
 	})
 	for _, image := range ordered {
 		key := vmCatalogKey{Scope: arm.SubscriptionScope{TenantID: image.TenantID, SubscriptionID: image.SubscriptionID}, URI: image.URI}
-		if !validScope(key.Scope) || !arm.ValidVMImageURI(key.URI) || !image.disk("vm-catalog").Valid() {
+		if !validScope(key.Scope) || !arm.ValidVMImageURI(key.URI) || !image.disk("vm-catalog").Valid() ||
+			!workload.ValidVMImageDiskSize(vmOperatingSystem(image.OSType), image.SizeGiB) {
 			return nil, errors.New("invalid prepared VM image catalog entry")
 		}
 		if _, duplicate := images[key]; duplicate {

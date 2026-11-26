@@ -17,18 +17,20 @@ import (
 // WebDirectoryConfig locates the pre-authorized LDAPS connectors and reader
 // credential for a specific managed directory in the regional process config.
 type WebDirectoryConfig struct {
-	DirectoryID      string    `json:"directoryId"`
-	DomainSID        string    `json:"domainSid"`
-	Connectors       [2]string `json:"connectors"`
-	ReaderSecretFile string    `json:"readerSecretFile"`
-	KerberosKeytab   string    `json:"kerberosKeytab,omitempty"`
+	DirectoryID          string    `json:"directoryId"`
+	DomainSID            string    `json:"domainSid"`
+	Connectors           [2]string `json:"connectors"`
+	ReaderSecretFile     string    `json:"readerSecretFile"`
+	KerberosKeytab       string    `json:"kerberosKeytab,omitempty"`
+	DesktopApplicationID string    `json:"desktopApplicationId,omitempty"`
 }
 
 func (d WebDirectoryConfig) valid() bool {
 	health := enrollment.DirectoryHealth{Ready: true, DomainSID: d.DomainSID}
 	return tenantID.MatchString(d.DirectoryID) && health.Valid() && d.Connectors[0] != d.Connectors[1] &&
 		validLDAPSConnector(d.Connectors[0]) && validLDAPSConnector(d.Connectors[1]) && d.ReaderSecretFile != "" &&
-		(d.KerberosKeytab == "" || validKeytabPath(d.KerberosKeytab))
+		(d.KerberosKeytab == "" || validKeytabPath(d.KerberosKeytab)) &&
+		(d.DesktopApplicationID == "" || tenantID.MatchString(d.DesktopApplicationID))
 }
 
 func validKeytabPath(path string) bool {
@@ -163,7 +165,8 @@ func (c *Compatibility) manageWebApplication(ctx context.Context, w http.Respons
 		webPolicyUnavailable(w)
 		return
 	}
-	providerID, err := admin.publishDirectoryWebApplication(ctx, tenant, *directory, *app, request.GroupIDs)
+	providerID, err := admin.publishDirectoryWebApplication(ctx, tenant, *directory, *app, request.GroupIDs,
+		configuration.DesktopApplicationID == app.ID)
 	if err != nil {
 		webPolicyUnavailable(w)
 		return

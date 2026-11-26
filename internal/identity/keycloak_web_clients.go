@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 )
 
 type keycloakWebClient struct {
@@ -29,7 +30,7 @@ type keycloakWebClient struct {
 
 const keycloakWebClientProfile = "ocean-web-v1"
 
-func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, browserFlowID string, scope keycloakWebScope) (string, error) {
+func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, browserFlowID string, scope keycloakWebScope, desktop bool) (string, error) {
 	if !app.Valid(app.TenantID) || len(app.WebRedirectURIs) == 0 || app.PrincipalID != "" ||
 		len(app.Credentials) != 0 || !tenantID.MatchString(browserFlowID) {
 		return "", errors.New("a dedicated web application and browser flow are required")
@@ -42,7 +43,7 @@ func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, 
 			"oauth2.device.authorization.grant.enabled": "false",
 			"oidc.ciba.grant.enabled":                   "false",
 			"standard.token.exchange.enabled":           "false",
-			"use.refresh.tokens":                        "false",
+			"use.refresh.tokens":                        strconv.FormatBool(desktop),
 			"access.token.lifespan":                     "120",
 			"acr.loa.map":                               `{"ocean-web":2}`,
 			"minimum.acr.value":                         "ocean-web",
@@ -107,6 +108,14 @@ func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, 
 		return client.ID, nil
 	}
 	path := "/clients/" + client.ID
+	if desktop {
+		previous := active
+		previous.Attributes = maps.Clone(active.Attributes)
+		previous.Attributes["use.refresh.tokens"] = "false"
+		if client.matchesWebClient(previous) {
+			return k.updateWebClient(ctx, app.TenantID, path, active, lookup)
+		}
+	}
 	if client.matchesWebClient(wanted) {
 		_, _ = k.directoryRequest(ctx, app.TenantID, http.MethodPut, path+"/default-client-scopes/"+scope.ID, nil, nil)
 		clients, err = lookup()
@@ -121,12 +130,17 @@ func (k keycloakAdmin) reconcileWebClient(ctx context.Context, app Application, 
 	if !client.matchesWebClient(withScope) {
 		return "", errors.New("unable to confirm the disabled web application with its policy scope")
 	}
-	_, _ = k.directoryRequest(ctx, app.TenantID, http.MethodPut, path, active, nil)
-	clients, err = lookup()
-	if err != nil || len(clients) != 1 || !clients[0].matchesWebClient(active) {
+	return k.updateWebClient(ctx, app.TenantID, path, active, lookup)
+}
+
+func (k keycloakAdmin) updateWebClient(ctx context.Context, tenant, path string, wanted keycloakWebClient,
+	lookup func() ([]keycloakWebClient, error)) (string, error) {
+	_, _ = k.directoryRequest(ctx, tenant, http.MethodPut, path, wanted, nil)
+	clients, err := lookup()
+	if err != nil || len(clients) != 1 || !clients[0].matchesWebClient(wanted) {
 		return "", errors.New("unable to confirm the enabled web application with its policy scope")
 	}
-	return client.ID, nil
+	return wanted.ID, nil
 }
 
 func (client keycloakWebClient) matchesWebClient(wanted keycloakWebClient) bool {

@@ -1,0 +1,8 @@
+# Sourced by Debian Xsession inside the domain user's XRDP session.
+if [ -n "${XRDP_SESSION:-}" ] && [ -z "${KRB5CCNAME:-}" ]; then
+    if ocean_cifs_uid=$(/usr/bin/id -u) && [ -r "/run/ocean-desktop-cifs/$ocean_cifs_uid" ]; then
+        KRB5CCNAME="FILE:/run/ocean-desktop-cifs/$ocean_cifs_uid"
+        export KRB5CCNAME
+    fi
+    unset ocean_cifs_uid
+fi

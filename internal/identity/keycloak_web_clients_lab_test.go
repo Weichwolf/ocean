@@ -106,7 +106,7 @@ func TestKeycloakWebClientsLab(t *testing.T) {
 		t.Fatalf("the default realm browser binding changed: status %d, %v", status, err)
 	}
 	prepare := func(app Application) (string, error) {
-		return admin.reconcileWebClient(ctx, app, profile.BrowserID, keycloakWebScope{})
+		return admin.reconcileWebClient(ctx, app, profile.BrowserID, keycloakWebScope{}, false)
 	}
 	first := Application{TenantID: tenant, ID: newUUID(), ClientID: newUUID(), DisplayName: "Web fixture A",
 		WebRedirectURIs: []string{"https://first.apps.ocean.test/oidc/callback"}}

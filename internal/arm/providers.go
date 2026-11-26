@@ -102,6 +102,13 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		}
 		namespace = "Ocean.Storage"
 		types = []providerResourceType{{ResourceType: "smbShares", Locations: []string{s.Location}, APIVersions: []string{smb.APIVersion}}}
+	case "ocean.desktop":
+		if s.Desktops == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = "Ocean.Desktop"
+		types = []providerResourceType{{ResourceType: "personalDesktops", Locations: []string{s.Location}, APIVersions: []string{DesktopAPIVersion}}}
 	case "ocean.compute":
 		if s.ReplicaSets == nil {
 			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")

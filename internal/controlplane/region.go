@@ -44,6 +44,7 @@ type regionConfig struct {
 	Storage             *storageConfig            `json:"storage"`
 	SMBMembers          []smbBinding              `json:"smbMembers,omitempty"`
 	VirtualMachines     *vmConfig                 `json:"virtualMachines,omitempty"`
+	DesktopLaunch       *desktopLaunchConfig      `json:"desktopLaunch,omitempty"`
 	Telemetry           *telemetryConfig          `json:"telemetry"`
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
@@ -72,6 +73,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	}
 	if cfg.HostEnrollment != nil && (cfg.Region == nil || cfg.TLS == nil || !cfg.TLS.OptionalClientCA) {
 		return config.Server{}, service.Hooks{}, errors.New("host enrollment requires a region and TLS with optional client certificates")
+	}
+	if cfg.Region != nil && cfg.Region.DesktopLaunch != nil && cfg.HostEnrollment == nil {
+		return config.Server{}, service.Hooks{}, errors.New("desktop launch requires enrolled gateway hosts")
 	}
 	if cfg.Region != nil && cfg.Region.ManagedDirectories != nil &&
 		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil ||
@@ -167,6 +171,19 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				}
 				if region.vms != nil {
 					resources.VirtualMachines = region
+					if cfg.Region.ManagedDirectories != nil {
+						resources.Desktops = region
+						resources.AuthenticateDesktop = compatibility.AuthenticateDesktop
+						if region.desktopLaunch != nil {
+							resources.DesktopLaunch = region
+							if len(region.desktopLaunch.nativeGuests) != 0 {
+								resources.DesktopNative = region
+							}
+							if len(region.desktopLaunch.brokers) != 0 {
+								resources.DesktopCIFS = region
+							}
+						}
+					}
 				}
 				if cfg.Region.FunctionPlans && cfg.Region.FunctionDomain != "" && cfg.Identity.Cloud.StorageEndpoint != "" &&
 					region.workloads != nil && region.storage != nil {
@@ -204,6 +221,7 @@ type Region struct {
 	storage           *storageControl
 	smb               *smbControl
 	vms               *vmControl
+	desktopLaunch     *desktopLaunchControl
 	telemetry         *telemetryControl
 	cell              string
 }
@@ -240,6 +258,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
+	desktopLaunch, err := openDesktopLaunch(cfg.DesktopLaunch, vms != nil && cfg.ManagedDirectories != nil, smbMembers)
+	if err != nil {
+		return nil, err
+	}
 	directoryFencer, err := loadFencerKey(cfg.DirectoryFenceKey)
 	if err != nil {
 		return nil, err
@@ -264,7 +286,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
-		directoryFencer: directoryFencer, vms: vms, smb: smbMembers}
+		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
@@ -323,6 +345,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapVirtualMachines(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapDesktopLaunch(ctx); err != nil {
 		return err
 	}
 	return region.bootstrapFencing(ctx)

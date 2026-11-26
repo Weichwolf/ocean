@@ -69,6 +69,11 @@ func TestRegionalVirtualMachineStore(t *testing.T) {
 	if _, _, err := r.PutVMImage(ctx, foreign, actor, image, imageRequest); !errors.Is(err, arm.ErrVMImageUnavailable) {
 		t.Fatalf("foreign tenant admitted a private image: %v", err)
 	}
+	mislabeled := imageRequest
+	mislabeled.Properties.StorageProfile.OSDisk.OSType = workload.VMLinux
+	if _, _, err := r.PutVMImage(ctx, scope, actor, image, mislabeled); !errors.Is(err, arm.ErrVMImageUnavailable) {
+		t.Fatalf("VM image accepted a different operating system from the catalog: %v", err)
+	}
 	imageView, created, err := r.PutVMImage(ctx, scope, actor, image, imageRequest)
 	if err != nil || !created || imageView.Address != image {
 		t.Fatalf("image creation failed: %v", err)
@@ -111,6 +116,11 @@ func TestRegionalVirtualMachineStore(t *testing.T) {
 	var vmRequest arm.VirtualMachineRequest
 	decodeVMFixture(t, fmt.Sprintf(`{"location":"local","properties":{"hardwareProfile":{"vmSize":"Standard_B2s"},"storageProfile":{"imageReference":{"id":%q},"osDisk":{"name":"core-disk","createOption":"FromImage","deleteOption":"Delete","managedDisk":{"storageAccountType":"Standard_LRS"}}},"networkProfile":{"networkInterfaces":[{"id":%q}]}}}`,
 		image.ID(scope), nic.ID(scope)), &vmRequest)
+	tooSmall := vmRequest
+	tooSmall.Properties.HardwareProfile.VMSize = "Standard_B1s"
+	if _, _, _, err := r.CreateVirtualMachine(ctx, scope, actor, vm, tooSmall); !errors.Is(err, arm.ErrVMSizeUnsupported) {
+		t.Fatalf("Windows VM accepted a Linux-only size: %v", err)
+	}
 	createdVM, createOp, created, err := r.CreateVirtualMachine(ctx, scope, actor, vm, vmRequest)
 	if err != nil || !created || createOp == nil || createOp.Status != arm.OperationInProgress {
 		t.Fatalf("VM reservation failed: %+v %v", createOp, err)

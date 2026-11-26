@@ -8,23 +8,28 @@ import (
 	"net/http"
 	"regexp"
 	"time"
+
+	"github.com/Weichwolf/ocean/internal/desktop"
 )
 
 var directoryGroupSID = regexp.MustCompile(`^S-1-5-21(-[0-9]{1,10}){4}$`)
 
 const (
-	DirectoryUserCreate        = "userCreate"
-	DirectoryUserGet           = "userGet"
-	DirectoryUserList          = "userList"
-	DirectoryUserUpdate        = "userUpdate"
-	DirectoryGroupCreate       = "groupCreate"
-	DirectoryGroupGet          = "groupGet"
-	DirectoryGroupList         = "groupList"
-	DirectoryGroupMembers      = "groupMembers"
-	DirectoryGroupMemberAdd    = "groupMemberAdd"
-	DirectoryGroupMemberRemove = "groupMemberRemove"
-	DirectoryGraphPageSize     = 100
-	MaxDirectoryGraphResult    = 256 << 10
+	DirectoryUserCreate         = "userCreate"
+	DirectoryUserGet            = "userGet"
+	DirectoryUserList           = "userList"
+	DirectoryUserUpdate         = "userUpdate"
+	DirectoryUserDesktopCheck   = "userDesktopCheck"
+	DirectoryNativeDesktopCheck = "userNativeDesktopCheck"
+	DirectoryUserSessionCheck   = "userDesktopSessionCheck"
+	DirectoryGroupCreate        = "groupCreate"
+	DirectoryGroupGet           = "groupGet"
+	DirectoryGroupList          = "groupList"
+	DirectoryGroupMembers       = "groupMembers"
+	DirectoryGroupMemberAdd     = "groupMemberAdd"
+	DirectoryGroupMemberRemove  = "groupMemberRemove"
+	DirectoryGraphPageSize      = 100
+	MaxDirectoryGraphResult     = 256 << 10
 )
 
 type DirectoryGraphQuery struct {
@@ -39,6 +44,8 @@ type DirectoryGraphInput struct {
 	Operation string               `json:"operation"`
 	Selector  string               `json:"selector,omitempty"`
 	Member    string               `json:"member,omitempty"`
+	GroupID   string               `json:"groupId,omitempty"`
+	AppGroups []string             `json:"applicationGroupIds,omitempty"`
 	Fields    json.RawMessage      `json:"fields,omitempty"`
 	Query     *DirectoryGraphQuery `json:"query,omitempty"`
 }
@@ -53,6 +60,10 @@ func (i DirectoryGraphInput) Valid() bool {
 	if i.Member != "" && i.Operation != DirectoryGroupMemberAdd && i.Operation != DirectoryGroupMemberRemove {
 		return false
 	}
+	if i.GroupID != "" && i.Operation != DirectoryUserDesktopCheck && i.Operation != DirectoryNativeDesktopCheck && i.Operation != DirectoryUserSessionCheck ||
+		len(i.AppGroups) != 0 && i.Operation != DirectoryUserSessionCheck {
+		return false
+	}
 	switch i.Operation {
 	case DirectoryUserCreate, DirectoryGroupCreate:
 		return i.Selector == "" && fields && i.Query == nil
@@ -60,6 +71,20 @@ func (i DirectoryGraphInput) Valid() bool {
 		return selector && fields && i.Query == nil
 	case DirectoryUserGet:
 		return selector && noFields && i.Query == nil
+	case DirectoryUserDesktopCheck:
+		return group && noFields && q == nil && (i.GroupID == "" || ValidDirectoryJoinID(i.GroupID))
+	case DirectoryNativeDesktopCheck:
+		return desktop.ValidNativeAccount(i.Selector) && noFields && q == nil && (i.GroupID == "" || ValidDirectoryJoinID(i.GroupID))
+	case DirectoryUserSessionCheck:
+		if !group || !noFields || q != nil || i.GroupID != "" && !ValidDirectoryJoinID(i.GroupID) || len(i.AppGroups) == 0 || len(i.AppGroups) > 32 {
+			return false
+		}
+		for n, id := range i.AppGroups {
+			if !ValidDirectoryJoinID(id) || n > 0 && i.AppGroups[n-1] >= id {
+				return false
+			}
+		}
+		return true
 	case DirectoryUserList:
 		return i.Selector == "" && noFields && paged && q.GroupName == "" && q.GroupAlias == "" &&
 			len(q.UPN) <= 128 && len(q.DisplayPrefix) <= 120 && (q.UPN == "" || q.DisplayPrefix == "" && q.Offset == 0)
@@ -165,7 +190,8 @@ func (r DirectoryGraphResult) Valid(operation string) bool {
 	case http.StatusOK:
 		return (operation == DirectoryUserList || operation == DirectoryGroupMembers) && collection && len(r.Groups) == 0 ||
 			operation == DirectoryGroupList && collection && len(r.Users) == 0 ||
-			operation == DirectoryUserGet && onlyUser || operation == DirectoryGroupGet && onlyGroup
+			(operation == DirectoryUserGet || operation == DirectoryUserDesktopCheck || operation == DirectoryNativeDesktopCheck || operation == DirectoryUserSessionCheck) && onlyUser ||
+			operation == DirectoryGroupGet && onlyGroup
 	}
 	return false
 }

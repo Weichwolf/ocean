@@ -36,7 +36,7 @@ type regionalGraphFixture struct {
 	sign                          func(string, string) string
 }
 
-func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
+func (f regionalGraphFixture) startWorker(t *testing.T) func() {
 	t.Helper()
 	workerCtx, stop := context.WithCancel(f.ctx)
 	workerExit := make(chan error, 1)
@@ -56,12 +56,17 @@ func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
 			}
 		}
 	}()
-	defer func() {
+	return func() {
 		stop()
 		if err := <-workerExit; err != nil {
 			t.Errorf("directory Graph worker: %v", err)
 		}
-	}()
+	}
+}
+
+func (f regionalGraphFixture) verify(t *testing.T, groups bool) {
+	t.Helper()
+	defer f.startWorker(t)()
 	password := "Oc9-" + rand.Text() + rand.Text()
 	replacementPassword := "Oc9-" + rand.Text() + rand.Text()
 	run := f.loginCLI(t, password, replacementPassword)

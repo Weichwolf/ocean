@@ -93,7 +93,7 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	if err := sambaFederationGraph(ctx, lab.primary, "groupMemberAdd", nil, secondGroup, member); err != nil {
 		t.Fatal(err)
 	}
-	command := startAuthenticatedWebPolicyLab(t, lab, api, graph, authority, exchange)
+	compat, command := startAuthenticatedWebPolicyLab(t, lab, api, graph, authority, exchange)
 	callback, callbackCA := kerberosBrowserCallback(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if (r.URL.Path != "/a" && r.URL.Path != "/b") || !r.URL.Query().Has("code") {
 			http.NotFound(w, r)
@@ -139,6 +139,14 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 		return directoryPath(tenantID) + "/webApplications/" + applicationID
 	}
 	firstPath := policyPath(tenant.TenantID, apps[0].ID)
+	desktopConfig := compat.onboarding.config.WebDirectories[tenant.TenantID]
+	desktopConfig.DesktopApplicationID = apps[0].ID
+	desktopVerifier, err := NewCompatibility(authority.URL, admin.endpoints[0], admin.client.Transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopVerifier.onboarding = &onboarding{store: compat.onboarding.store, admin: admin,
+		config: OnboardingConfig{WebDirectories: map[string]WebDirectoryConfig{tenant.TenantID: desktopConfig}}}
 	az("put", firstPath, []string{group, group}, "InvalidGroupIds")
 	az("put", firstPath, []string{newUUID()}, "InvalidDirectoryGroup")
 	az("put", policyPath(newUUID(), apps[0].ID), []string{group}, "AuthorizationFailed")
@@ -160,6 +168,10 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	az("put", firstPath, []string{secondGroup}, "WebApplicationPolicyConflict")
 	az("put", firstPath, []string{group}, "")
 	az("get", firstPath, nil, "")
+	native, err := admin.publishDirectoryWebApplication(ctx, tenant, lab.directory, apps[0], []string{group}, true)
+	if err != nil || native == "" {
+		t.Fatalf("enable desktop session refresh for the selected client: %v", err)
+	}
 
 	browser := *admin.client
 	browser.Jar, err = cookiejar.New(nil)
@@ -194,6 +206,7 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	}
 	var firstBrowserSession string
 	authorizations := []browserAuthorization{newBrowserAuthorization(apps[0]), newBrowserAuthorization(apps[1])}
+	authorizations[0].expectRefresh = true
 	callbacks := externalMFABrowser(t, ctx, issuer, admin.endpoints[0], callbackCA, principal, lab.value("employee"), seed, authorizations, browser.Jar)
 	for index, authorization := range authorizations {
 		page := browserPage{status: http.StatusFound, header: http.Header{"Location": {callbacks[index]}}}
@@ -202,7 +215,33 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 			t.Fatal("the web apps did not reuse an assured session for the same AD user")
 		}
 		firstBrowserSession = token.SessionID
+		request := httptest.NewRequestWithContext(ctx, http.MethodPost, api.URL, nil)
+		request.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		desktop, err := desktopVerifier.AuthenticateDesktop(ctx, request)
+		if index == 0 && (err != nil || desktop.Tenant != tenant || desktop.DirectoryID != lab.directory.ID || desktop.UserID != member) {
+			t.Fatalf("the configured Keycloak desktop client did not resolve the enrolled AD object: %v", err)
+		}
+		if index == 0 {
+			reply := browserCall(t, ctx, &browser, protocol+"/token", url.Values{
+				"grant_type": {"refresh_token"}, "client_id": {authorization.app.ClientID}, "refresh_token": {token.RefreshToken},
+			})
+			var fresh struct {
+				AccessToken string `json:"access_token"`
+			}
+			if err := json.Unmarshal(reply.body, &fresh); err != nil || reply.status != http.StatusOK || fresh.AccessToken == "" {
+				t.Fatalf("refresh the dedicated desktop session: status %d", reply.status)
+			}
+			request.Header.Set("Authorization", "Bearer "+fresh.AccessToken)
+			if continued, err := desktopVerifier.AuthenticateDesktop(ctx, request); err != nil || continued.UserID != member ||
+				!slices.Equal(continued.AppGroupIDs, []string{group}) {
+				t.Fatalf("the refreshed browser credential did not retain MFA and managed directory identity: %v", err)
+			}
+		}
+		if index == 1 && !errors.Is(err, ErrInvalidDesktopToken) {
+			t.Fatalf("a different web client received desktop authorization: %v", err)
+		}
 	}
+	t.Log("the configured desktop application authenticated the live federated browser user, and the other application's token was rejected")
 	t.Log("the two CLI-registered clients issued separate audiences for one LDAP subject and one MFA session")
 	started := time.Now()
 	if err := sambaFederationGraph(ctx, lab.primary, "groupMemberRemove", nil, secondGroup, member); err != nil {
@@ -215,6 +254,7 @@ func TestKeycloakWebAdmissionLab(t *testing.T) {
 	}
 	t.Logf("the affected app denied a new code through the existing cookie after AD group removal in %s", time.Since(started).Round(time.Millisecond))
 	authorization = newBrowserAuthorization(apps[0])
+	authorization.expectRefresh = true
 	allowed := browserCall(t, ctx, &browser, protocol+"/auth?"+authorization.params.Encode(), nil)
 	if token := exchangeBrowserCode(t, ctx, &browser, issuer, keys, authorization, allowed); token.SessionID != firstBrowserSession {
 		t.Fatal("revoking the second application's group disturbed the first app's session")
@@ -297,9 +337,10 @@ func externalMFABrowser(t *testing.T, ctx context.Context, issuer, origin string
 }
 
 type browserAuthorization struct {
-	app      Application
-	verifier string
-	params   url.Values
+	app           Application
+	verifier      string
+	params        url.Values
+	expectRefresh bool
 }
 
 func newBrowserAuthorization(app Application) browserAuthorization {
@@ -364,10 +405,11 @@ func submitBrowserForm(t *testing.T, ctx context.Context, browser *http.Client, 
 }
 
 type browserIdentity struct {
-	Subject     string `json:"-"`
-	AccessToken string `json:"-"`
-	SessionID   string `json:"sid"`
-	ACR         string `json:"acr"`
+	Subject      string `json:"-"`
+	AccessToken  string `json:"-"`
+	RefreshToken string `json:"-"`
+	SessionID    string `json:"sid"`
+	ACR          string `json:"acr"`
 }
 
 func exchangeBrowserCode(t *testing.T, ctx context.Context, browser *http.Client, issuer string, keys oidc.KeySet,
@@ -390,7 +432,8 @@ func exchangeBrowserCode(t *testing.T, ctx context.Context, browser *http.Client
 		IDToken      string `json:"id_token"`
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := json.Unmarshal(issued.body, &reply); err != nil || issued.status != http.StatusOK || reply.AccessToken == "" || reply.IDToken == "" || reply.RefreshToken != "" {
+	if err := json.Unmarshal(issued.body, &reply); err != nil || issued.status != http.StatusOK || reply.AccessToken == "" || reply.IDToken == "" ||
+		(reply.RefreshToken != "") != auth.expectRefresh {
 		t.Fatalf("exchange browser authorization code: status %d, %v", issued.status, err)
 	}
 	verifier := oidc.NewVerifier(issuer, keys, &oidc.Config{ClientID: auth.app.ClientID, SupportedSigningAlgs: []string{oidc.RS256}})
@@ -404,5 +447,6 @@ func exchangeBrowserCode(t *testing.T, ctx context.Context, browser *http.Client
 	}
 	identity.Subject = token.Subject
 	identity.AccessToken = reply.AccessToken
+	identity.RefreshToken = reply.RefreshToken
 	return identity
 }

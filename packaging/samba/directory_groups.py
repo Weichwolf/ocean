@@ -6,7 +6,7 @@ from samba.dcerpc.misc import GUID
 from samba.dcerpc.security import dom_sid
 from samba.ndr import ndr_pack, ndr_unpack
 
-from directory_users import ALIAS, USER_FILTER, GraphFailure, ensure_ou, get_user, lookup, page, user_view, workforce_dn
+from directory_users import ALIAS, USERNAME, USER_FILTER, GraphFailure, ensure_ou, get_user, lookup, page, user_view, workforce_dn
 from domain_join import REQUEST_ID, object_guid, replace
 
 GROUP_OU = "OU=Ocean Workforce Groups"
@@ -36,6 +36,47 @@ def group_by_selector(database, scope, selector):
     if len(found) != 1:
         raise GraphFailure(404)
     return found[0]
+
+
+def desktop_user(database, domain, task):
+    selector = task["selector"]
+    if task["operation"] == "userNativeDesktopCheck":
+        name, _, suffix = selector.partition("@")
+        if suffix != domain or not USERNAME.fullmatch(name):
+            raise GraphFailure(400)
+    elif not REQUEST_ID.fullmatch(selector):
+        raise GraphFailure(400)
+    user = get_user(database, workforce_dn(database), selector)
+    view = user_view(database, user)
+    if not view["accountEnabled"]:
+        raise GraphFailure(404)
+    if "groupId" in task or task["operation"] == "userDesktopSessionCheck":
+        scope = ldb.Dn(database, GROUP_OU + "," + database.domain_dn())
+        if "groupId" in task:
+            group = group_by_selector(database, scope, task["groupId"])
+            expression = f"(memberOf={ldb.binary_encode(str(group.dn))})"
+            if not database.search(base=user.dn, scope=ldb.SCOPE_BASE, expression=expression, attrs=[]):
+                raise GraphFailure(404)
+        if task["operation"] == "userDesktopSessionCheck" and not has_application_grant(database, scope, user, task.get("applicationGroupIds")):
+            raise GraphFailure(404)
+    return {"status": 200, "user": view}
+
+
+def has_application_grant(database, scope, user, group_ids):
+    if not isinstance(group_ids, list) or not 1 <= len(group_ids) <= 32 or any(
+            not isinstance(group_id, str) or not REQUEST_ID.fullmatch(group_id) for group_id in group_ids):
+        raise GraphFailure(400)
+    for group_id in group_ids:
+        try:
+            group = group_by_selector(database, scope, group_id)
+        except GraphFailure as error:
+            if error.status != 404:
+                raise
+            continue
+        expression = f"(memberOf={ldb.binary_encode(str(group.dn))})"
+        if database.search(base=user.dn, scope=ldb.SCOPE_BASE, expression=expression, attrs=[]):
+            return True
+    return False
 
 
 def create(database, scope, fields):

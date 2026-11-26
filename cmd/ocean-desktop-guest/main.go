@@ -1,0 +1,117 @@
+package main
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"syscall"
+	"time"
+
+	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/desktop"
+	"golang.org/x/sys/unix"
+)
+
+type guestConfig struct {
+	MachineID string         `json:"machineId"`
+	PublicKey string         `json:"publicKey"`
+	Kerberos  *guestKerberos `json:"kerberos,omitempty"`
+	Native    *guestTLS      `json:"native,omitempty"`
+}
+
+func main() {
+	mode := flag.String("mode", "", "XRDP launch credential or native admission action")
+	path := flag.String("config", "/etc/ocean-desktop/guest.json", "root-owned guest configuration")
+	session := flag.String("session", "", "logind session ID")
+	uid := flag.Int("uid", 0, "logind session owner")
+	leader := flag.Int("leader", 0, "logind session leader")
+	scopeInode := flag.Uint64("scope-inode", 0, "pinned cgroup kill control inode")
+	flag.Parse()
+	if *mode == "watch-native" || *mode == "end-native" {
+		if os.Geteuid() != 0 {
+			os.Exit(1)
+		}
+		target := nativeSession{id: *session, uid: *uid, leader: *leader}
+		var err error
+		if *mode == "watch-native" {
+			err = watchNativeSession(*path, target)
+		} else {
+			err = endNativeSession(target, *scopeInode)
+		}
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if !run(*mode, *path) {
+		os.Exit(1)
+	}
+}
+
+func run(mode, path string) bool {
+	if os.Geteuid() != 0 || os.Getenv("PAM_SERVICE") != "xrdp-sesman" {
+		return false
+	}
+	pamType := os.Getenv("PAM_TYPE")
+	switch mode {
+	case "start-native":
+		return pamType == "open_session" && startNativeSession(path, os.Getenv("PAM_USER"))
+	case "authorize-account":
+		return pamType == "account" && authorizeAccount(path, os.Getenv("PAM_USER"))
+	case "require-native":
+		settings, err := loadGuestConfig(path)
+		return pamType == "auth" && err == nil && settings.Native != nil
+	}
+	if pamType != "auth" {
+		return false
+	}
+	password, err := io.ReadAll(io.LimitReader(os.Stdin, int64(desktop.MaxLaunchBytes)+1))
+	defer clear(password)
+	if err != nil || !desktop.IsLaunchPassword(password) {
+		return false
+	}
+	if mode == "classify" {
+		return true
+	}
+	if mode != "redeem" {
+		return false
+	}
+	settings, err := loadGuestConfig(path)
+	if err != nil {
+		return false
+	}
+	public, err := base64.StdEncoding.Strict().DecodeString(settings.PublicKey)
+	if err != nil {
+		return false
+	}
+	account := os.Getenv("PAM_USER")
+	if err := desktop.RedeemLaunch(ed25519.PublicKey(public), settings.MachineID, account, password,
+		time.Now(), "/var/lib/ocean-desktop/replay"); err != nil {
+		return false
+	}
+	return settings.Kerberos == nil || installCIFSCache(*settings.Kerberos, account, password) == nil
+}
+
+func loadGuestConfig(path string) (guestConfig, error) {
+	const limit = 4096
+	file, err := os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return guestConfig{}, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return guestConfig{}, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil || stat.Uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 ||
+		info.Size() < 1 || info.Size() > limit {
+		return guestConfig{}, errors.New("invalid desktop guest configuration file")
+	}
+	return config.Decode(io.LimitReader(file, limit+1), guestConfig{})
+}

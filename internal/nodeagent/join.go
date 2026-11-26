@@ -109,6 +109,15 @@ func loadEnrolledClient(path string) (*joinClient, error) {
 	return client, nil
 }
 
+// OpenHostAccess opens the regional endpoint using the enrolled host identity.
+func OpenHostAccess(path string) (string, *http.Client, error) {
+	client, err := loadEnrolledClient(path)
+	if err != nil {
+		return "", nil, err
+	}
+	return client.config.Origin, client.client, nil
+}
+
 func newJoinClient(cfg joinConfig) (*joinClient, error) {
 	if cfg.DirectoryImage != "" && !directoryImageID.MatchString(cfg.DirectoryImage) {
 		return nil, errors.New("the directory image must be a local SHA-256 image ID")

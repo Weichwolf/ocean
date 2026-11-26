@@ -120,6 +120,15 @@ func (r *Region) PutInventoryResource(ctx context.Context, scope arm.Subscriptio
 // again after a concurrent change. The audit suffix identifies a nested target.
 func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress, actor, action, auditSuffix string,
 	change func(*arm.InventoryResource, arm.ResourceAddress) (*arm.InventoryResource, error)) (*arm.InventoryResource, bool, error) {
+	return r.changeInventoryResource(ctx, scope, address, actor, action, auditSuffix,
+		func(previous *arm.InventoryResource, address arm.ResourceAddress, _ int64) (*arm.InventoryResource, []clientv3.Cmp, error) {
+			resource, err := change(previous, address)
+			return resource, nil, err
+		})
+}
+
+func (r *Region) changeInventoryResource(ctx context.Context, scope arm.SubscriptionScope, address arm.ResourceAddress, actor, action, auditSuffix string,
+	change func(*arm.InventoryResource, arm.ResourceAddress, int64) (*arm.InventoryResource, []clientv3.Cmp, error)) (*arm.InventoryResource, bool, error) {
 	group := strings.ToLower(address.Group)
 	groupKey := r.groupPrefix(scope) + group
 	key := r.inventoryPrefix(scope) + address.Key()
@@ -158,7 +167,7 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 			canonical = old.Address
 			revision = previous[0].ModRevision
 		}
-		resource, err := change(saved, canonical)
+		resource, providerGuards, err := change(saved, canonical, result.Header.Revision)
 		if err != nil || resource == nil && saved == nil {
 			return nil, false, err
 		}
@@ -195,6 +204,7 @@ func (r *Region) ChangeInventoryResource(ctx context.Context, scope arm.Subscrip
 			clientv3.Compare(clientv3.ModRevision(key), "=", revision))
 		conditions = append(conditions, poolConditions...)
 		conditions = append(conditions, placementConditions...)
+		conditions = append(conditions, providerGuards...)
 		var onConflict []clientv3.Op
 		if resource == nil {
 			prefix := r.dependentsPrefix(scope, canonical)

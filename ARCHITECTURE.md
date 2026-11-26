@@ -104,8 +104,9 @@ and [capacity reservations](lab/README.md#leased-host-capacity-and-reservations)
 
 ### Optional tenant VMs
 
-The VM profile admits prepared Windows Server 2025 Core images on
-qualified Debian KVM workers. Its ARM contract covers image registration,
+The VM profile admits prepared Debian and Windows Server 2025 Core images on
+qualified Debian KVM workers. The subscription catalog binds the OS type to
+the image and UEFI digests. Its ARM contract covers image registration,
 private NIC allocation, VM and disk reads, VM start, graceful power-off and
 deletion. A single transaction reserves CPU, RAM and the persistent OS disk
 when the VM is created. The reservations stay charged while it is stopped.
@@ -117,6 +118,65 @@ policy. Regional placement transfers the writable disk generation only after
 the original writer's lease expires and an authorized fencer confirms its
 power-off. Recovery preserves the image, guest identity and private IP.
 See the [KVM worker and acceptance guide](lab/README.md#debian-kvm-worker-service).
+
+Personal desktop assignment records link one prepared Linux VM to a user or
+security group in the tenant's managed Samba directory by object GUID. A
+regional transaction records the binding and audit event and guards against
+concurrent VM deletion or duplicate ownership. The VM's stable machine ID
+binds the profile to the provisioned guest through power cycles. An assignment
+ID stays stable on replay and changes with the principal.
+
+The desktop authorization action takes an MFA-assured token from a dedicated
+Keycloak application. The region resolves the federated subject to an AD object.
+The Samba writer checks that the account is enabled, that it belongs to an
+allowed application group and that it holds any group grant required by the
+desktop assignment. The region checks the KVM worker lease and compares current state revisions
+before returning a decision valid for at most 15 seconds. A successful decision
+contains the assignment and machine IDs.
+
+The launch action additionally requires a verified client certificate from an
+allowlisted, enrolled gateway with a live host lease. The region checks the
+VM's current NIC binding and ownership of its private address. It returns the
+address, NIC and tenant subnet to the gateway. The issuance decision compares
+the gateway enrollment and availability, assignment, directory, VM, NIC and
+address allocation revisions in etcd. The audit event records the user
+object ID and the desktop resource ID. Every regional API replica uses the
+same signer and gateway allowlist, verified
+against a public-key manifest in regional metadata.
+
+The HTTPS desktop gateway runs the OIDC authorization code flow with PKCE,
+state and nonce against the dedicated MFA client. It holds access and refresh
+tokens in process memory and gives the browser an opaque secure session cookie.
+Guacamole runs on the gateway's loopback interface and connects to private XRDP
+using the guest certificate fingerprint. The browser sees display and input
+events over an origin-checked WebSocket. Clipboard and drive redirection
+are disabled. The gateway renews access every five seconds, or sooner near
+expiry. It closes both connections on denial, a changed assignment or VM
+generation, or expiry of the previous authorization.
+
+The XRDP guest helper verifies a signed, single-use launch credential for the
+guest's pinned machine ID and canonical AD sign-in name. The credential expires
+within 15 seconds and the guest commits its receipt to a private persistent
+directory before opening the session. PAM still applies the domain account and
+session policies. For private native RDP, PAM authenticates the AD password
+and then requests admission from the region with the guest's client
+certificate. Its fingerprint binds one tenant, subscription, desktop and
+machine ID. The region checks the current AD user or group grant, the running
+VM and its private NIC. A managed guest admits raw passwords only with the
+native admission hook configured. A root-owned systemd service pins each
+logind session scope and renews a lease of at most 12 seconds every four
+seconds. Denial, expiry or a changed assignment closes that scope. A local
+watchdog closes the scope if the monitor stops refreshing it.
+
+For desktops with SMB enabled, the guest exchanges the short-lived launch
+credential for a personal CIFS service ticket over mTLS. The region pins the
+guest certificate to the stable VM ID and the tenant's SMB member, and all
+replicas share an etcd redemption receipt. A directory-managed service
+account delegates only to that member's CIFS SPN. Its keytab stays on the
+regional control plane. The guest verifies the returned cache and provides
+the five-minute ticket to Xsession through a volatile file readable by the
+mapped Linux user. The SMB member applies its existing share grants and
+audits the native AD principal.
 
 Pool policy constrains initial placement and recovery. The enrolled agent
 gets only the workload material required by its assignments. Regional key
