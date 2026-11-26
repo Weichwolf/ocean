@@ -73,7 +73,7 @@ func probeVMFence(t *testing.T, ctx context.Context, r *Region, fencer ed25519.P
 		t.Fatalf("VM advertised a power state while fenced and awaiting placement: %+v %v", live, err)
 	}
 	seedVMWorker(t, ctx, r, worker, true)
-	if previous, err := r.HostVirtualMachineTasks(ctx, worker, []byte(worker), ""); err != nil || len(previous.Tasks) != 0 {
+	if previous, err := r.HostVirtualMachineTasks(ctx, worker, []byte(worker), "", false); err != nil || len(previous.Tasks) != 0 {
 		t.Fatalf("fenced worker recovered its retired assignment: %v", err)
 	}
 	const replacement = "c-kvm"

@@ -2411,6 +2411,16 @@ layers, encrypted volumes and their regional writer grants for the tenant's
 retention or deletion procedure. Deploy the compatible control plane and
 workload and storage workers together.
 
+An enrolled VM worker receives a keyless suspension task for its current
+assignment. It requests guest shutdown, forces QEMU to stop if the grace
+period expires, removes the private VM network, and detaches the LUKS and RBD
+mappings. It then reports a receipt for the same assignment generation and
+operation revision. The control plane records `Ocean.Hosted/offboarding/stopVM`
+once per assignment revision. The encrypted disk and quota reservation remain
+available for the authorized retention or deletion workflow. A legacy VM worker
+sees the assignment withdrawn and can stop the VM, but only a worker with the
+suspension protocol can produce this receipt.
+
 After suspension, an authenticated hosted operator can request deletion of a
 completed Azure Files or managed SMB share. Record the controller's approval in the
 deployment review and pass its opaque UUID as `approvalId`. Use a stable UUID
@@ -2625,6 +2635,13 @@ that same pool, and the audit attributes completion to the actual worker.
 The test removes its images and restores the original guests, standalone SMB
 share and configurations.
 
+`WORKPLACE-57` uses the prepared Debian nested KVM and Ceph fixture from
+`VM-03` with an idle VM worker on `farm-1-node-05`. The test stages the current
+agent binary and a disposable identity under a transient service. It flushes a
+checkpoint in the Debian guest, suspends the tenant with stock Azure CLI, and
+checks the authenticated receipt, QEMU, the network namespace, LUKS and RBD.
+It then reads the checkpoint from a read-only mapping of the retained disk.
+
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
@@ -2634,6 +2651,11 @@ OCEAN_E2E_HOSTED_PODMAN_IMAGE="$(podman image inspect --format '{{.ID}}' docker.
 OCEAN_E2E_HOSTED_CEPH_STATE="$DISPOSABLE_CEPH_LAB_STATE" \
 OCEAN_E2E_SMB_MEMBER_FIXTURE="$DISPOSABLE_SMB_MEMBER_FIXTURE" \
 OCEAN_E2E_SMB_FAILOVER_PROFILE="$PWD/lab/profiles/smb-ha.yaml" \
+OCEAN_E2E_VM_LINUX_STATE="$DISPOSABLE_VM_LAB_STATE" \
+OCEAN_E2E_VM_LINUX_DISK_PIN="$DEBIAN_DISK_SHA256" \
+OCEAN_E2E_VM_LINUX_VARS_PIN="$DEBIAN_VARS_SHA256" \
+OCEAN_E2E_VM_LINUX_SSH_KEY="$DEBIAN_FIXTURE_SSH_KEY" \
+OCEAN_E2E_VM_LINUX_KNOWN_HOSTS="$DEBIAN_FIXTURE_KNOWN_HOSTS" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 

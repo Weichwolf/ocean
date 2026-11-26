@@ -5,6 +5,8 @@ import (
 	"github.com/Weichwolf/ocean/internal/storage"
 )
 
+const VMSuspensionHeader = "Ocean-VM-Suspension"
+
 type VMTask struct {
 	AssignmentID
 	MachineID string                `json:"machineId"`
@@ -26,4 +28,15 @@ type VMReport struct {
 	AssignmentID
 	State        string `json:"state"`
 	DiskReleased bool   `json:"diskReleased,omitempty"`
+}
+
+func (r VMReport) ValidState() bool {
+	switch r.State {
+	case Running, Stopped:
+		return !r.DiskReleased
+	case Removed, Suspended:
+		return r.DiskReleased
+	default:
+		return false
+	}
 }

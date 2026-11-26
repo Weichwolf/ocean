@@ -9,7 +9,6 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
-	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -25,7 +24,7 @@ func (r *Region) authorizeVMWorker(host string, certificate []byte, snapshot *cl
 	return nil
 }
 
-func (r *Region) HostVirtualMachineTasks(ctx context.Context, host string, certificate []byte, after string) (workload.VMTaskPage, error) {
+func (r *Region) HostVirtualMachineTasks(ctx context.Context, host string, certificate []byte, after string, supportsSuspension bool) (workload.VMTaskPage, error) {
 	page := workload.VMTaskPage{Tasks: []workload.VMTask{}}
 	if r.vms == nil {
 		return page, nil
@@ -56,13 +55,14 @@ func (r *Region) HostVirtualMachineTasks(ctx context.Context, host string, certi
 		if !validScope(scope) || !strings.HasPrefix(key, r.armPrefix(scope)+"virtual-machines/") {
 			return page, errors.New("invalid host VM task scope")
 		}
-		if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
-			if errors.Is(err, identity.ErrTenantSuspended) {
-				continue
-			}
-			return workload.VMTaskPage{}, err
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
+			return page, err
 		}
-		task, err := r.vmTask(ctx, scope, host, parts[2], key, read.Header.Revision)
+		if suspension != nil && (!supportsSuspension || suspension.SubscriptionID != scope.SubscriptionID) {
+			continue
+		}
+		task, err := r.vmTask(ctx, scope, host, parts[2], key, read.Header.Revision, suspension != nil)
 		if err != nil {
 			return page, err
 		}
@@ -74,7 +74,7 @@ func (r *Region) HostVirtualMachineTasks(ctx context.Context, host string, certi
 	return page, nil
 }
 
-func (r *Region) vmTask(ctx context.Context, scope arm.SubscriptionScope, host, placement, key string, at int64) (workload.VMTask, error) {
+func (r *Region) vmTask(ctx context.Context, scope arm.SubscriptionScope, host, placement, key string, at int64, suspended bool) (workload.VMTask, error) {
 	empty := workload.VMTask{}
 	read, err := r.client.Get(ctx, key, clientv3.WithRev(at))
 	if err != nil {
@@ -96,6 +96,10 @@ func (r *Region) vmTask(ctx context.Context, scope arm.SubscriptionScope, host, 
 	task := workload.VMTask{AssignmentID: workload.AssignmentID{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID,
 		ID: placement, Generation: vm.Reservation.Generation, Revision: vm.Operation}, MachineID: vm.MachineID,
 		Size: vm.Request.Properties.HardwareProfile.VMSize, State: vm.Desired, Prepared: vm.Prepared, Force: vm.Force, Disk: vm.Disk}
+	if suspended {
+		task.State, task.Force = workload.Suspended, false
+		return task, nil
+	}
 	if vm.Desired != workload.Running {
 		return task, nil
 	}
@@ -121,7 +125,7 @@ func (r *Region) vmTask(ctx context.Context, scope arm.SubscriptionScope, host, 
 func (r *Region) ReportVirtualMachine(ctx context.Context, host string, certificate []byte, report workload.VMReport) error {
 	scope := arm.SubscriptionScope{TenantID: report.TenantID, SubscriptionID: report.SubscriptionID}
 	if r.vms == nil || !validScope(scope) || !identifier.MatchString(report.ID) || !identifier.MatchString(report.Generation) ||
-		!identifier.MatchString(report.Revision) || report.DiskReleased != (report.State == workload.Removed) {
+		!identifier.MatchString(report.Revision) || !report.ValidState() {
 		return enrollment.ErrHostDenied
 	}
 	hostKey := r.hostVMPrefix(host) + scope.TenantID + "/" + scope.SubscriptionID + "/" + report.ID
@@ -148,11 +152,18 @@ func (r *Region) ReportVirtualMachine(ctx context.Context, host string, certific
 		if err != nil {
 			return err
 		}
-		if op == nil || vm.Reservation.HostID != host || vm.Reservation.ID != report.ID || vm.Reservation.Generation != report.Generation ||
-			vm.Operation != report.Revision || vm.Desired != report.State {
+		if op == nil || vm.Fenced || vm.Reservation.HostID != host || vm.Reservation.ID != report.ID || vm.Reservation.Generation != report.Generation ||
+			vm.Operation != report.Revision {
 			return enrollment.ErrWorkloadChanged
 		}
-		if op.Status == arm.OperationSucceeded && vm.Observed == report.State {
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
+			return err
+		}
+		if suspension == nil && report.State != vm.Desired || suspension != nil && (suspension.SubscriptionID != scope.SubscriptionID || report.State != workload.Suspended) {
+			return enrollment.ErrWorkloadChanged
+		}
+		if suspension == nil && op.Status == arm.OperationSucceeded && vm.Observed == report.State {
 			return nil
 		}
 		writerKey := r.writerKey(scope, vm.Disk.ID)
@@ -161,7 +172,7 @@ func (r *Region) ReportVirtualMachine(ctx context.Context, host string, certific
 			return err
 		}
 		var writer volumeWriter
-		if len(writerRows.Kvs) != 1 || json.Unmarshal(writerRows.Kvs[0].Value, &writer) != nil || writer != vm.writer() || op.Status != arm.OperationInProgress {
+		if len(writerRows.Kvs) != 1 || json.Unmarshal(writerRows.Kvs[0].Value, &writer) != nil || writer != vm.writer() {
 			return enrollment.ErrWorkloadChanged
 		}
 		guards := []clientv3.Cmp{
@@ -172,6 +183,21 @@ func (r *Region) ReportVirtualMachine(ctx context.Context, host string, certific
 			clientv3.Compare(clientv3.ModRevision(writerKey), "=", writerRows.Kvs[0].ModRevision),
 		}
 		now := time.Now().UTC()
+		marker := r.offboardingMarker(scope.TenantID)
+		if suspension != nil {
+			decision, err := json.Marshal(suspension)
+			if err != nil {
+				return err
+			}
+			guards = append(guards, clientv3.Compare(clientv3.Value(marker), "=", string(decision)))
+			audit := r.auditOp(scope, arm.AuditEvent{Time: now, Actor: host, Action: "Ocean.Hosted/offboarding/stopVM",
+				Target: vm.Address.ID(scope), Outcome: workload.Suspended})
+			return r.recordHostedWorkerReceipt(ctx, host, r.hostedVMReceiptKey(scope, report.AssignmentID), audit, guards)
+		}
+		if op.Status != arm.OperationInProgress {
+			return enrollment.ErrWorkloadChanged
+		}
+		guards = append(guards, clientv3.Compare(clientv3.Version(marker), "=", 0))
 		op.Status, op.FinishedAt = arm.OperationSucceeded, &now
 		if report.State == workload.Removed {
 			return r.finishVMDeletion(ctx, scope, vm, view, op, at, guards)
@@ -191,6 +217,10 @@ func (r *Region) ReportVirtualMachine(ctx context.Context, host string, certific
 		}
 	}
 	return enrollment.ErrWorkloadChanged
+}
+
+func (r *Region) hostedVMReceiptKey(scope arm.SubscriptionScope, assignment workload.AssignmentID) string {
+	return r.armPrefix(scope) + "hosted-suspensions/virtual-machines/" + assignment.ID + "/" + assignment.Generation + "/" + assignment.Revision
 }
 
 func (r *Region) finishVMDeletion(ctx context.Context, scope arm.SubscriptionScope, vm vmRecord, view arm.InventoryResource,

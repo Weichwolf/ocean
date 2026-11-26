@@ -47,6 +47,9 @@ applicable transfer mechanism and location restrictions before enabling a path.
    Azure Files or managed SMB share deletion. For a failed redundant SMB
    member, retain the signed power-off evidence, the replacement's withdrawal
    acknowledgement and its attributed completion record. [Hosted file deletion](README.md#hosted-workplace-placement-and-audit-retention)
+   For a VM, record the assigned worker's shutdown and disk-detachment
+   acknowledgement. Track the retained encrypted image under the approved
+   retention or deletion workflow.
 3. Keep the authoritative deletion ledger independent of the backups it governs.
    Restore into an isolated environment. Verify that regional startup replays
    subsequent suspensions before accepting requests. Verify denied identities,

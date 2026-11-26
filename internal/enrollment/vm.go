@@ -6,14 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/workload"
 )
 
 type virtualMachineStore interface {
-	HostVirtualMachineTasks(context.Context, string, []byte, string) (workload.VMTaskPage, error)
+	HostVirtualMachineTasks(context.Context, string, []byte, string, bool) (workload.VMTaskPage, error)
 	ReportVirtualMachine(context.Context, string, []byte, workload.VMReport) error
 }
 
@@ -37,7 +36,7 @@ func (a *Authority) virtualMachineTasks(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	page, err := store.HostVirtualMachineTasks(ctx, host, peer.Raw, params.Get("continuation"))
+	page, err := store.HostVirtualMachineTasks(ctx, host, peer.Raw, params.Get("continuation"), r.Header.Get(workload.VMSuspensionHeader) == "1")
 	defer func() {
 		for _, task := range page.Tasks {
 			clear(task.VolumeKey)
@@ -69,7 +68,7 @@ func (a *Authority) virtualMachineStatus(w http.ResponseWriter, r *http.Request)
 	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF ||
 		!hostName.MatchString(report.ID) || !hostName.MatchString(report.TenantID) || !hostName.MatchString(report.SubscriptionID) ||
 		!hostName.MatchString(report.Generation) || !hostName.MatchString(report.Revision) ||
-		!slices.Contains([]string{workload.Running, workload.Stopped, workload.Removed}, report.State) || report.DiskReleased != (report.State == workload.Removed) {
+		!report.ValidState() {
 		reject(w, http.StatusBadRequest, "InvalidWorkloadStatus")
 		return
 	}

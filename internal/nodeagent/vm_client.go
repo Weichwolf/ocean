@@ -29,6 +29,8 @@ func validVMTask(t workload.VMTask) bool {
 		return len(t.VolumeKey) == storage.KeySize && t.Network != nil && t.Network.ValidFor(t.Network.Address.Addr()) && t.Network.Address.Addr().IsPrivate()
 	case workload.Stopped, workload.Removed:
 		return len(t.VolumeKey) == 0 && t.Network == nil
+	case workload.Suspended:
+		return len(t.VolumeKey) == 0 && t.Network == nil && !t.Force
 	default:
 		return false
 	}
@@ -82,6 +84,7 @@ func (j *joinClient) vmTaskPage(ctx context.Context, cursor string) (workload.VM
 	if err != nil {
 		return page, err
 	}
+	request.Header.Set(workload.VMSuspensionHeader, "1")
 	response, err := j.client.Do(request)
 	if err != nil {
 		return page, err
@@ -102,7 +105,7 @@ func (j *joinClient) vmTaskPage(ctx context.Context, cursor string) (workload.VM
 }
 
 func (j *joinClient) reportVM(ctx context.Context, task workload.VMTask, state string) error {
-	report := workload.VMReport{AssignmentID: task.AssignmentID, State: state, DiskReleased: state == workload.Removed}
+	report := workload.VMReport{AssignmentID: task.AssignmentID, State: state, DiskReleased: state == workload.Removed || state == workload.Suspended}
 	body, _ := json.Marshal(report)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, j.url()+"/vm-tasks/status", bytes.NewReader(body))
 	if err != nil {

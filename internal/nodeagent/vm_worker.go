@@ -222,7 +222,8 @@ func (w vmWorker) reconcileVMJobs(ctx context.Context, tasks []workload.VMTask, 
 	}
 	for id, job := range jobs {
 		latest, assigned := seen[id]
-		if job.task.MachineID == "" && assigned || job.task.MachineID != "" && (!assigned || latest.AssignmentID != job.task.AssignmentID) {
+		if job.task.MachineID == "" && assigned || job.task.MachineID != "" &&
+			(!assigned || latest.AssignmentID != job.task.AssignmentID || latest.State != job.task.State) {
 			job.cancel()
 		}
 	}
@@ -351,6 +352,12 @@ func (w vmWorker) applyVMTask(ctx context.Context, task workload.VMTask) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if task.State == workload.Suspended {
+		if err := w.suspendVM(ctx, current); err != nil {
+			return err
+		}
+		return w.client.reportVM(ctx, task, task.State)
+	}
 	if task.State != workload.Running {
 		if err := w.withdrawVM(ctx, current, task.Force); err != nil {
 			return err
@@ -408,6 +415,17 @@ func (w vmWorker) startVM(ctx context.Context, task workload.VMTask, guest qemu.
 		return err
 	}
 	_, err := w.runGuest(ctx, guest, "start", false)
+	return err
+}
+
+func (w vmWorker) suspendVM(ctx context.Context, local vmLocal) error {
+	grace, cancel := context.WithTimeout(ctx, 15*time.Second)
+	err := w.withdrawVM(grace, local, false)
+	expired := errors.Is(grace.Err(), context.DeadlineExceeded)
+	cancel()
+	if err != nil && expired && ctx.Err() == nil {
+		return w.withdrawVM(ctx, local, true)
+	}
 	return err
 }
 

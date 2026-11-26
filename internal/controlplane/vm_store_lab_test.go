@@ -151,10 +151,10 @@ func TestRegionalVirtualMachineStore(t *testing.T) {
 			t.Fatalf("foreign tenant could read %s: %+v %v", target.Path, view, err)
 		}
 	}
-	if page, err := r.HostVirtualMachineTasks(ctx, "a-no-kvm", []byte("a-no-kvm"), ""); len(page.Tasks) != 0 || !errors.Is(err, enrollment.ErrHostDenied) {
+	if page, err := r.HostVirtualMachineTasks(ctx, "a-no-kvm", []byte("a-no-kvm"), "", false); len(page.Tasks) != 0 || !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatalf("unqualified worker could read a VM task: %v", err)
 	}
-	if _, err := r.HostVirtualMachineTasks(ctx, worker, []byte("wrong certificate"), ""); !errors.Is(err, enrollment.ErrHostDenied) {
+	if _, err := r.HostVirtualMachineTasks(ctx, worker, []byte("wrong certificate"), "", false); !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatalf("incorrect certificate could read a VM task: %v", err)
 	}
 	first := readVMStoreTask(t, ctx, r, worker)
@@ -240,7 +240,7 @@ func TestRegionalVirtualMachineStore(t *testing.T) {
 
 func readVMStoreTask(t *testing.T, ctx context.Context, r *Region, worker string) workload.VMTask {
 	t.Helper()
-	page, err := r.HostVirtualMachineTasks(ctx, worker, []byte(worker), "")
+	page, err := r.HostVirtualMachineTasks(ctx, worker, []byte(worker), "", false)
 	if err != nil || len(page.Tasks) != 1 {
 		t.Fatalf("expected one reconciler task, got %d: %v", len(page.Tasks), err)
 	}

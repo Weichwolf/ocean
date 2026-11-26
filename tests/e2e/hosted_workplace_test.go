@@ -63,5 +63,17 @@ func hostedWorkplaceSteps() []harness.Step {
 	ha = requireFile(ha, os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE"), "the SMB HA lab profile in OCEAN_E2E_SMB_FAILOVER_PROFILE")
 	ha = requireFile(ha, filepath.Join(fixture, "failover-state-id"), "the encrypted Samba membership image ID")
 	ha = requireFile(ha, filepath.Join(fixture, "failover-state.key"), "the private Samba membership image key")
-	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha}
+	vm := recovery
+	vm.Name, vm.Cases = "hosted-vm-offboarding", []string{"WORKPLACE-57"}
+	vm.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedVMOffboarding$", "./internal/controlplane"}
+	vm.Timeout = 9 * time.Minute
+	for _, input := range []string{"OCEAN_E2E_VM_LINUX_STATE", "OCEAN_E2E_VM_LINUX_DISK_PIN", "OCEAN_E2E_VM_LINUX_VARS_PIN"} {
+		if vm.BlockedReason == "" && os.Getenv(input) == "" {
+			vm.BlockedReason = "Provide " + input + " for the disposable hosted VM KVM lab."
+		}
+	}
+	vm = requireFile(vm, filepath.Join(os.Getenv("OCEAN_E2E_VM_LINUX_STATE"), "state.json"), "the prepared KVM lab")
+	vm = requireFile(vm, os.Getenv("OCEAN_E2E_VM_LINUX_SSH_KEY"), "the disposable Debian VM SSH key")
+	vm = requireFile(vm, os.Getenv("OCEAN_E2E_VM_LINUX_KNOWN_HOSTS"), "the pinned Debian VM host key")
+	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha, vm}
 }

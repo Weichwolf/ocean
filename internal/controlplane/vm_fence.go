@@ -9,6 +9,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -121,6 +122,12 @@ func (r *Region) relocateFencedVM(ctx context.Context, ticket vmFenceTicket, que
 	if !validScope(scope) || !storage.ValidID(proof.VolumeID) || !ticket.Address.Valid() || queueKey != r.vmFenceKey(scope, proof.VolumeID) {
 		return errors.New("queued VM fence has an invalid scope")
 	}
+	if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return nil
+		}
+		return err
+	}
 	view, vm, current, revision, _, err := r.readVM(ctx, scope, ticket.Address)
 	if err != nil {
 		return err
@@ -169,6 +176,7 @@ func (r *Region) relocateFencedVM(ctx context.Context, ticket vmFenceTicket, que
 	cellKey := r.reservationKey(scope, old.Cell, old.ID)
 	guards := append(candidate.guards, priorUsage.compare(), clientv3.Compare(clientv3.ModRevision(policyKey), "=", policyRevision),
 		clientv3.Compare(clientv3.ModRevision(key), "=", revision), clientv3.Compare(clientv3.ModRevision(queueKey), "=", queueRevision),
+		clientv3.Compare(clientv3.Version(r.offboardingMarker(scope.TenantID)), "=", 0),
 		clientv3.Compare(clientv3.Value(writerKey), "=", string(encodedWriter)),
 		clientv3.Compare(clientv3.Value(placementKey), "=", string(encodedPlacement)), clientv3.Compare(clientv3.Value(cellKey), "=", string(encodedPlacement)),
 		clientv3.Compare(clientv3.Version(newAssignment), "=", 0), clientv3.Compare(clientv3.Version(newTask), "=", 0))
