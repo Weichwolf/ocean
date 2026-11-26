@@ -40,6 +40,7 @@ type regionConfig struct {
 	PublicIPv4Addresses []netip.Addr              `json:"publicIPv4Addresses"`
 	ApplicationGateways *applicationGatewayConfig `json:"applicationGateways"`
 	WireGuard           *wireGuardConfig          `json:"wireGuard"`
+	IPsec               *ipsecConfig              `json:"ipsec,omitempty"`
 	Workloads           *workloadConfig           `json:"workloads"`
 	Storage             *storageConfig            `json:"storage"`
 	SMBMembers          []smbBinding              `json:"smbMembers,omitempty"`
@@ -82,7 +83,8 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			cfg.Region.Workloads == nil || !validCapacity(*cfg.Region.ManagedDirectories)) {
 		return config.Server{}, service.Hooks{}, errors.New("managed directories require tenant onboarding, workload placement and positive controller capacity")
 	}
-	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.Workloads != nil || cfg.Region.Storage != nil || cfg.Region.Telemetry != nil) && cfg.HostEnrollment == nil {
+	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.IPsec != nil ||
+		cfg.Region.Workloads != nil || cfg.Region.Storage != nil || cfg.Region.Telemetry != nil) && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("gateway and workload execution require enrolled hosts")
 	}
 	var hooks service.Hooks
@@ -159,6 +161,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name, StorageSuffix: cfg.Identity.Cloud.StorageEndpoint,
 					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Monitor: region, Inventory: region, Networks: region, Deployments: region,
 					GatewayDeployments: region, SiteConnections: region, FunctionPlans: cfg.Region.FunctionPlans, PrincipalExists: compatibility.RolePrincipalExists}
+				if region.ipsec != nil {
+					resources.VPN = region
+				}
 				if region.workloads != nil {
 					resources.Containers = region
 					resources.ReplicaSets = region
@@ -215,6 +220,7 @@ type Region struct {
 	publicIPv4        []netip.Addr
 	gatewayControl    *gatewayControl
 	wireGuard         *wireGuardConfig
+	ipsec             *ipsecControl
 	workloads         *workloadControl
 	directoryCapacity enrollment.Capacity
 	directoryFencer   ed25519.PublicKey
@@ -239,6 +245,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, err
 	}
 	wireGuard, err := configureWireGuard(cfg.WireGuard, gatewayControl)
+	if err != nil {
+		return nil, err
+	}
+	ipsec, err := openIPsec(cfg.IPsec, publicIPv4)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +295,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, fmt.Errorf("open telemetry backend: %w", err)
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
-		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
+		gatewayControl: gatewayControl, wireGuard: wireGuard, ipsec: ipsec, workloads: workloads, storage: storage, cell: cfg.InitialCell,
 		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
@@ -327,6 +337,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if err := region.bootstrapWireGuard(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapIPsec(ctx); err != nil {
 		return err
 	}
 	if err := region.bootstrapWorkloads(ctx); err != nil {

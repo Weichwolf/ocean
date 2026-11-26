@@ -45,9 +45,29 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `scale-16` | Sixteen small nodes, mixed RAM and CPU profiles, placement, and worker drain |
 | `geo-4x3` | Four independent logical farms and initial WireGuard mesh and federation setup |
 | `geo-4x4` | Enroll one additional node per farm, then exercise node, tunnel, and whole-farm loss |
+| `ipsec-gateway` | Check IKEv2 peer authentication, routed traffic, forwarding expiry, and cleanup in a disposable Debian KVM guest |
+| `ipsec-control` | Check regional VPN reservations, assignment authorization, status freshness, and teardown against real etcd |
+| `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 | `vm-worker` | Exercise stock Azure CLI VM lifecycle, tenant boundaries and quota accounting, then confirm out-of-band fencing and read a persisted Windows checkpoint on the replacement |
+
+Set `OCEAN_E2E_IPSEC_LAB_STATE` to the prepared guest state from the
+[IPsec lab guide](../../lab/README.md#routed-ipsec-gateway-probe) to run
+`IPSEC-01`. The artifact includes the strongSwan package versions and the
+measured time to working IKE and CHILD SAs. The Azure CLI VPN lifecycle
+has its own acceptance case, `PROFILE-01`.
+
+Run `IPSEC-02` through the `ipsec-control` profile with the disposable
+etcd endpoint and mTLS client files described in the
+[regional IPsec lab guide](../../lab/README.md#regional-ipsec-reservations).
+Its acknowledged states come from authenticated worker fixtures.
+
+The `ipsec-profile` runner exercises `PROFILE-01` with signed CLI login,
+the regional API, an enrolled Debian package, and an independently
+configured native customer peer. It records command results, connection
+and expiry measurements, rejected paths, and cleanup. Follow the
+[IPsec profile lab setup](../../lab/README.md#ipsec-profile-acceptance-run).
 
 Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
 disposable endpoint to verify regional replica and writer fencing,

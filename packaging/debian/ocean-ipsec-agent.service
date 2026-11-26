@@ -1,0 +1,17 @@
+[Unit]
+Description=ocean IPsec gateway assignments
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ocean-agent/ipsec.json
+
+[Service]
+ExecStart=/usr/bin/ocean-network-agent -mode ipsec
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=20s
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,7 @@ type Server struct {
 	Networks            NetworkStore
 	Deployments         NetworkDeploymentStore
 	GatewayDeployments  ApplicationGatewayDeploymentStore
+	VPN                 VPNStore
 	SiteConnections     SiteConnectionStore
 	Containers          ContainerGroupStore
 	VirtualMachines     VirtualMachineStore
@@ -197,6 +198,11 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 			return route, false
 		}
 		route.collection = "applicationGateway"
+	case "virtualnetworkgateways", "localnetworkgateways", "connections":
+		if group == "" {
+			return route, false
+		}
+		route.collection = "vpn"
 	default:
 		return route, false
 	}
@@ -286,6 +292,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.network(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "applicationGateway":
 			s.applicationGatewayResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
+		case "vpn":
+			s.vpnResource(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "resourceLogs":
 			s.resourceLogs(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
 		case "activityLog", "regionUsage", "resourceHealth", "workloadMetrics":
@@ -328,7 +336,7 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 
 func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *http.Request, scope SubscriptionScope, route armRoute, subject string) bool {
 	read := r.Method == http.MethodGet || r.Method == http.MethodHead
-	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress"
+	networkResource := route.collection == "network" || route.collection == "securityGroup" || route.collection == "egress" || route.collection == "vpn"
 	functionRead := route.collection == "functionSite" && !strings.Contains(strings.ToLower(route.name), "/keys")
 	if functionRead && r.Method == http.MethodPost && strings.HasSuffix(strings.ToLower(route.name), "/publishxml") {
 		return true // The handler applies group scope and returns only the OCI deployment method.
@@ -403,6 +411,10 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 		}
 		if route.collection == "egress" {
 			action = egressAction(r.Method, egressResourceType(strings.Split(route.name, "/")[1]))
+		}
+		if route.collection == "vpn" {
+			kind, _ := vpnResourceType(strings.Split(route.name, "/")[1])
+			action = egressAction(r.Method, kind)
 		}
 		event := AuditEvent{Time: time.Now().UTC(), Actor: subject, Action: action, Target: r.URL.Path, Outcome: "Denied"}
 		if err := s.Roles.RecordAudit(ctx, scope, event); err != nil {

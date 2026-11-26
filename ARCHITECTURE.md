@@ -251,6 +251,17 @@ Drops surface through gap records. Provisioning and writer fencing are
 exercised during a full telemetry-store outage. See
 [regional observability](lab/README.md#regional-observability).
 
+## Optional IPsec profile
+
+A regional slot authorizes one subscription, public IPv4 endpoint, workload
+subnet and enrolled gateway host. ARM binds the slot and network references
+in etcd, seals the shared key and makes it available over mTLS to the assigned
+host. The gateway installs an XFRM route with strongSwan and limits
+forwarding to the approved private prefixes. The ARM status uses recent
+kernel and IKE observations. Connection withdrawal closes the tunnel.
+Gateway withdrawal releases the public address and subnet reservations
+after the worker confirms removal. [IPsec lab and acceptance](lab/README.md#regional-ipsec-reservations)
+
 ## Federation and physical deployment
 
 The planned federation profile keeps management, identity and storage quorums

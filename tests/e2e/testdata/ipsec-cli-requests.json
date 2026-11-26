@@ -1,0 +1,139 @@
+[
+  {
+    "method": "PUT",
+    "path": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/virtualNetworkGateways/cloud",
+    "query": {
+      "api-version": [
+        "2025-01-01"
+      ]
+    },
+    "body": {
+      "location": "ocean-lab",
+      "properties": {
+        "activeActive": false,
+        "gatewayType": "Vpn",
+        "ipConfigurations": [
+          {
+            "name": "vnetGatewayConfig0",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/publicIPAddresses/cloudip"
+              },
+              "subnet": {
+                "id": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/virtualNetworks/cloudnet/subnets/GatewaySubnet"
+              }
+            }
+          }
+        ],
+        "sku": {
+          "name": "VpnGw1",
+          "tier": "VpnGw1"
+        },
+        "vpnType": "RouteBased"
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/localNetworkGateways/peer",
+    "query": {
+      "api-version": [
+        "2021-08-01"
+      ]
+    },
+    "body": {
+      "location": "ocean-lab",
+      "properties": {
+        "gatewayIpAddress": "198.51.100.7",
+        "localNetworkAddressSpace": {
+          "addressPrefixes": [
+            "10.55.0.0/24"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/subscriptions/22222222-2222-4222-8222-222222222222/resourcegroups/ipsec/providers/Microsoft.Resources/deployments/vpn_connection_deploy_kRjvm35atm6Ho7naszdsOU2DmAggzcgU",
+    "query": {
+      "api-version": [
+        "2024-11-01"
+      ]
+    },
+    "body": {
+      "properties": {
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "sharedKey": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Secure sharedKey"
+              }
+            }
+          },
+          "variables": {},
+          "resources": [
+            {
+              "type": "Microsoft.Network/connections",
+              "name": "tunnel",
+              "location": "ocean-lab",
+              "tags": {},
+              "apiVersion": "2025-01-01",
+              "dependsOn": [],
+              "properties": {
+                "virtualNetworkGateway1": {
+                  "id": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/virtualNetworkGateways/cloud"
+                },
+                "enableBgp": false,
+                "connectionType": "IPSec",
+                "routingWeight": 10,
+                "usePolicyBasedTrafficSelectors": false,
+                "expressRouteGatewayBypass": null,
+                "localNetworkGateway2": {
+                  "id": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/localNetworkGateways/peer"
+                },
+                "sharedKey": "[parameters('sharedKey')]"
+              }
+            }
+          ],
+          "outputs": {
+            "resource": {
+              "type": "object",
+              "value": "[reference('tunnel')]"
+            }
+          }
+        },
+        "parameters": {
+          "sharedKey": {
+            "value": "disposable-ipsec-test-key"
+          }
+        },
+        "mode": "incremental"
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/connections/tunnel",
+    "query": {
+      "api-version": [
+        "2025-01-01"
+      ]
+    },
+    "body": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/ipsec/providers/Microsoft.Network/connections/tunnel",
+    "query": {
+      "api-version": [
+        "2025-01-01"
+      ]
+    },
+    "body": null
+  }
+]

@@ -220,6 +220,7 @@ func decodeOperation(data []byte, id string) (*arm.Operation, error) {
 	}
 	switch operation.Kind {
 	case deleteResourceGroup, createApplicationGateway, deleteApplicationGateway, createSiteConnection, deleteSiteConnection,
+		createIPsecGateway, deleteIPsecGateway, createIPsecConnection, deleteIPsecConnection,
 		createContainer, startContainer, stopContainer, restartContainer, deleteContainer, createFileShare, deleteFileShare, fenceContainer,
 		updateFunction, integrateFunction, configureReplicaSet, deleteReplicaSet, createVM, startVM, stopVM, deleteVM, recoverVM,
 		putSMBShare, removeSMBShare, recoverSMBShare:

@@ -45,9 +45,9 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 		return
 	}
 	version := deploymentAPIVersion
-	applicationGateway := s.GatewayDeployments != nil && r.URL.Query().Get("api-version") == ApplicationGatewayDeploymentVersion
-	if applicationGateway {
-		version = ApplicationGatewayDeploymentVersion
+	legacy := (s.GatewayDeployments != nil || s.VPN != nil) && r.URL.Query().Get("api-version") == resourceAPIVersion
+	if legacy {
+		version = resourceAPIVersion
 	}
 	if _, ok := readQuery(w, r, version, nil); !ok {
 		return
@@ -63,7 +63,7 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 			inventoryError(w, err)
 			return
 		}
-		if resource == nil || applicationGateway && resource.APIVersion != version {
+		if resource == nil || legacy && resource.APIVersion != version {
 			writeError(w, http.StatusNotFound, "DeploymentNotFound", "The deployment does not exist.")
 			return
 		}
@@ -81,18 +81,19 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 	}
 	var input deploymentInput
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256<<10))
+	defer clear(body)
 	if err != nil || strictJSON(bytes.NewReader(quoteTemplateKey(body)), &input) != nil {
 		writeError(w, http.StatusBadRequest, "InvalidTemplate", "The deployment request is not a supported inline template.")
 		return
 	}
 	properties := input.Properties
-	if applicationGateway {
+	if legacy {
 		if operation == "whatif" || properties.WhatIfSettings != nil ||
 			!strings.EqualFold(properties.Mode, "Incremental") || properties.ValidationLevel != "" && properties.ValidationLevel != "Provider" {
-			writeError(w, http.StatusBadRequest, "InvalidDeployment", "Use an incremental HTTPS Application Gateway deployment.")
+			writeError(w, http.StatusBadRequest, "InvalidDeployment", "Use an incremental gateway deployment.")
 			return
 		}
-		s.applicationGatewayDeployment(ctx, w, scope, actor, address, input, commit)
+		s.legacyGatewayDeployment(ctx, w, scope, actor, address, input, commit)
 		return
 	}
 	format := "FullResourcePayloads"
@@ -128,6 +129,30 @@ func (s Server) deployment(ctx context.Context, w http.ResponseWriter, r *http.R
 	default:
 		writeJSON(w, createdStatus(created), last.view(scope))
 	}
+}
+
+func (s Server) legacyGatewayDeployment(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, actor string,
+	address ResourceAddress, input deploymentInput, commit bool) {
+	raw := input.Properties.Template
+	if len(raw) != 0 && raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			raw = json.RawMessage(text)
+		}
+	}
+	var envelope struct {
+		Resources []struct{ Type string } `json:"resources"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && len(envelope.Resources) == 1 && envelope.Resources[0].Type == VPNConnectionType {
+		input.Properties.Template = raw
+		s.vpnConnectionDeployment(ctx, w, scope, actor, address, input, commit)
+		return
+	}
+	if s.GatewayDeployments == nil {
+		writeError(w, http.StatusBadRequest, "InvalidTemplate", "The gateway deployment template is unsupported.")
+		return
+	}
+	s.applicationGatewayDeployment(ctx, w, scope, actor, address, input, commit)
 }
 
 // Azure CLI 2.93.0 splices the inline template into the serialized body
@@ -174,6 +199,8 @@ func deploymentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "InvalidTemplate", err.Error())
 	case errors.Is(err, ErrLinkedResourceMissing):
 		writeError(w, http.StatusBadRequest, "InvalidResourceReference", err.Error())
+	case errors.Is(err, ErrLinkedResourceInUse):
+		writeError(w, http.StatusConflict, "ResourceInUse", err.Error())
 	case errors.Is(err, ErrPublicIPInUse):
 		writeError(w, http.StatusConflict, "PublicIPAddressInUse", err.Error())
 	case errors.Is(err, ErrPublicIPPoolExhausted):
