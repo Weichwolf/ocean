@@ -2038,7 +2038,7 @@ Install Bicep CLI 0.49.2 and Debian's `libicu76` in the operator guest. Run `pyt
 
 `IPSEC-01` starts two strongSwan IKEv2 peers and two client namespaces inside
 one disposable Debian 13 KVM guest. The peer uses a preshared key,
-AES-256/SHA-256, MODP 2048 with PFS, and a dedicated XFRM interface. The
+AES-256/SHA-256, MODP 2048 for IKE and CHILD SA rekeying, and a dedicated XFRM interface. The
 verifier checks installed CHILD SAs, bidirectional packets between the
 approved IPv4 prefixes, blocked traffic with an incorrect key or unauthorized
 addresses, forwarding lease expiry and renewal, and repeatable teardown.
@@ -2083,8 +2083,8 @@ OCEAN_E2E_PROFILE=ipsec-gateway OCEAN_E2E_IPSEC_LAB_STATE="$OCEAN_IPSEC_STATE" \
 The runner writes `results.tsv`, `report.md`, and
 `evidence/routed-ipsec-gateway.log` to the run directory. The log records
 package versions and time to working IKE and CHILD SAs. `PROFILE-01`
-requires an additional run through the stock Azure CLI against ocean's
-management endpoint with the real tunnel and cleanup as evidence.
+exercises the same data path through the stock Azure CLI and installed
+gateway agent. See the [IPsec profile acceptance run](#ipsec-profile-acceptance-run).
 
 The [captured Azure CLI 2.93.0 request fixture](../tests/e2e/testdata/ipsec-cli-requests.json)
 covers the virtual and local gateway PUTs, the inline incremental connection
@@ -2166,6 +2166,32 @@ OCEAN_E2E_PROFILE=ipsec-control \
   OCEAN_E2E_ETCD_PKI=/path/to/disposable-etcd-pki \
   go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
 ```
+
+### IPsec profile acceptance run
+
+Prepare the disposable guest from [the routed IPsec probe](#routed-ipsec-gateway-probe)
+and install the current `ocean-agent` Debian package in it. Keep
+`farm-1-node-01` as the only running guest in the selected state. Use the
+dedicated mTLS etcd endpoint from the regional IPsec reservation check and
+Azure CLI 2.93.0 without extensions on the local test host.
+
+```sh
+OCEAN_E2E_PROFILE=ipsec-profile \
+  OCEAN_E2E_IPSEC_LAB_STATE="$OCEAN_IPSEC_STATE" \
+  OCEAN_E2E_ETCD_ENDPOINTS=https://127.0.0.1:2379 \
+  OCEAN_E2E_ETCD_PKI=/path/to/disposable-etcd-pki \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The test starts ocean's ARM and enrollment handlers with signed lab
+identity tokens and real etcd, and enrolls the packaged gateway agent with
+its own certificate. The pinned CLI runs the VPN commands from the
+[command matrix](../tests/e2e/testdata/arm-contract.tsv). A native
+strongSwan customer peer checks the wrong-key denial, both traffic
+directions, routing limits, worker pause, renewed access and repeatable
+withdrawal. The report links the measured connection and expiry times
+in Markdown and TSV. Both peers run in independent namespaces in one
+KVM guest.
 
 ## Routed WireGuard gateway
 

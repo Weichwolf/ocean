@@ -1,4 +1,11 @@
 case_id	command_id	azure_cli	extensions	api_version	command
+PROFILE-01	virtual-gateway-create	2.93.0	none	2025-01-01	network vnet-gateway create --resource-group {group} --name {virtual_gateway} --location {location} --vnet {vnet} --public-ip-addresses {public_ip} --gateway-type Vpn --vpn-type RouteBased --sku VpnGw1 -o json
+PROFILE-01	local-gateway-create	2.93.0	none	2021-08-01	network local-gateway create --resource-group {group} --name {local_gateway} --location {location} --gateway-ip-address {peer_ip} --local-address-prefixes {peer_prefix} -o json
+PROFILE-01	connection-create	2.93.0	none	2024-11-01	network vpn-connection create --resource-group {group} --name {connection} --location {location} --vnet-gateway1 {virtual_gateway} --local-gateway2 {local_gateway} --shared-key {shared_key} -o json
+PROFILE-01	connection-show	2.93.0	none	2025-01-01	network vpn-connection show --resource-group {group} --name {connection} -o json
+PROFILE-01	connection-delete	2.93.0	none	2025-01-01	network vpn-connection delete --resource-group {group} --name {connection}
+PROFILE-01	local-gateway-delete	2.93.0	none	2021-08-01	network local-gateway delete --resource-group {group} --name {local_gateway}
+PROFILE-01	virtual-gateway-delete	2.93.0	none	2025-01-01	network vnet-gateway delete --resource-group {group} --name {virtual_gateway}
 CONTRACT-02	provider-show	2.93.0	none	2024-11-01	provider show --namespace Microsoft.Resources -o json
 CONTRACT-02	group-create	2.93.0	none	2024-11-01	group create --name {group} --location {location} --tags ocean-fixture={tag} -o json
 CONTRACT-02	group-show	2.93.0	none	2024-11-01	group show --name {group} -o json

@@ -22,7 +22,9 @@ topology, workload paths, and availability profiles.
 - **Networking.** Create IPv4 virtual networks, subnets, firewall rules,
   public IPs, HTTPS ingress with Application Gateway, and fixed egress with NAT
   Gateway. Connect on-premises networks over redundant WireGuard gateways.
-  Preview and apply the supported network-only Bicep template.
+  Preview and apply the supported network-only Bicep template. The optional
+  route-based IPsec profile implements selected `az network` gateway and
+  site-to-site connection commands. [IPsec profile](lab/README.md#regional-ipsec-reservations)
 - **Operations.** View inventory, health, logs and audit events, measured
   resource usage, enforced quotas, and selected Azure Monitor and Application
   Insights metrics and queries.
