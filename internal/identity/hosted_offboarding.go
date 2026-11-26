@@ -27,6 +27,7 @@ func (d HostedOffboarding) Valid(tenant string) bool {
 type HostedOffboardingStore interface {
 	HostedOffboarding(context.Context, string) (*HostedOffboarding, error)
 	SuspendHostedTenant(context.Context, string, string, string) (*HostedOffboarding, error)
+	HostedRealmSuspendedAt(context.Context, HostedOffboarding) (time.Time, error)
 }
 
 func (c *Compatibility) EnableHostedOffboarding(store HostedOffboardingStore) error {
@@ -66,7 +67,20 @@ func (c *Compatibility) hostedOffboarding(w http.ResponseWriter, req *http.Reque
 	case err != nil:
 		armError(w, http.StatusServiceUnavailable, "ServiceUnavailable", "The hosted offboarding decision is temporarily unavailable.")
 	default:
-		writeJSON(w, http.StatusOK, decision)
+		confirmed, err := c.offboarding.HostedRealmSuspendedAt(ctx, *decision)
+		if err != nil {
+			armError(w, http.StatusServiceUnavailable, "ServiceUnavailable", "The hosted identity status is temporarily unavailable.")
+			return
+		}
+		status := "Pending"
+		if !confirmed.IsZero() {
+			status = "Confirmed"
+		}
+		writeJSON(w, http.StatusOK, struct {
+			HostedOffboarding
+			IdentityState       string    `json:"identityState"`
+			IdentityConfirmedAt time.Time `json:"identityConfirmedAt,omitzero"`
+		}{*decision, status, confirmed})
 	}
 }
 

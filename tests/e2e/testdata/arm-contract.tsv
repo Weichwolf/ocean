@@ -254,3 +254,5 @@ WORKPLACE-57	hosted-vm-suspended-read	2.93.0	none	2024-03-01	rest --method get -
 WORKPLACE-58	hosted-directory-create	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 --body @{directory_request_json} -o json
 WORKPLACE-58	hosted-directory-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
 WORKPLACE-58	hosted-directory-suspended-read	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 -o json
+WORKPLACE-59	hosted-keycloak-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
+WORKPLACE-59	hosted-keycloak-confirmation	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 -o json

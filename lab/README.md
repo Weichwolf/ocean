@@ -2392,6 +2392,23 @@ az rest --method put --url "$offboarding" --body "$OCEAN_OFFBOARDING_REQUEST"
 az rest --method get --url "$offboarding"
 ```
 
+The identity controller checks the suspension against the independent
+deletion ledger before it touches Keycloak. It uses the configured private
+admin origins and requires the realm's `oceanRegistration` attribute to match
+the subscription. It disables the realm, calls Keycloak's realm-wide logout
+and verifies the disabled state and zero online client sessions. The response
+reports `identityState: Pending` until these checks succeed. It then reports
+`Confirmed` and `identityConfirmedAt`. The activity log records
+`Ocean.Hosted/offboarding/suspendIdentity` once for the decision.
+The controller retries failed checks and rechecks confirmations older than 30
+seconds as it sweeps the suspended tenants. A failed recheck returns the
+status to `Pending`. Evidence also expires after two minutes. ARM access
+remains denied while Keycloak is unavailable. Applications that
+validate JWTs locally or maintain their own browser sessions need their own
+expiry or revocation controls. During recovery keep public identity ingress
+isolated until the restored controller verifies the realm again.
+[Keycloak Admin REST API](https://www.keycloak.org/docs-api/latest/rest-api/index.html)
+
 After suspension, a connected container worker receives a suspension task
 bound to the current placement generation. It stops the Podman workload and
 any Function storage or telemetry companions. The network worker drops the
@@ -2658,6 +2675,17 @@ and checks the withdrawal receipts against both native controllers. The
 Debian client verifies DNS, fresh Kerberos and SYSVOL before suspension and
 checks direct DNS, Kerberos, LDAP and SMB denial afterward.
 
+`WORKPLACE-59` uses a disposable Keycloak 26.8.2 instance over HTTPS. Supply
+an owner-readable Keycloak admin secret file and a service account that can
+create and remove the two test realms and inspect their sessions. The test
+uses native authorization code with PKCE and exercises the production
+controller while the private admin path is temporarily unavailable. It
+verifies that realm suspension blocks established sessions and refresh grants,
+leaves the neighboring realm available, and is reapplied after restoring an
+earlier regional snapshot and deliberately re-enabling the target realm. A
+second admin outage verifies that confirmation expires without duplicating the
+audit entry when connectivity returns.
+
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
@@ -2674,6 +2702,10 @@ OCEAN_E2E_VM_LINUX_SSH_KEY="$DEBIAN_FIXTURE_SSH_KEY" \
 OCEAN_E2E_VM_LINUX_KNOWN_HOSTS="$DEBIAN_FIXTURE_KNOWN_HOSTS" \
 OCEAN_E2E_PACKAGED_DIRECTORY_STATE="$DISPOSABLE_DIRECTORY_LAB_STATE" \
 OCEAN_E2E_SAMBA_IMAGE="$PINNED_SAMBA_IMAGE_ID" \
+OCEAN_E2E_HOSTED_KEYCLOAK="$DISPOSABLE_KEYCLOAK_HTTPS_ORIGIN" \
+OCEAN_E2E_HOSTED_KEYCLOAK_CA="$DISPOSABLE_KEYCLOAK_CA_FILE" \
+OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT="$DISPOSABLE_KEYCLOAK_ADMIN_CLIENT" \
+OCEAN_E2E_KEYCLOAK_ADMIN_SECRET="$DISPOSABLE_KEYCLOAK_ADMIN_SECRET_FILE" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 

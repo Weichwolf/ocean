@@ -178,6 +178,17 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfig, cli, operatorRealm, operatorClient, issuer string,
 	issuerCert *x509.Certificate, workers ...enrollment.Approval) (string, *http.Client, func(string, string, string, string, string) []byte, func(string) (string, []byte)) {
 	t.Helper()
+	return startHostedLabAPI(t, ctx, region, cli, operatorRealm, operatorClient, issuer, issuerCert, nil, workers...)
+}
+
+type hostedLabIdentityAdmin struct {
+	Origin, Client, SecretFile string
+	CA                         []byte
+}
+
+func startHostedLabAPI(t *testing.T, ctx context.Context, region regionConfig, cli, operatorRealm, operatorClient, issuer string,
+	issuerCert *x509.Certificate, admin *hostedLabIdentityAdmin, workers ...enrollment.Approval) (string, *http.Client, func(string, string, string, string, string) []byte, func(string) (string, []byte)) {
+	t.Helper()
 	dir := t.TempDir()
 	write := func(name string, data []byte) string {
 		t.Helper()
@@ -215,16 +226,22 @@ func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfi
 	address := disposableEtcdAddress(t)
 	origin := "https://" + address
 	secret := write("onboarding.key", []byte(rand.Text()+rand.Text()))
+	issuerCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuerCert.Raw})
+	onboarding := identity.OnboardingConfig{OperatorTenant: operatorRealm, OperatorClient: operatorClient,
+		AdminEndpoints: []string{"https://admin.ocean.test"}, AdminClient: "fixture", AdminSecretFile: secret, RegionalKeyFile: secret}
+	if admin != nil {
+		onboarding.AdminEndpoints, onboarding.AdminClient, onboarding.AdminSecretFile = []string{admin.Origin}, admin.Client, admin.SecretFile
+		issuerCA = append(issuerCA, admin.CA...)
+	}
 	if region.OperationController == nil {
 		initial := false
 		region.OperationController = &initial
 	}
 	contents, err := json.Marshal(settings{Server: config.Server{ListenAddress: address, TLS: tlsSettings}, Region: &region,
 		HostEnrollment: &enrollment.Config{CertificateFile: caFile, KeyFile: keyFile("api-ca.key", signer), InventoryFile: write("inventory.json", inventory)},
-		Identity: &identity.Config{Provider: issuer, Authority: issuer, ProviderCAFile: pemFile("issuer.pem", "CERTIFICATE", issuerCert.Raw),
-			Cloud: &identity.CloudEndpoints{ResourceManager: origin, MicrosoftGraph: "https://graph.ocean.test"},
-			Onboarding: &identity.OnboardingConfig{OperatorTenant: operatorRealm, OperatorClient: operatorClient,
-				AdminEndpoints: []string{"https://admin.ocean.test"}, AdminClient: "fixture", AdminSecretFile: secret, RegionalKeyFile: secret}}})
+		Identity: &identity.Config{Provider: issuer, Authority: issuer, ProviderCAFile: write("issuer.pem", issuerCA),
+			Cloud:      &identity.CloudEndpoints{ResourceManager: origin, MicrosoftGraph: "https://graph.ocean.test"},
+			Onboarding: &onboarding}})
 	if err != nil {
 		t.Fatal(err)
 	}

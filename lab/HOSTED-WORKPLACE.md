@@ -53,10 +53,16 @@ applicable transfer mechanism and location restrictions before enabling a path.
    For a managed directory, collect both controller withdrawal acknowledgements
    and test client access to the private domain endpoints. Track the retained
    directory volumes and any offline copies in the approved retention decision.
+   For Keycloak, record the `Confirmed` state and `identityConfirmedAt` from
+   the operator API. Verify that application-managed sessions and locally
+   validated tokens expire or are revoked through the application's controls.
 3. Keep the authoritative deletion ledger independent of the backups it governs.
    Restore into an isolated environment. Verify that regional startup replays
    subsequent suspensions before accepting requests. Verify denied identities,
    service shutdown, deletion of recovered data and the approval to reopen.
+   Keep public Keycloak ingress isolated after an identity data restore.
+   Reopen it after the current controller has confirmed the previously suspended
+   realms again and application access has been checked.
 4. Exercise the incident route. Record discovery time, affected scope, initial
    containment, tenant notice and follow-up. The processor notifies the
    controller without undue delay after awareness of a personal data breach.

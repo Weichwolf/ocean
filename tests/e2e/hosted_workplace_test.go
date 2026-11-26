@@ -83,5 +83,14 @@ func hostedWorkplaceSteps() []harness.Step {
 		directory.BlockedReason = "Provide the disposable Samba KVM state and pinned Samba image."
 	}
 	directory = requireFile(directory, filepath.Join(os.Getenv("OCEAN_E2E_PACKAGED_DIRECTORY_STATE"), "state.json"), "the three-node directory lab")
-	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha, vm, directory}
+	keycloak := recovery
+	keycloak.Name, keycloak.Cases = "hosted-keycloak-offboarding", []string{"WORKPLACE-59"}
+	keycloak.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-run", "^TestHostedKeycloakOffboarding$", "./internal/controlplane"}
+	keycloak.Timeout = 5 * time.Minute
+	if keycloak.BlockedReason == "" && (os.Getenv("OCEAN_E2E_HOSTED_KEYCLOAK") == "" || os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT") == "") {
+		keycloak.BlockedReason = "Provide the disposable Keycloak issuer URL and admin client ID."
+	}
+	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_HOSTED_KEYCLOAK_CA"), "the Keycloak CA file in OCEAN_E2E_HOSTED_KEYCLOAK_CA")
+	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin secret file in OCEAN_E2E_KEYCLOAK_ADMIN_SECRET")
+	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha, vm, directory, keycloak}
 }

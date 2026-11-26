@@ -143,6 +143,7 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
 				if region.deletionLedger != nil {
 					go region.reconcileHostedOffboarding(ctx, logger)
+					go region.reconcileHostedIdentity(ctx, logger, compatibility.SuspendHostedRealm)
 				}
 				if region.auditRetention != 0 {
 					go region.reconcileAuditRetention(ctx, logger)
