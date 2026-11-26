@@ -235,6 +235,7 @@ func (r *Region) retryContainerCreate(ctx context.Context, scope arm.Subscriptio
 		wanted.Function.Runtime.MasterKey = prior.Function.Runtime.MasterKey
 		wanted.Function.Runtime.Configuration = prior.Function.Runtime.Configuration
 		wanted.Function.Runtime.Request = prior.Function.Runtime.Request
+		wanted.Function.Runtime.Package = prior.Function.Runtime.Package
 	}
 	if !reflect.DeepEqual(prior, wanted) {
 		return resource, op, true, arm.ErrContainerChanged

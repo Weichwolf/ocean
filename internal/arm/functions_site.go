@@ -69,6 +69,8 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 		s.functionConfiguration(ctx, w, r, scope, actor, reader, address, strings.ToLower(child))
 	case "publishxml":
 		s.functionPublishProfile(ctx, w, r, scope, reader, address)
+	case "basicpublishingcredentialspolicies/scm":
+		s.functionSCMPolicy(ctx, w, r, scope, reader, address)
 	case "virtualnetworkconnections":
 		s.functionIntegrationList(ctx, w, r, scope, reader, address)
 	default:
@@ -86,7 +88,7 @@ func (s Server) functionSiteResource(ctx context.Context, w http.ResponseWriter,
 	case http.MethodGet:
 		resource := s.getFunctionSite(ctx, w, scope, reader, address)
 		if resource != nil {
-			writeJSON(w, http.StatusOK, functionSiteView(scope, *resource))
+			writeJSON(w, http.StatusOK, s.functionSiteView(scope, *resource))
 		}
 	case http.MethodPut:
 		var input functions.Site
@@ -165,7 +167,7 @@ func (s Server) putFunctionSite(ctx context.Context, w http.ResponseWriter, scop
 		w.Header().Set("Location", s.Origin+resource.Address.ID(scope)+"?api-version="+functions.APIVersion)
 		w.Header().Set("Retry-After", "1")
 	}
-	writeJSON(w, status, functionSiteView(scope, resource))
+	writeJSON(w, status, s.functionSiteView(scope, resource))
 }
 
 func (s Server) getFunctionSite(ctx context.Context, w http.ResponseWriter, scope SubscriptionScope, reader string, address ResourceAddress) *InventoryResource {
@@ -217,7 +219,7 @@ func (s Server) listFunctionSites(ctx context.Context, w http.ResponseWriter, r 
 	count := min(len(resources), inventoryPageSize)
 	items := make([]map[string]any, 0, count)
 	for _, item := range resources[:count] {
-		items = append(items, functionSiteView(scope, item))
+		items = append(items, s.functionSiteView(scope, item))
 	}
 	reply := map[string]any{"value": items}
 	if len(resources) > count {
@@ -258,6 +260,11 @@ func (s Server) functionConfiguration(ctx context.Context, w http.ResponseWriter
 		containerError(w, err)
 		return
 	}
+	platform := []string{"FUNCTIONS_EXTENSION_VERSION", "DOCKER_CUSTOM_IMAGE_NAME", "FUNCTION_APP_EDIT_MODE", "WEBSITES_ENABLE_APP_SERVICE_STORAGE"}
+	if s.FunctionPackages != nil {
+		settings["SCM_DO_BUILD_DURING_DEPLOYMENT"] = "false"
+		platform = append(platform, "SCM_DO_BUILD_DURING_DEPLOYMENT")
+	}
 	if expected == http.MethodPut {
 		var input functions.Settings
 		if err := strictJSON(http.MaxBytesReader(w, r.Body, 48<<10), &input); err != nil || input.Properties == nil {
@@ -265,8 +272,9 @@ func (s Server) functionConfiguration(ctx context.Context, w http.ResponseWriter
 			return
 		}
 		user := maps.Clone(input.Properties)
-		for _, key := range []string{"FUNCTIONS_EXTENSION_VERSION", "DOCKER_CUSTOM_IMAGE_NAME", "FUNCTION_APP_EDIT_MODE", "WEBSITES_ENABLE_APP_SERVICE_STORAGE"} {
-			if user[key] != settings[key] {
+		for _, key := range platform {
+			value, present := user[key]
+			if value != settings[key] && (key != "SCM_DO_BUILD_DURING_DEPLOYMENT" || present) {
 				containerError(w, functions.ErrInvalidSite)
 				return
 			}
@@ -404,7 +412,7 @@ func (s Server) putFunctionIntegration(ctx context.Context, w http.ResponseWrite
 	}
 	updated := s.getFunctionSite(ctx, w, scope, "", address)
 	if updated != nil {
-		writeJSON(w, http.StatusOK, functionSiteView(scope, *updated))
+		writeJSON(w, http.StatusOK, s.functionSiteView(scope, *updated))
 	}
 }
 
@@ -416,11 +424,16 @@ func functionNativeError(w http.ResponseWriter, status int) {
 	}
 }
 
-func functionSiteView(scope SubscriptionScope, resource InventoryResource) map[string]any {
+func (s Server) functionSiteView(scope SubscriptionScope, resource InventoryResource) map[string]any {
 	view := resource.view(scope)
 	var properties map[string]any
 	if json.Unmarshal(resource.Properties, &properties) == nil && properties != nil {
 		properties["sku"] = "Basic"
+		if s.FunctionPackages != nil && s.FunctionSCMDomain != "" {
+			name, _, _ := resource.Address.parts()
+			properties["hostNameSslStates"] = []map[string]string{{"name": name + "." + s.FunctionSCMDomain,
+				"hostType": "Repository", "sslState": "Disabled"}}
+		}
 		view["properties"] = properties
 	}
 	return view

@@ -63,11 +63,12 @@ type Settings struct {
 
 // Runtime contains configuration that may be given only to the assigned worker.
 type Runtime struct {
-	MasterKey     string        `json:"masterKey"`
-	Account       string        `json:"account"`
-	StorageKey    string        `json:"storageKey"`
-	Configuration string        `json:"configuration"`
-	Request       *AdminRequest `json:"request,omitempty"`
+	MasterKey     string            `json:"masterKey"`
+	Account       string            `json:"account"`
+	StorageKey    string            `json:"storageKey"`
+	Configuration string            `json:"configuration"`
+	Request       *AdminRequest     `json:"request,omitempty"`
+	Package       *PackageReference `json:"package,omitempty"`
 }
 
 type AdminRequest struct {

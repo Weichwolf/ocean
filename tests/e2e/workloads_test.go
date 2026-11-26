@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -11,7 +13,20 @@ import (
 
 func workloadSteps(options labOptions) []harness.Step {
 	fixtureEvidence := filepath.Join(options.evidence, "native-function-images.json")
+	nativeZIP := harness.Step{Name: "native-functions-zip", Cases: []string{"ZIP-01"}, Timeout: 3 * time.Minute,
+		Command: []string{"go", "test", "-tags=e2e", "-run", "^TestNativeZIPFunction$", "./internal/functions"},
+		Env:     []string{"OCEAN_E2E_FUNCTIONS_ZIP_NATIVE=1"}}
+	if _, err := exec.LookPath("podman"); err != nil {
+		nativeZIP.BlockedReason = "Install rootless Podman for the prebuilt Functions probe."
+	}
+	packageStore := harness.Step{Name: "regional-functions-zip-store", Cases: []string{"ZIP-02"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-run", "^TestRegionalFunctionPackages$", "./internal/controlplane"},
+		Env:     []string{"OCEAN_E2E_FUNCTIONS_PACKAGE_STORE=1"}}
+	if os.Getenv("OCEAN_E2E_ETCD_ENDPOINTS") == "" || os.Getenv("OCEAN_E2E_ETCD_PKI") == "" {
+		packageStore.BlockedReason = "Provide OCEAN_E2E_ETCD_ENDPOINTS and OCEAN_E2E_ETCD_PKI for the package storage probe."
+	}
 	return []harness.Step{
+		nativeZIP, packageStore,
 		{Name: "function-runtime-images", Cases: []string{"FUNCTION-01", "FUNCTION-02"}, Timeout: 20 * time.Minute,
 			Command:  []string{"python3", "-B", "lab/verify_function_fixtures.py", "--output", fixtureEvidence},
 			Evidence: []harness.EvidenceSource{{Name: "images.json", Path: fixtureEvidence}}},

@@ -19,6 +19,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/config"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/functions"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/service"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -50,6 +51,7 @@ type regionConfig struct {
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
+	FunctionSCMDomain   string                    `json:"functionScmDomain,omitempty"`
 	ManagedDirectories  *enrollment.Capacity      `json:"managedDirectories,omitempty"`
 	DirectoryFenceKey   string                    `json:"directoryFencePublicKeyFile,omitempty"`
 }
@@ -86,6 +88,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	if cfg.Region != nil && (cfg.Region.ApplicationGateways != nil || cfg.Region.WireGuard != nil || cfg.Region.IPsec != nil ||
 		cfg.Region.Workloads != nil || cfg.Region.Storage != nil || cfg.Region.Telemetry != nil) && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("gateway and workload execution require enrolled hosts")
+	}
+	if cfg.Region != nil && cfg.Region.FunctionSCMDomain != "" && (!functions.ValidSCMDomain(cfg.Region.FunctionSCMDomain) ||
+		cfg.Region.FunctionSCMDomain == cfg.Region.FunctionDomain || !cfg.Region.FunctionPlans || cfg.Region.FunctionDomain == "" ||
+		cfg.Region.Workloads == nil || cfg.Region.Storage == nil || cfg.Identity == nil || cfg.Identity.Cloud == nil ||
+		cfg.Identity.Cloud.StorageEndpoint == "") {
+		return config.Server{}, service.Hooks{}, errors.New("Functions SCM requires a dedicated DNS domain, workload execution, storage, and the ARM Functions service")
 	}
 	var hooks service.Hooks
 	var hosts *enrollment.Authority
@@ -132,6 +140,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
 				if region.workloads != nil {
 					go region.reconcileReplicaSets(ctx, logger)
+				}
+				if cfg.Region.FunctionSCMDomain != "" {
+					go region.reconcileFunctionPackageStages(ctx, logger)
 				}
 				if region.vms != nil {
 					go region.reconcileVMFences(ctx, logger)
@@ -195,6 +206,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					resources.Functions = region
 					resources.FunctionDomain = cfg.Region.FunctionDomain
 					resources.FunctionRegistry = cfg.Region.FunctionRegistry
+					if cfg.Region.FunctionSCMDomain != "" {
+						resources.FunctionPackages = region
+						resources.FunctionSCMDomain = cfg.Region.FunctionSCMDomain
+					}
 				}
 				hooks.Handler = resources.Handler(compatibility.Handler())
 			}

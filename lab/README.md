@@ -2405,6 +2405,52 @@ both Java revisions and the Node.js, .NET and Go fixtures. This check verifies
 each native trigger and the valid, missing and invalid key paths. The regional
 acceptance run uses the Java fixture for gateway, network and lifecycle checks.
 
+#### Prebuilt Functions ZIP verification
+
+The ZIP verification profile exercises two prebuilt Node.js packages and
+the regional package store. Each package places `host.json` at its root.
+The parser verifies the path layout, member types, checksums and expansion
+limits before publication. It admits archives up to 4 MiB compressed and
+32 MiB expanded, with at most 2,048 entries and 8 MiB per entry.
+The runtime extracts into a private tree and mounts the code read-only.
+The archive layout follows the native Functions packaging contract.
+[Microsoft Functions ZIP deployment](https://learn.microsoft.com/en-us/azure/azure-functions/deployment-zip-push)
+
+The package store seals chunks into the subscription's etcd namespace and
+publishes an immutable SHA-256 reference after the final chunk. A current
+worker identity and matching placement revision are needed to retrieve
+the archive. This probe exercises concurrent publication, misplaced
+ciphertext, cross-subscription reads, and removal of expired staging data.
+It also exercises deployment replay and restoration of the previous
+configuration on a worker-reported activation failure.
+
+To expose the opt-in SCM handler, set `region.functionScmDomain` on the
+regional replicas. Provide DNS and a trusted TLS certificate for each
+`<app>.<functionScmDomain>` host and route those hosts to the regional
+API. The Functions workload domain continues to route to its own
+ingress. Upload and status polling use bearer authentication. Register
+the ARM origin as `endpoints.appServiceResourceId` in the Azure CLI
+cloud configuration. The handler treats an indexed native Functions
+host as the activation acknowledgement.
+
+Run the tests on a host with rootless Podman and the pinned Functions and
+Azurite images. Supply a disposable etcd endpoint with mTLS and the PKI
+files `storage-ca.pem`, `lab-operator.pem` and `lab-operator.key`.
+
+```sh
+OCEAN_E2E_PROFILE=functions-zip-foundation \
+  OCEAN_E2E_ETCD_ENDPOINTS=https://127.0.0.1:2379 \
+  OCEAN_E2E_ETCD_PKI=/path/to/disposable-etcd-pki \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The [captured CLI request fixture](../tests/e2e/testdata/functions-zip-cli-requests.json)
+records production and slot uploads, ARM slot operations and SCM polling
+from Azure CLI 2.93.0 against a loopback protocol fixture. Custom cloud
+registration uses the native `--cloud-config` `endpoints.appServiceResourceId`
+setting for the SCM bearer token. End-to-end CLI uploads and slot promotion
+have their own acceptance case, `PROFILE-02`.
+
 ### Regional observability
 
 Use the regional lab with installed compute agents, replicated storage, and the

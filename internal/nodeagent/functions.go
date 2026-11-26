@@ -100,6 +100,19 @@ func (j *joinClient) removeFunctionSidecars(ctx context.Context, name string) er
 	return podmanAction(ctx, "rm", "--force", "--ignore", "--time", "1", name+"-telemetry", name+"-storage")
 }
 
+func indexedFunctionPackage(body []byte) bool {
+	var indexed []struct{ Name string }
+	if json.Unmarshal(body, &indexed) != nil {
+		return false
+	}
+	for _, entry := range indexed {
+		if entry.Name != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func functionAdmin(ctx context.Context, name string, runtime functions.Runtime, request functions.AdminRequest) (functions.AdminResult, error) {
 	output := functions.AdminResult{ID: request.ID}
 	endpoint := "/admin/functions"

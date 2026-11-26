@@ -125,6 +125,7 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	})
 	mux.HandleFunc("GET /ocean/hosts/{host}/ipsec-assignments", a.ipsecAssignment)
 	mux.HandleFunc("POST /ocean/hosts/{host}/ipsec-assignments/{slot}/status", a.ipsecAssignment)
+	mux.HandleFunc("GET /ocean/hosts/{host}/container-tasks/{task}/package", a.functionPackage)
 	mux.HandleFunc("GET /ocean/hosts/{host}", a.getHost)
 	mux.Handle("/", fallback)
 	return mux

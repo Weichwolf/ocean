@@ -35,7 +35,8 @@ func validContainerTask(task workload.Task) bool {
 		}
 	}
 	return (task.VolumeID == "" || storage.ValidID(task.VolumeID)) && task.Address.Is4() && task.Port >= 1 && task.Port <= 65535 &&
-		(task.State == workload.Running || task.State == workload.Stopped || task.State == workload.Removed)
+		(task.State == workload.Running || task.State == workload.Stopped || task.State == workload.Removed) &&
+		(task.Function == nil || task.Function.Package == nil || task.VolumeID != "" && task.Function.Package.Valid())
 }
 
 func containerName(id workload.AssignmentID) string {
@@ -315,7 +316,8 @@ func (j *joinClient) applyContainer(ctx context.Context, name string, task workl
 						}
 					} else if !task.Start {
 						report.State = workload.Running
-					} else if result, err := functionAdmin(ctx, name, *task.Function, functions.AdminRequest{}); err == nil && result.Status == http.StatusOK {
+					} else if result, err := functionAdmin(ctx, name, *task.Function, functions.AdminRequest{}); err == nil &&
+						result.Status == http.StatusOK && (task.Function.Package == nil || indexedFunctionPackage(result.Body)) {
 						report.State, report.FunctionReady = workload.Running, true
 					} else if started, err := time.Parse(time.RFC3339Nano, status.StartedAt); err == nil && time.Since(started) > 45*time.Second {
 						report.State = workload.Failed
@@ -384,6 +386,13 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 	if task.Function != nil {
 		secrets, _ := functionPaths(task.VolumeID)
 		args = append(args, "--mount", "type=bind,source="+secrets+",target=/azure-functions-host/Secrets")
+		if task.Function.Package != nil {
+			mount, err := j.functionPackageMount(ctx, task)
+			if err != nil {
+				return err
+			}
+			args = append(args, "--mount", mount)
+		}
 	} else if task.VolumeID != "" {
 		args = append(args, "--mount", "type=bind,source="+filepath.Join(workloadMountRoot, task.VolumeID)+",target=/data")
 	}

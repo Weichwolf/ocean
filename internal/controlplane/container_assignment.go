@@ -167,12 +167,24 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 			writes = append(writes, clientv3.OpPut(logsKey, logs))
 		}
 		complete := op.Status == arm.OperationInProgress && (report.State == record.Desired || report.State == workload.Failed)
+		projectedStatus := op.Status
 		if complete {
 			op.Status, op.FinishedAt = arm.OperationSucceeded, &now
 			if report.State == workload.Failed {
 				op.Status = arm.OperationFailed
 			}
 			writes = append(writes, putJSON(r.operationKey(scope, op.ID), op), r.containerAudit(scope, record, *op, "reconcile", now))
+			projectedStatus = op.Status
+			if op.Kind == deployFunctionZIP {
+				conditions, updates, err := r.finishZIPDeployment(ctx, scope, &record, &config, *op, now)
+				if err != nil {
+					return err
+				}
+				checks, writes = append(checks, conditions...), append(writes, updates...)
+				if record.Operation != op.ID {
+					projectedStatus = arm.OperationInProgress
+				}
+			}
 		}
 		if complete && op.Status == arm.OperationSucceeded && isFunctionRecord(record) &&
 			record.Reservation.PrivateIPv4.IsValid() && record.PublicIP.IsValid() {
@@ -184,7 +196,7 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 		}
 		if record.Observed != report.State || complete || report.Function != nil {
 			record.Observed, record.Restart = report.State, false
-			projection := projectContainer(config, record, prior.CreatedAt, now, op.Status)
+			projection := projectContainer(config, record, prior.CreatedAt, now, projectedStatus)
 			writes = append(writes, putJSON(key, record), putJSON(r.inventoryPrefix(scope)+address.Key(), projection))
 		}
 		if len(writes) == 0 {
@@ -207,6 +219,7 @@ func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.Subscrip
 	return r.releasePlacement(ctx, scope, res.Cell, res.ID, res.Generation, func(ctx context.Context, _ Reservation) ([]clientv3.Cmp, []clientv3.Op, error) {
 		conditions := slices.Clone(checks)
 		writes := []clientv3.Op{clientv3.OpDelete(hostKey), clientv3.OpDelete(key), clientv3.OpDelete(key + "/logs"),
+			clientv3.OpDelete(functionDeploymentLatestKey(key)),
 			clientv3.OpDelete(r.inventoryPrefix(scope) + record.Address.Key()), putJSON(r.operationKey(scope, op.ID), op),
 			r.containerAudit(scope, record, op, "delete", now)}
 		writes = append(writes, finalWrites...)
