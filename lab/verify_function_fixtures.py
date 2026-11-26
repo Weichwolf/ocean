@@ -84,13 +84,20 @@ def run_fixture(image, expected, package=None):
             while time.monotonic() < deadline:
                 try:
                     status, body = request("/admin/functions", master)
-                    if status == 200 and any(row["name"] == "hello" for row in json.loads(body)):
-                        break
+                    if status == 200:
+                        discovered = json.loads(body)
+                        matches = discovered == [] if expected is None else any(row["name"] == "hello" for row in discovered)
+                        if matches:
+                            break
                 except (OSError, urllib.error.URLError):
                     pass
                 time.sleep(0.5)
             else:
-                raise RuntimeError(f"{image} did not index its HTTP Function")
+                raise RuntimeError(f"{image} did not load the expected Functions")
+            if expected is None:
+                if request("/api/hello")[0] != 404:
+                    raise RuntimeError("the empty slot exposed a Function endpoint")
+                return podman("image", "inspect", "--format", "{{.Digest}}", image, capture=True)
             status, _ = request("/admin/functions/hello/keys/fixture", master, {"name": "fixture", "value": function_key})
             if status not in (200, 201):
                 raise RuntimeError(f"{image} failed to store its Function key")

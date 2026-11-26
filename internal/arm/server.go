@@ -46,6 +46,7 @@ type Server struct {
 	FunctionPlans       bool
 	Functions           FunctionStore
 	FunctionPackages    FunctionPackageDeployments
+	FunctionSlots       FunctionSlotStore
 	FunctionDomain      string
 	FunctionSCMDomain   string
 	FunctionRegistry    string

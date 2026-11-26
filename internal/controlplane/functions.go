@@ -28,6 +28,11 @@ func (r *Region) functionNameKey(host string) string {
 
 func (r *Region) CreateFunctionSite(ctx context.Context, scope arm.SubscriptionScope, actor string, address, plan arm.ResourceAddress,
 	site functions.Site, accountName, accountKey, publicHost string) (arm.InventoryResource, *arm.Operation, bool, error) {
+	return r.createFunctionSite(ctx, scope, actor, address, plan, site, accountName, accountKey, publicHost)
+}
+
+func (r *Region) createFunctionSite(ctx context.Context, scope arm.SubscriptionScope, actor string, address, plan arm.ResourceAddress,
+	site functions.Site, accountName, accountKey, publicHost string, admission ...clientv3.Cmp) (arm.InventoryResource, *arm.Operation, bool, error) {
 	var empty arm.InventoryResource
 	if r.storage == nil || r.workloads == nil || !storage.ValidAccount(accountName) {
 		return empty, nil, false, arm.ErrStorageAccess
@@ -77,9 +82,10 @@ func (r *Region) CreateFunctionSite(ctx context.Context, scope arm.SubscriptionS
 	app := &workload.FunctionApp{PlanID: planView.Address.ID(scope), HTTPSOnly: site.Properties.HTTPSOnly,
 		PublicHost: publicHost, Runtime: functions.Runtime{MasterKey: generateFunctionSecret(32), Account: accountName,
 			StorageKey: accountKey, Configuration: operationID()}}
+	_, _, app.Runtime.EmptySlot = functions.SlotNames(address.Path)
 	config := workload.ContainerGroup{Location: site.Location, Tags: site.Tags, Properties: props, Function: app}
 	config = functionEnvironment(config)
-	return r.CreateContainerGroup(ctx, scope, actor, address, config)
+	return r.createContainerGroup(ctx, scope, actor, address, config, replicaAdmission{}, admission...)
 }
 
 func functionResourceName(address arm.ResourceAddress) string {
@@ -244,6 +250,9 @@ func projectFunction(input workload.ContainerGroup, record containerRecord, crea
 	references := []arm.ResourceAddress{
 		{Group: record.Address.Group, Path: functions.PlanType + "/" + app.PlanID[strings.LastIndexByte(app.PlanID, '/')+1:]},
 		{Group: record.Address.Group, Path: storage.AccountType + "/" + app.Runtime.Account},
+	}
+	if parent, ok := functionSlotParent(record.Address); ok {
+		references = append(references, parent)
 	}
 	return arm.InventoryResource{Address: record.Address, APIVersion: functions.APIVersion, Location: input.Location, Tags: input.Tags,
 		Kind: functions.SiteKind, Properties: properties, References: references, ProvisioningState: status, CreatedAt: created, ChangedAt: changed}

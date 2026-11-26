@@ -52,6 +52,7 @@ type regionConfig struct {
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
 	FunctionSCMDomain   string                    `json:"functionScmDomain,omitempty"`
+	FunctionSlots       bool                      `json:"functionSlots,omitempty"`
 	ManagedDirectories  *enrollment.Capacity      `json:"managedDirectories,omitempty"`
 	DirectoryFenceKey   string                    `json:"directoryFencePublicKeyFile,omitempty"`
 }
@@ -95,12 +96,18 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		cfg.Identity.Cloud.StorageEndpoint == "") {
 		return config.Server{}, service.Hooks{}, errors.New("Functions SCM requires a dedicated DNS domain, workload execution, storage, and the ARM Functions service")
 	}
+	if cfg.Region != nil && cfg.Region.FunctionSlots && cfg.Region.FunctionSCMDomain == "" {
+		return config.Server{}, service.Hooks{}, errors.New("Functions slots require the authenticated SCM endpoint")
+	}
 	var hooks service.Hooks
 	var hosts *enrollment.Authority
 	var compatibility *identity.Compatibility
 	if cfg.Identity != nil {
 		if cfg.Identity.Onboarding != nil && cfg.Region == nil {
 			return config.Server{}, service.Hooks{}, errors.New("tenant onboarding requires a regional store")
+		}
+		if cfg.Region != nil && cfg.Region.FunctionSCMDomain != "" {
+			cfg.Identity.Cloud.FunctionsSCM = true
 		}
 		compatibility, err = cfg.Identity.OpenCompatibility()
 		if err != nil {
@@ -209,6 +216,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					if cfg.Region.FunctionSCMDomain != "" {
 						resources.FunctionPackages = region
 						resources.FunctionSCMDomain = cfg.Region.FunctionSCMDomain
+					}
+					if cfg.Region.FunctionSlots {
+						resources.FunctionSlots = region
 					}
 				}
 				hooks.Handler = resources.Handler(compatibility.Handler())

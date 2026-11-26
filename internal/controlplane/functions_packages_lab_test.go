@@ -12,13 +12,18 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/functions"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -27,29 +32,9 @@ func TestRegionalFunctionPackages(t *testing.T) {
 	if os.Getenv("OCEAN_E2E_FUNCTIONS_PACKAGE_STORE") != "1" {
 		t.Skip("requires the disposable regional etcd cluster")
 	}
-	r := openLabRegion(t)
-	r.root = "/ocean/v1/regions/function-packages-" + operationID()
-	t.Cleanup(func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := r.client.Delete(cleanup, r.root+"/", clientv3.WithPrefix()); err != nil {
-			t.Error(err)
-		}
-	})
+	r := regionalFunctionsFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	var key [32]byte
-	rand.Read(key[:])
-	block, err := aes.NewCipher(key[:])
-	clear(key[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealer, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.workloads = &workloadControl{sealer: sealer}
 	scope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
 	archive := functionArchiveFixture(t)
 	defer clear(archive)
@@ -148,6 +133,215 @@ func TestRegionalFunctionPackages(t *testing.T) {
 		t.Fatal("a ciphertext copied to the wrong chunk position produced a package")
 	}
 	t.Logf("Live etcd published a %d-byte prebuilt ZIP as %d sealed chunks. Duplicate uploads converged, only the current certified placement could fetch it, and an expired stage was reclaimed.", first.ref.Bytes, expected)
+}
+
+func regionalFunctionsFixture(t *testing.T) *Region {
+	t.Helper()
+	r := openLabRegion(t)
+	r.root = "/ocean/v1/regions/functions-lab-" + operationID()
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := r.client.Delete(cleanup, r.root+"/", clientv3.WithPrefix()); err != nil {
+			t.Error(err)
+		}
+	})
+	var key [32]byte
+	rand.Read(key[:])
+	block, err := aes.NewCipher(key[:])
+	clear(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := cipher.NewGCMWithRandomNonce(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.workloads = &workloadControl{sealer: sealer}
+	return r
+}
+
+func TestRegionalFunctionSlotSwap(t *testing.T) {
+	if os.Getenv("OCEAN_E2E_FUNCTIONS_PACKAGE_STORE") != "1" {
+		t.Skip("requires the disposable regional etcd cluster")
+	}
+	r := regionalFunctionsFixture(t)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	scope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
+	app := arm.ResourceAddress{Group: "zip-lab", Path: functions.SiteType + "/native"}
+	slot := arm.ResourceAddress{Group: app.Group, Path: app.Path + "/slots/staging"}
+	first := seedFunctionsSlot(t, ctx, r, scope, app, "production")
+	second := seedFunctionsSlot(t, ctx, r, scope, slot, "staging")
+	handle := functionsSlotLabHandler(t, r, scope, app)
+	assertActivation := func(site functionSlotFixture, code functionSlotFixture) *arm.Operation {
+		t.Helper()
+		state, err := r.functionSlotState(ctx, scope, site.address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, unchanged := state.config.Function, site.app
+		if current.Runtime.Package == nil || *current.Runtime.Package != *code.app.Runtime.Package ||
+			!maps.Equal(current.Settings, map[string]string{"OCEAN_STICKY": unchanged.Settings["OCEAN_STICKY"], "OCEAN_SETTING": code.app.Settings["OCEAN_SETTING"]}) ||
+			current.Runtime.MasterKey != unchanged.Runtime.MasterKey || current.Runtime.StorageKey != unchanged.Runtime.StorageKey ||
+			current.PublicHost != unchanged.PublicHost || state.record.Reservation.SubnetID != site.subnet {
+			t.Fatal("slot activation changed its binding or selected the wrong package or settings")
+		}
+		return state.op
+	}
+	finish := func(site functionSlotFixture, id, state string, ready bool) error {
+		report := workload.Report{AssignmentID: site.assignment, State: state, FunctionReady: ready}
+		report.Revision = id
+		return r.ReportContainerTask(ctx, site.host, []byte(site.host), report)
+	}
+	request := operationID()
+	res := handle(http.MethodPost, slot.ID(scope)+"/slotsswap", `{"targetSlot":"production","preserveVnet":true}`, request)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("slot swap was not accepted: HTTP %d", res.Code)
+	}
+	operation := res.Header().Get("Azure-AsyncOperation")
+	failedID, _, _ := strings.Cut(operation[strings.LastIndexByte(operation, '/')+1:], "?")
+	failed, err := r.GetOperation(ctx, scope, failedID)
+	if err != nil || failed == nil || failed.Status != arm.OperationInProgress {
+		t.Fatalf("the swap did not advertise a pollable regional operation: %v", err)
+	}
+	if replay, err := r.SwapFunctionSlot(ctx, scope, "owner", slot, request); err != nil || replay.ID != failed.ID {
+		t.Fatalf("the in-flight request was not replayed: %v", err)
+	}
+	if _, err := r.SwapFunctionSlot(ctx, scope, "owner", slot, operationID()); !errors.Is(err, arm.ErrContainerBusy) {
+		t.Fatalf("a competing swap was not rejected: %v", err)
+	}
+	assertActivation(first, second)
+	assertActivation(second, first)
+	if err := finish(first, failed.ID, workload.Running, false); !errors.Is(err, enrollment.ErrWorkloadChanged) {
+		t.Fatalf("an unindexed worker confirmed the swap: %v", err)
+	}
+	if err := finish(first, failed.ID, workload.Running, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := assertActivation(first, second); got.Status != arm.OperationInProgress {
+		t.Fatal("the swap completed with only one worker ready")
+	}
+	if err := finish(second, failed.ID, workload.Failed, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.GetOperation(ctx, scope, failed.ID); err != nil || got == nil || got.Status != arm.OperationFailed {
+		t.Fatalf("activation failure did not complete the failed swap: %v", err)
+	}
+	rollback := assertActivation(first, first)
+	if got := assertActivation(second, second); got.ID != rollback.ID || got.Kind != rollbackFunctionSwap || got.Status != arm.OperationInProgress {
+		t.Fatal("failed activation did not schedule one rollback for both sites")
+	}
+	if err := finish(first, failed.ID, workload.Running, true); !errors.Is(err, enrollment.ErrWorkloadChanged) {
+		t.Fatalf("a stale worker could still confirm the failed swap: %v", err)
+	}
+	for _, site := range []functionSlotFixture{first, second} {
+		if err := finish(site, rollback.ID, workload.Running, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request = operationID()
+	success, err := r.SwapFunctionSlot(ctx, scope, "owner", slot, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range []functionSlotFixture{second, first} {
+		if err := finish(site, success.ID, workload.Running, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if replay, err := r.SwapFunctionSlot(ctx, scope, "owner", slot, request); err != nil || replay.ID != success.ID || replay.Status != arm.OperationSucceeded {
+		t.Fatalf("a committed request did not return the original successful swap: %v", err)
+	}
+	assertActivation(first, second)
+	assertActivation(second, first)
+	t.Log("Live etcd preserved endpoint bindings and sticky settings, rejected a concurrent request, rolled back both sites after a worker failure, and required two acknowledgments for a successful swap.")
+}
+
+func functionsSlotLabHandler(t *testing.T, r *Region, scope arm.SubscriptionScope,
+	app arm.ResourceAddress) func(string, string, string, string) *httptest.ResponseRecorder {
+	t.Helper()
+	const origin = "https://arm.ocean.test"
+	s := arm.Server{Origin: origin, FunctionSCMDomain: "scm.ocean.test", FunctionDomain: "functions.ocean.test",
+		FunctionSlots: r, Functions: r, FunctionPackages: r, Inventory: r, Operations: r,
+		Authenticate: func(context.Context, *http.Request) (identity.ARMPrincipal, error) {
+			return identity.ARMPrincipal{Subject: "owner", Subscription: identity.Subscription{
+				TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, Members: []string{"owner"}}}, nil
+		}}
+	h := s.Handler(http.NotFoundHandler())
+	call := func(method, path, body, id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(t.Context(), method, origin+path+"?api-version="+functions.APIVersion, strings.NewReader(body))
+		if id != "" {
+			req.Header.Set("x-ms-client-request-id", id)
+		}
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, req)
+		return response
+	}
+	listing := call(http.MethodGet, app.ID(scope)+"/slots", "", "")
+	if listing.Code != http.StatusOK || !strings.Contains(listing.Body.String(), `"name":"native/staging"`) ||
+		!strings.Contains(listing.Body.String(), `"name":"native-staging.scm.ocean.test"`) {
+		t.Fatalf("slot listing did not project the expected ARM name and SCM hostname: HTTP %d", listing.Code)
+	}
+	settings := app.ID(scope) + "/config/slotConfigNames"
+	write := call(http.MethodPut, settings, `{"properties":{"appSettingNames":["OCEAN_STICKY"]}}`, "")
+	read := call(http.MethodGet, settings, "", "")
+	if write.Code != http.StatusOK || read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"appSettingNames":["OCEAN_STICKY"]`) {
+		t.Fatalf("sticky settings did not round-trip through ARM: HTTP %d, %d", write.Code, read.Code)
+	}
+	return call
+}
+
+type functionSlotFixture struct {
+	address    arm.ResourceAddress
+	host       string
+	subnet     string
+	assignment workload.AssignmentID
+	app        *workload.FunctionApp
+}
+
+func seedFunctionsSlot(t *testing.T, ctx context.Context, r *Region, scope arm.SubscriptionScope, address arm.ResourceAddress, site string) functionSlotFixture {
+	t.Helper()
+	archive := functionArchiveFixture(t)
+	defer clear(archive)
+	ref, err := r.storeFunctionPackage(ctx, scope, archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := site + "-worker"
+	lease, err := r.client.Grant(ctx, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := workload.AssignmentID{ID: operationID(), Generation: operationID(), Revision: operationID(),
+		TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID}
+	subnet := "/virtualNetworks/lab/subnets/" + site
+	record := containerRecord{Address: address, Desired: workload.Running, Observed: workload.Running, Operation: assigned.Revision,
+		Reservation: Reservation{PlacementRequest: PlacementRequest{ID: assigned.ID, SubnetID: subnet}, Generation: assigned.Generation, HostID: host}}
+	app := &workload.FunctionApp{PlanID: "/serverfarms/native", PublicHost: site + ".functions.test", Runtime: functions.Runtime{
+		Account: site, MasterKey: "master-" + site, StorageKey: "storage-" + site, Package: &ref, Configuration: assigned.Revision},
+		Settings: map[string]string{"OCEAN_STICKY": "sticky-" + site, "OCEAN_SETTING": "setting-" + site}}
+	config := functionEnvironment(workload.ContainerGroup{Location: r.name, Properties: workload.ContainerGroupProperties{
+		Containers: []workload.Container{{Name: site, Properties: workload.ContainerProperties{Image: "pinned-functions-image"}}}}, Function: app})
+	if err := r.sealFunctionConfig(scope, &record, config); err != nil {
+		t.Fatal(err)
+	}
+	recordKey := r.containerKey(scope, address)
+	identity := enrollment.Host{HostID: host, Cell: "cell-1", Pool: "lab", Roles: []string{"compute"}, Certificate: []byte(host)}
+	liveData, err := json.Marshal(enrollment.Availability{HostID: host, Cell: identity.Cell, Pool: identity.Pool, Roles: identity.Roles})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	op := arm.Operation{ID: assigned.Revision, Kind: createContainer, Group: address.Group, Actor: "owner", Status: arm.OperationSucceeded,
+		StartedAt: now, FinishedAt: &now}
+	resource := projectContainer(config, record, now, now, arm.OperationSucceeded)
+	if _, err := r.client.Txn(ctx).Then(putJSON(recordKey, record), clientv3.OpPut(r.hostContainerKey(scope, host, assigned.ID), recordKey),
+		putJSON(r.hostKey("registered", host), identity), clientv3.OpPut(r.hostKey("live", host), string(liveData), clientv3.WithLease(lease.ID)),
+		putJSON(r.operationKey(scope, op.ID), op), putJSON(r.inventoryPrefix(scope)+address.Key(), resource)).Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return functionSlotFixture{address: address, host: host, subnet: subnet, assignment: assigned, app: app}
 }
 
 func testAssignedFunctionPackage(t *testing.T, ctx context.Context, r *Region, scope arm.SubscriptionScope, ref functions.PackageReference, expected []byte) {

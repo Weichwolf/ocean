@@ -7,6 +7,7 @@ type CloudEndpoints struct {
 	ResourceManager string `json:"resourceManager"`
 	MicrosoftGraph  string `json:"microsoftGraph"`
 	StorageEndpoint string `json:"storageEndpoint,omitempty"`
+	FunctionsSCM    bool   `json:"-"`
 }
 
 func (c *Compatibility) cloudMetadata(w http.ResponseWriter, r *http.Request) {
@@ -23,7 +24,7 @@ func (c *Compatibility) cloudMetadata(w http.ResponseWriter, r *http.Request) {
 	if c.cloud.StorageEndpoint != "" {
 		suffixes["storage"] = c.cloud.StorageEndpoint
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	metadata := map[string]any{
 		"name":                     "ocean",
 		"resourceManager":          c.cloud.ResourceManager,
 		"microsoftGraphResourceId": c.cloud.MicrosoftGraph,
@@ -32,5 +33,9 @@ func (c *Compatibility) cloudMetadata(w http.ResponseWriter, r *http.Request) {
 			"audiences":     []string{c.cloud.ResourceManager},
 		},
 		"suffixes": suffixes,
-	})
+	}
+	if c.cloud.FunctionsSCM {
+		metadata["appServiceResourceId"] = c.cloud.ResourceManager
+	}
+	writeJSON(w, http.StatusOK, metadata)
 }

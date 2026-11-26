@@ -45,10 +45,11 @@ func TestFunctionsSCMCLIRequestShape(t *testing.T) {
 	scope := SubscriptionScope{TenantID: "tenant", SubscriptionID: "subscription"}
 	requests := 0
 	called := 0
+	var expectedHost string
 	s := Server{Origin: "https://arm.ocean.test", FunctionDomain: "functions.ocean.test", FunctionSCMDomain: "scm.ocean.test",
 		FunctionPackages: fixtureSCM{deploy: func(_ context.Context, got SubscriptionScope, actor, host string, code []byte) (functions.DeploymentStatus, error) {
 			called++
-			if got != scope || actor != "owner" || host != "native.functions.ocean.test" || string(code) != "disposable upload" {
+			if got != scope || actor != "owner" || host != expectedHost || string(code) != "disposable upload" {
 				t.Fatal("the SCM handler did not preserve the authenticated deployment target")
 			}
 			return functions.DeploymentStatus{ID: "deployment"}, nil
@@ -64,14 +65,19 @@ func TestFunctionsSCMCLIRequestShape(t *testing.T) {
 	handle := s.Handler(http.NotFoundHandler())
 	for _, item := range trace {
 		path := item.Path
-		if item.Command != "zip-production" || path != "/api/zipdeploy" && path != "/api/deployments/latest" {
+		if item.Command != "zip-production" && item.Command != "zip-slot" || path != "/api/zipdeploy" && path != "/api/deployments/latest" {
 			continue
 		}
 		if item.AuthScheme != "Bearer" {
 			t.Fatal("the captured CLI used an unexpected deployment credential")
 		}
 		requests++
-		target := "https://native.scm.ocean.test" + path
+		label := "native"
+		if item.Command == "zip-slot" {
+			label += "-staging"
+		}
+		expectedHost = label + ".functions.ocean.test"
+		target := "https://" + label + ".scm.ocean.test" + path
 		if len(item.Query) != 0 {
 			target += "?" + item.Query.Encode()
 		}
@@ -96,7 +102,7 @@ func TestFunctionsSCMCLIRequestShape(t *testing.T) {
 			}
 		}
 	}
-	if requests != 2 || called != 1 {
+	if requests != 4 || called != 2 {
 		t.Fatal("the captured upload and deployment poll did not exercise distinct authorized routes")
 	}
 }

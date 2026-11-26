@@ -107,7 +107,7 @@ func TestCloudMetadataForAzureCLI(t *testing.T) {
 	compat, err := (Config{
 		Authority: authority,
 		Provider:  "https://oauth.ocean.test",
-		Cloud:     &CloudEndpoints{ResourceManager: arm, MicrosoftGraph: graph},
+		Cloud:     &CloudEndpoints{ResourceManager: arm, MicrosoftGraph: graph, FunctionsSCM: true},
 	}).OpenCompatibility()
 	if err != nil {
 		t.Fatal(err)
@@ -126,9 +126,10 @@ func TestCloudMetadataForAzureCLI(t *testing.T) {
 		t.Fatalf("metadata returned %d", response.Code)
 	}
 	var body struct {
-		ResourceManager string `json:"resourceManager"`
-		MicrosoftGraph  string `json:"microsoftGraphResourceId"`
-		Authentication  struct {
+		ResourceManager    string `json:"resourceManager"`
+		MicrosoftGraph     string `json:"microsoftGraphResourceId"`
+		AppServiceResource string `json:"appServiceResourceId"`
+		Authentication     struct {
 			Audiences     []string `json:"audiences"`
 			LoginEndpoint string   `json:"loginEndpoint"`
 		} `json:"authentication"`
@@ -136,7 +137,7 @@ func TestCloudMetadataForAzureCLI(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.ResourceManager != arm || body.MicrosoftGraph != graph || body.Authentication.LoginEndpoint != authority ||
+	if body.ResourceManager != arm || body.MicrosoftGraph != graph || body.AppServiceResource != arm || body.Authentication.LoginEndpoint != authority ||
 		len(body.Authentication.Audiences) != 1 || body.Authentication.Audiences[0] != arm {
 		t.Errorf("unexpected metadata: %+v", body)
 	}

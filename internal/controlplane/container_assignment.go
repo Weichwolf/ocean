@@ -167,6 +167,9 @@ func (r *Region) ReportContainerTask(ctx context.Context, host string, certifica
 			writes = append(writes, clientv3.OpPut(logsKey, logs))
 		}
 		complete := op.Status == arm.OperationInProgress && (report.State == record.Desired || report.State == workload.Failed)
+		if complete && (op.Kind == swapFunctionSlot || op.Kind == rollbackFunctionSwap) {
+			return r.reportFunctionSlotSwap(ctx, scope, record.Address, *op, report.State, checks, writes, now)
+		}
 		projectedStatus := op.Status
 		if complete {
 			op.Status, op.FinishedAt = arm.OperationSucceeded, &now
@@ -238,6 +241,8 @@ func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.Subscrip
 				writes = append(writes, clientv3.OpDelete(nameKey))
 			}
 			writes = append(writes, clientv3.OpDelete(key+"/function-admin-actor"))
+			writes = append(writes, clientv3.OpDelete(functionSlotSettingsKey(key)))
+			writes = append(writes, clientv3.OpDelete(functionSwapRequests(key), clientv3.WithPrefix()))
 			previous := projectContainer(config, record, now, now, arm.OperationSucceeded)
 			_, removals, err := r.inventoryReferenceChanges(ctx, scope, record.Address, &previous, nil, 0, nil)
 			if err != nil {

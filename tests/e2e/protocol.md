@@ -48,7 +48,7 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `ipsec-gateway` | Check IKEv2 peer authentication, routed traffic, forwarding expiry, and cleanup in a disposable Debian KVM guest |
 | `ipsec-control` | Check regional VPN reservations, assignment authorization, status freshness, and teardown against real etcd |
 | `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
-| `functions-zip-foundation` | Invoke versioned prebuilt packages through the native Functions host and verify sealed regional storage and assignment authorization |
+| `functions-zip-foundation` | Invoke versioned packages in the native Functions host and verify sealed storage, assignment authorization, and regional slot activation and rollback |
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 | `vm-worker` | Exercise stock Azure CLI VM lifecycle, tenant boundaries and quota accounting, then confirm out-of-band fencing and read a persisted Windows checkpoint on the replacement |
@@ -70,10 +70,12 @@ configured native customer peer. It records command results, connection
 and expiry measurements, rejected paths, and cleanup. Follow the
 [IPsec profile lab setup](../../lab/README.md#ipsec-profile-acceptance-run).
 
-The `functions-zip-foundation` runner exercises `ZIP-01` and `ZIP-02`.
-It records the native runtime digest, keyed invocation of two independent
-packages, scoped retrieval, staging cleanup, and regional rollback
-following a reported activation failure. The pinned CLI workflow
+The `functions-zip-foundation` runner exercises `ZIP-01` through `ZIP-03`.
+It records the native runtime digest, an empty slot's HTTP 404 response,
+keyed invocation of two independent packages, scoped retrieval, staging cleanup, and regional rollback
+following a reported activation failure. The regional swap probe uses
+authenticated worker fixtures to check that both acknowledgments are
+required and endpoint bindings and sticky settings are preserved. The pinned CLI workflow
 with ZIP publication and slot promotion is tracked by `PROFILE-02`.
 [Prebuilt Functions ZIP lab](../../lab/README.md#prebuilt-functions-zip-verification)
 

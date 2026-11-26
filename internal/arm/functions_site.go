@@ -39,8 +39,9 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 	if path != "" && !strings.Contains(path, "/") && r.Method == http.MethodGet && r.URL.Query().Get("api-version") == functions.SiteReadAPIVersion {
 		version = functions.SiteReadAPIVersion
 	}
+	_, child, _ := strings.Cut(path, "/")
 	query, ok := readQuery(w, r, version, func(name, value string) bool {
-		return path == "" && name == "$skiptoken" && value != "" ||
+		return (path == "" || strings.EqualFold(child, "slots")) && name == "$skiptoken" && value != "" ||
 			r.Method == http.MethodDelete && !strings.Contains(path, "/") && name == "deleteEmptyServerFarm" && value == "false"
 	})
 	if !ok {
@@ -65,7 +66,9 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 			return
 		}
 		s.functionLifecycle(ctx, w, scope, actor, address, strings.ToLower(child))
-	case "config/web", "config/appsettings", "config/appsettings/list", "config/slotconfignames":
+	case "config/slotconfignames":
+		s.functionSlotSettings(ctx, w, r, scope, actor, reader, address)
+	case "config/web", "config/appsettings", "config/appsettings/list":
 		s.functionConfiguration(ctx, w, r, scope, actor, reader, address, strings.ToLower(child))
 	case "publishxml":
 		s.functionPublishProfile(ctx, w, r, scope, reader, address)
@@ -74,6 +77,11 @@ func (s Server) functionSite(ctx context.Context, w http.ResponseWriter, r *http
 	case "virtualnetworkconnections":
 		s.functionIntegrationList(ctx, w, r, scope, reader, address)
 	default:
+		lower := strings.ToLower(child)
+		if lower == "slots" || strings.HasPrefix(lower, "slots/") {
+			s.functionSlot(ctx, w, r, scope, actor, reader, address, child, query)
+			return
+		}
 		if !strings.EqualFold(child, "functions") && !strings.HasPrefix(strings.ToLower(child), "functions/") {
 			writeError(w, http.StatusBadRequest, "UnsupportedOperation", "The Functions operation is unsupported.")
 			return
@@ -159,8 +167,12 @@ func (s Server) putFunctionSite(ctx context.Context, w http.ResponseWriter, scop
 		containerError(w, err)
 		return
 	}
+	s.writeFunctionCreate(w, scope, resource, op)
+}
+
+func (s Server) writeFunctionCreate(w http.ResponseWriter, scope SubscriptionScope, resource InventoryResource, op *Operation) {
 	status := http.StatusOK
-	if op != nil && op.Status == OperationInProgress {
+	if op != nil && op.Status != OperationSucceeded {
 		status = http.StatusAccepted
 		query := "?api-version=" + resourceAPIVersion
 		w.Header().Set("Azure-AsyncOperation", s.Origin+operationPath(scope, "operationStatuses", op.ID)+query)
@@ -233,14 +245,6 @@ func (s Server) functionConfiguration(ctx context.Context, w http.ResponseWriter
 	actor, reader string, address ResourceAddress, path string) {
 	resource := s.getFunctionSite(ctx, w, scope, reader, address)
 	if resource == nil {
-		return
-	}
-	if path == "config/slotconfignames" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"properties": map[string]any{"appSettingNames": []string{}}})
 		return
 	}
 	if path == "config/web" {
@@ -426,12 +430,16 @@ func functionNativeError(w http.ResponseWriter, status int) {
 
 func (s Server) functionSiteView(scope SubscriptionScope, resource InventoryResource) map[string]any {
 	view := resource.view(scope)
+	host, _, _ := resource.Address.parts()
+	if app, slot, ok := functions.SlotNames(resource.Address.Path); ok {
+		view["name"] = app + "/" + slot
+		host = app + "-" + slot
+	}
 	var properties map[string]any
 	if json.Unmarshal(resource.Properties, &properties) == nil && properties != nil {
 		properties["sku"] = "Basic"
 		if s.FunctionPackages != nil && s.FunctionSCMDomain != "" {
-			name, _, _ := resource.Address.parts()
-			properties["hostNameSslStates"] = []map[string]string{{"name": name + "." + s.FunctionSCMDomain,
+			properties["hostNameSslStates"] = []map[string]string{{"name": host + "." + s.FunctionSCMDomain,
 				"hostType": "Repository", "sslState": "Disabled"}}
 		}
 		view["properties"] = properties

@@ -92,7 +92,7 @@ func (r *Region) CreateContainerGroup(ctx context.Context, scope arm.Subscriptio
 }
 
 func (r *Region) createContainerGroup(ctx context.Context, scope arm.SubscriptionScope, actor string, address arm.ResourceAddress,
-	wanted workload.ContainerGroup, replica replicaAdmission) (arm.InventoryResource, *arm.Operation, bool, error) {
+	wanted workload.ContainerGroup, replica replicaAdmission, admission ...clientv3.Cmp) (arm.InventoryResource, *arm.Operation, bool, error) {
 	key := r.containerKey(scope, address)
 	if resource, op, found, err := r.retryContainerCreate(ctx, scope, address, wanted, replica.spreadSet); found || err != nil {
 		return resource, op, false, err
@@ -150,6 +150,7 @@ func (r *Region) createContainerGroup(ctx context.Context, scope arm.Subscriptio
 		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Version(key), "=", 0), clientv3.Compare(clientv3.Version(invKey), "=", 0),
 			clientv3.Compare(clientv3.Version(hostKey), "=", 0), clientv3.Compare(clientv3.Version(opKey), "=", 0)}
+		checks = append(checks, admission...)
 		if replica.key != "" {
 			checks = append(checks, clientv3.Compare(clientv3.ModRevision(replica.key), "=", replica.revision))
 		}
@@ -236,6 +237,7 @@ func (r *Region) retryContainerCreate(ctx context.Context, scope arm.Subscriptio
 		wanted.Function.Runtime.Configuration = prior.Function.Runtime.Configuration
 		wanted.Function.Runtime.Request = prior.Function.Runtime.Request
 		wanted.Function.Runtime.Package = prior.Function.Runtime.Package
+		wanted.Function.Runtime.EmptySlot = prior.Function.Runtime.EmptySlot
 	}
 	if !reflect.DeepEqual(prior, wanted) {
 		return resource, op, true, arm.ErrContainerChanged
@@ -356,7 +358,7 @@ func (r *Region) mutateContainerGroup(ctx context.Context, scope arm.Subscriptio
 			if op.Kind == kind {
 				return op, nil
 			}
-			if action != "delete" {
+			if action != "delete" || op.Kind == swapFunctionSlot || op.Kind == rollbackFunctionSwap {
 				return nil, arm.ErrContainerBusy
 			}
 		}
@@ -383,6 +385,17 @@ func (r *Region) mutateContainerGroup(ctx context.Context, scope arm.Subscriptio
 		}
 		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", revision),
 			clientv3.Compare(clientv3.Version(newKey), "=", 0)}
+		if action == "delete" && input.Function != nil {
+			prefix := r.dependentsPrefix(scope, address)
+			dependents, err := r.client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+			if err != nil {
+				return nil, err
+			}
+			if dependents.Count != 0 {
+				return nil, arm.ErrLinkedResourceInUse
+			}
+			checks = append(checks, clientv3.Compare(clientv3.Version(prefix), "=", 0).WithPrefix())
+		}
 		if replica.key != "" {
 			checks = append(checks, clientv3.Compare(clientv3.ModRevision(replica.key), "=", replica.revision))
 		}

@@ -34,9 +34,12 @@ func validContainerTask(task workload.Task) bool {
 			return false
 		}
 	}
+	if task.Function != nil && (task.Function.EmptySlot || task.Function.Package != nil) &&
+		(task.VolumeID == "" || task.Function.Package != nil && (task.Function.EmptySlot || !task.Function.Package.Valid())) {
+		return false
+	}
 	return (task.VolumeID == "" || storage.ValidID(task.VolumeID)) && task.Address.Is4() && task.Port >= 1 && task.Port <= 65535 &&
-		(task.State == workload.Running || task.State == workload.Stopped || task.State == workload.Removed) &&
-		(task.Function == nil || task.Function.Package == nil || task.VolumeID != "" && task.Function.Package.Valid())
+		(task.State == workload.Running || task.State == workload.Stopped || task.State == workload.Removed)
 }
 
 func containerName(id workload.AssignmentID) string {
@@ -386,7 +389,7 @@ func (j *joinClient) createContainer(ctx context.Context, name string, task work
 	if task.Function != nil {
 		secrets, _ := functionPaths(task.VolumeID)
 		args = append(args, "--mount", "type=bind,source="+secrets+",target=/azure-functions-host/Secrets")
-		if task.Function.Package != nil {
+		if task.Function.Package != nil || task.Function.EmptySlot {
 			mount, err := j.functionPackageMount(ctx, task)
 			if err != nil {
 				return err

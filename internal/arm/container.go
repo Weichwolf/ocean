@@ -250,6 +250,8 @@ func containerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "OperationInProgress", ErrContainerBusy.Error())
 	case errors.Is(err, ErrContainerChanged):
 		writeError(w, http.StatusConflict, "ContainerGroupConfigurationChanged", ErrContainerChanged.Error())
+	case errors.Is(err, ErrLinkedResourceInUse):
+		writeError(w, http.StatusConflict, "ResourceInUse", ErrLinkedResourceInUse.Error())
 	case errors.Is(err, ErrContainerQuota):
 		writeError(w, http.StatusConflict, "QuotaExceeded", ErrContainerQuota.Error())
 	case errors.Is(err, ErrContainerDelegationRequired):

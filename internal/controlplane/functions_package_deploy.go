@@ -69,6 +69,7 @@ func (r *Region) DeployFunctionZIP(ctx context.Context, scope arm.SubscriptionSc
 			Actor: actor, Status: arm.OperationInProgress, StartedAt: now}
 		previous := record.Config
 		runtime.Package, runtime.Configuration, runtime.Request = &reference, job.ID, nil
+		runtime.EmptySlot = false
 		if err := r.sealFunctionConfig(scope, &record, config); err != nil {
 			return result, err
 		}

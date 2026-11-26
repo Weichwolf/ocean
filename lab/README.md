@@ -2429,9 +2429,30 @@ regional replicas. Provide DNS and a trusted TLS certificate for each
 `<app>.<functionScmDomain>` host and route those hosts to the regional
 API. The Functions workload domain continues to route to its own
 ingress. Upload and status polling use bearer authentication. Register
-the ARM origin as `endpoints.appServiceResourceId` in the Azure CLI
-cloud configuration. The handler treats an indexed native Functions
-host as the activation acknowledgement.
+the cloud with `az cloud register --name ocean --endpoint-resource-manager
+"$ARM_ORIGIN"`. ARM discovery advertises its own origin as the App Service
+token audience when SCM is enabled. The handler treats an indexed native
+Functions host as the activation acknowledgement.
+
+Set `region.functionSlots` to `true` on each regional replica to enable
+named slots through the same SCM and ARM endpoints. Each slot gets its
+own `<app>-<slot>.<functionDomain>` workload hostname and
+`<app>-<slot>.<functionScmDomain>` SCM hostname. Provide DNS and trusted
+TLS for the SCM hostname. Route workload traffic through the operator's
+HTTPS ingress. The slot uses the parent's plan, pinned runtime and
+private subnet. Its host storage, native keys and package lifecycle are
+independent. A new slot is empty until it receives a ZIP package.
+
+Swap supports a named source slot and the `production` target with both
+packages indexed on the same runtime image. Packages and ordinary app
+settings move together. App settings named in the production app's
+`config/slotConfigNames` stay with their original site. Hostnames, network
+placement, shares and platform-managed credentials stay with their
+original site. Both runtimes restart. The operation completes after both
+workers confirm that their new releases indexed. A worker-reported
+activation failure fails the swap and schedules the previous releases
+on both workers. Repeating the accepted ARM request ID returns the same
+operation. Delete named slots before deleting their parent app.
 
 Run the tests on a host with rootless Podman and the pinned Functions and
 Azurite images. Supply a disposable etcd endpoint with mTLS and the PKI
@@ -2445,11 +2466,10 @@ OCEAN_E2E_PROFILE=functions-zip-foundation \
 ```
 
 The [captured CLI request fixture](../tests/e2e/testdata/functions-zip-cli-requests.json)
-records production and slot uploads, ARM slot operations and SCM polling
-from Azure CLI 2.93.0 against a loopback protocol fixture. Custom cloud
-registration uses the native `--cloud-config` `endpoints.appServiceResourceId`
-setting for the SCM bearer token. End-to-end CLI uploads and slot promotion
-have their own acceptance case, `PROFILE-02`.
+records production and slot uploads, configuration of sticky settings,
+asynchronous ARM slot operations and SCM polling from Azure CLI 2.93.0
+against a loopback protocol fixture. End-to-end CLI uploads and slot
+promotion have their own acceptance case, `PROFILE-02`.
 
 ### Regional observability
 

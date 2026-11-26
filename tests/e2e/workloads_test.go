@@ -22,11 +22,15 @@ func workloadSteps(options labOptions) []harness.Step {
 	packageStore := harness.Step{Name: "regional-functions-zip-store", Cases: []string{"ZIP-02"}, Timeout: 2 * time.Minute,
 		Command: []string{"go", "test", "-race", "-tags=e2e", "-run", "^TestRegionalFunctionPackages$", "./internal/controlplane"},
 		Env:     []string{"OCEAN_E2E_FUNCTIONS_PACKAGE_STORE=1"}}
+	slotSwap := packageStore
+	slotSwap.Name, slotSwap.Cases = "regional-functions-slot-swap", []string{"ZIP-03"}
+	slotSwap.Command = []string{"go", "test", "-race", "-tags=e2e", "-run", "^TestRegionalFunctionSlotSwap$", "./internal/controlplane"}
 	if os.Getenv("OCEAN_E2E_ETCD_ENDPOINTS") == "" || os.Getenv("OCEAN_E2E_ETCD_PKI") == "" {
 		packageStore.BlockedReason = "Provide OCEAN_E2E_ETCD_ENDPOINTS and OCEAN_E2E_ETCD_PKI for the package storage probe."
+		slotSwap.BlockedReason = "Provide OCEAN_E2E_ETCD_ENDPOINTS and OCEAN_E2E_ETCD_PKI for the slot swap probe."
 	}
 	return []harness.Step{
-		nativeZIP, packageStore,
+		nativeZIP, packageStore, slotSwap,
 		{Name: "function-runtime-images", Cases: []string{"FUNCTION-01", "FUNCTION-02"}, Timeout: 20 * time.Minute,
 			Command:  []string{"python3", "-B", "lab/verify_function_fixtures.py", "--output", fixtureEvidence},
 			Evidence: []harness.EvidenceSource{{Name: "images.json", Path: fixtureEvidence}}},
