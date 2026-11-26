@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,17 +40,26 @@ func TestPackagedVMWorker(t *testing.T) {
 	state := os.Getenv("OCEAN_E2E_VM_WORKER_STATE")
 	testPackagedVMWorker(t, state, vmCatalogImage{URI: "https://images.ocean.test/server-core.vhd", SizeGiB: 64,
 		ImageSHA256: os.Getenv("OCEAN_E2E_VM_DISK_PIN"), FirmwareSHA256: os.Getenv("OCEAN_E2E_VM_VARS_PIN")},
-		"Standard_B2s", "server-core", true)
+		"Standard_B2s", "server-core", os.Getenv("OCEAN_E2E_VM_SMB_AUTH") != "")
 }
 
 func TestPackagedLinuxVMWorker(t *testing.T) {
+	testPackagedLinuxVMWorker(t, false)
+}
+
+func TestPackagedDesktopVMFence(t *testing.T) {
+	testPackagedLinuxVMWorker(t, true)
+}
+
+func testPackagedLinuxVMWorker(t *testing.T, withFence bool) {
+	t.Helper()
 	state := os.Getenv("OCEAN_E2E_VM_LINUX_STATE")
 	testPackagedVMWorker(t, state, vmCatalogImage{URI: "https://images.ocean.test/debian-desktop.raw", SizeGiB: 8, OSType: workload.VMLinux,
 		ImageSHA256: os.Getenv("OCEAN_E2E_VM_LINUX_DISK_PIN"), FirmwareSHA256: os.Getenv("OCEAN_E2E_VM_LINUX_VARS_PIN")},
-		"Standard_B1s", "debian-desktop", false)
+		"Standard_B1s", "debian-desktop", withFence)
 }
 
-func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, hardware, guest string, windowsFence bool) {
+func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, hardware, guest string, withFence bool) {
 	t.Helper()
 	endpoint := os.Getenv("OCEAN_E2E_VM_ETCD")
 	if state == "" || endpoint == "" {
@@ -67,9 +77,9 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fence *packagedVMFence
-	if windowsFence {
-		fence = loadPackagedVMFence(t)
+	var fencePlan lab.Plan
+	if withFence {
+		fencePlan = loadPackagedVMFence(t)
 	}
 	osType := vmOperatingSystem(catalog.OSType)
 	size, ok := workload.VirtualMachineSize(hardware)
@@ -83,7 +93,7 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	scope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
 	foreignScope := arm.SubscriptionScope{TenantID: operationID(), SubscriptionID: operationID()}
 	catalog.TenantID, catalog.SubscriptionID = scope.TenantID, scope.SubscriptionID
-	r := setupPackagedVMStore(t, endpoint, catalog, packagedVMFencerKey(t, state), fence != nil)
+	r := setupPackagedVMStore(t, endpoint, catalog, packagedVMFencerKey(t, state), withFence)
 	ca, caKey, _, _ := directoryJoinClientCertificates(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
 	key, err := x509.MarshalPKCS8PrivateKey(caKey)
@@ -202,9 +212,9 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 		}
 	}
 	assertPower("running")
-	var desktopProbe func(string) ([]byte, error)
+	var desktopProbe *packagedDesktopClient
 	if osType == workload.VMLinux {
-		desktopProbe = packagedDesktopSSH(t, ctx, state, guests)
+		desktopProbe = packagedDesktopSSH(t, state, guests)
 	}
 	for _, path := range []string{imageURL, nicURL, diskURL, url} {
 		body := az("get", path, "")
@@ -225,11 +235,11 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	checkpoint := operationID()
 	if desktopProbe != nil {
 		pollVMWorker(t, ctx, 60*time.Second, "the Debian desktop SSH service", func() bool {
-			_, err := desktopProbe("test -x /usr/bin/openbox-session && systemctl is-active --quiet xrdp")
+			_, err := desktopProbe.run(ctx, "test -x /usr/bin/openbox-session && systemctl is-active --quiet xrdp", nil)
 			return err == nil
 		})
 		worker.run(ctx, "farm-1-node-07", "nc -z -w 3 10.232.1.20 3389", nil)
-		if output, err := desktopProbe("mkdir -p ~/.config/ocean-desktop && printf %s '" + checkpoint + "' >~/.config/ocean-desktop/checkpoint && sync"); err != nil {
+		if output, err := desktopProbe.run(ctx, "mkdir -p ~/.config/ocean-desktop && printf %s '"+checkpoint+"' >~/.config/ocean-desktop/checkpoint && sync", nil); err != nil {
 			t.Fatalf("save the Debian desktop profile checkpoint: %v: %s", err, output)
 		}
 	}
@@ -249,19 +259,33 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	assertPower("running")
 	if desktopProbe != nil {
 		pollVMWorker(t, ctx, 60*time.Second, "the restored Debian desktop profile", func() bool {
-			output, err := desktopProbe("cat ~/.config/ocean-desktop/checkpoint")
+			output, err := desktopProbe.run(ctx, "cat ~/.config/ocean-desktop/checkpoint", nil)
 			return err == nil && string(output) == checkpoint
 		})
 		worker.run(ctx, "farm-1-node-07", "nc -z -w 3 10.232.1.20 3389", nil)
 		t.Log("the private RDP listener returned with the previous user's profile checkpoint")
 	}
 	t.Logf("%s preserved the machine ID and private address on restart after %s", osType, time.Since(restart).Round(time.Millisecond))
-	if fence != nil {
+	if withFence {
 		startPackagedVMHost(t, ctx, r, worker, guests, vmLabSpare, origin, caPEM)
 		t.Cleanup(func() { stopPackagedVMHost(t, worker, vmLab, vmLabSpare) })
 		waitPackagedVMHost(t, ctx, r, vmLabSpare)
-		fence.verify(t, ctx, vmLab, worker, r, api, scope, vm, restart)
+		_, first, _, _, _, err := r.readVM(ctx, scope, vm)
+		if err != nil || first.Reservation.HostID != vmLabPrimary || first.Observed != workload.Running || !first.Prepared {
+			t.Fatalf("the initial VM is not running on the expected writer: %v", err)
+		}
+		var probe vmRecoveryProbe
+		if desktopProbe != nil {
+			probe = prepareDesktopVMRecovery(t, ctx, worker, desktopProbe)
+		} else {
+			auth := loadWindowsVMCheckpointAuth(t, os.Getenv("OCEAN_E2E_VM_SMB_AUTH"))
+			probe = prepareWindowsVMRecovery(t, ctx, worker, auth, first, restart)
+		}
+		timings := verifyPackagedVMFence(t, ctx, vmLab, fencePlan, worker, r, api, scope, vm, first, probe)
 		assertPower("running")
+		if desktopProbe != nil {
+			writeDesktopFenceEvidence(t, state, timings)
+		}
 	}
 	deletedAt := time.Now()
 	az("delete", url, "")
@@ -276,7 +300,17 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	t.Log("the packaged worker completed all observed VM lifecycle operations requested through stock az rest")
 }
 
-func packagedDesktopSSH(t *testing.T, ctx context.Context, state string, guests []lab.GuestStatus) func(string) ([]byte, error) {
+type packagedDesktopClient struct {
+	sshConfig string
+}
+
+func (c *packagedDesktopClient) run(ctx context.Context, command string, input io.Reader) ([]byte, error) {
+	ssh := exec.CommandContext(ctx, "ssh", "-F", c.sshConfig, "desktop", command)
+	ssh.Stdin = input
+	return ssh.CombinedOutput()
+}
+
+func packagedDesktopSSH(t *testing.T, state string, guests []lab.GuestStatus) *packagedDesktopClient {
 	t.Helper()
 	identity, knownHosts := os.Getenv("OCEAN_E2E_VM_LINUX_SSH_KEY"), os.Getenv("OCEAN_E2E_VM_LINUX_KNOWN_HOSTS")
 	if !filepath.IsAbs(identity) || !filepath.IsAbs(knownHosts) {
@@ -316,9 +350,7 @@ Host desktop
 	if err := os.WriteFile(config, []byte(settings), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return func(command string) ([]byte, error) {
-		return exec.CommandContext(ctx, "ssh", "-F", config, "desktop", command).CombinedOutput()
-	}
+	return &packagedDesktopClient{sshConfig: config}
 }
 
 func setupPackagedVMStore(t *testing.T, endpoint string, catalog vmCatalogImage, fencer ed25519.PublicKey, standby bool) *Region {

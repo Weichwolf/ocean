@@ -919,6 +919,24 @@ OCEAN_E2E_PROFILE=vm-worker-linux \
     -run '^TestAcceptance$' ./tests/e2e
 ```
 
+Run `WORKPLACE-37` with the same disk, firmware and SSH inputs and
+`OCEAN_E2E_PROFILE=vm-worker-linux-fence`. Set
+`OCEAN_E2E_VM_FENCE_PROFILE` to the original profile used to start the
+two-worker lab. Keep both compute workers and all three Ceph guests running.
+Install `freerdp3-x11`, `xvfb` and `xauth` on the private observer
+`farm-1-node-07`. Install the current Ocean package on both compute workers.
+
+The fixture creates a temporary password for the disposable Debian account
+and pins the guest's XRDP certificate using the existing SSH trust. A native
+FreeRDP session writes a checkpoint from the user's X session. The probe
+partitions the initial compute worker from ARM and checks that an expired
+lease cannot transfer the disk. The out-of-band KVM supervisor then confirms
+the worker stopped. The fence API rejects a forged proof and accepts the
+signed proof and its replay. The new FreeRDP session must report a new boot
+and the previous checkpoint. The restarted worker must have neither an
+assignment nor a writable map for the desktop disk. The probe writes lease,
+boot and reconnect measurements to `desktop-vm-fence.tsv`.
+
 For the browser identity path, configure `desktopApplicationId` with the
 published Graph application object ID in
 `identity.onboarding.webDirectories[tenantId]`. The configured application

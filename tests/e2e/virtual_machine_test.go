@@ -41,5 +41,11 @@ func virtualMachineSteps() []harness.Step {
 	linux = requireFile(linux, filepath.Join(linuxState, "storage-pki", "lab-fencer.pub"), "the lab fencer public key")
 	linux = requireFile(linux, os.Getenv("OCEAN_E2E_VM_LINUX_SSH_KEY"), "the disposable desktop fixture SSH key")
 	linux = requireFile(linux, os.Getenv("OCEAN_E2E_VM_LINUX_KNOWN_HOSTS"), "the pinned desktop fixture SSH host key")
-	return []harness.Step{step, linux}
+	desktopFence := harness.Step{Name: "packaged-desktop-vm-fence", Cases: []string{"WORKPLACE-37"}, Timeout: 24 * time.Minute,
+		Command: []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-timeout=22m", "-v", "-run",
+			"^TestPackagedDesktopVMFence$", "./internal/controlplane"},
+		BlockedReason: linux.BlockedReason,
+		Evidence:      []harness.EvidenceSource{{Name: "desktop-vm-fence.tsv", Path: filepath.Join(linuxState, "evidence", "desktop-vm-fence.tsv")}}}
+	desktopFence = requireFile(desktopFence, os.Getenv("OCEAN_E2E_VM_FENCE_PROFILE"), "the original two-worker KVM lab profile")
+	return []harness.Step{step, linux, desktopFence}
 }

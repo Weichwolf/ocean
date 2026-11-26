@@ -169,13 +169,26 @@ func openVMWorker(base string) (vmWorker, error) {
 	if err := exec.Command("/usr/sbin/runuser", "-u", vmAccount, "--", w.binary, "-mode", "vm-guest", "-vm-action", "check").Run(); err != nil {
 		return w, errors.New("the VM runtime account cannot open /dev/kvm")
 	}
-	for path, mode := range map[string]os.FileMode{vmRoot: 0755, vmRoot + "/locals": 0700, vmRoot + "/guests": 0755} {
-		if err := os.MkdirAll(path, mode); err != nil {
-			return w, err
-		}
+	if err := prepareVMRuntime(vmRoot); err != nil {
+		return w, err
 	}
 	w.client, err = loadEnrolledClient(filepath.Join(base, "config.json"))
 	return w, err
+}
+
+func prepareVMRuntime(root string) error {
+	if err := os.MkdirAll(root, 0755); err != nil {
+		return err
+	}
+	// Older workers could create the parent with the private locals mode.
+	// The unprivileged enrollment agent must be able to stat the ready file.
+	if err := os.Chmod(root, 0755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(root, "locals"), 0700); err != nil {
+		return err
+	}
+	return os.MkdirAll(filepath.Join(root, "guests"), 0755)
 }
 
 func touchVMReady() error {

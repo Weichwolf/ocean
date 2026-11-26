@@ -112,7 +112,7 @@ func TestAcceptance(t *testing.T) {
 			}
 		}
 	}
-	if profile == "vm-worker-linux" {
+	if profile == "vm-worker-linux" || profile == "vm-worker-linux-fence" {
 		for name, input := range map[string]string{"VM lab state": "OCEAN_E2E_VM_LINUX_STATE", "VM disk SHA-256": "OCEAN_E2E_VM_LINUX_DISK_PIN",
 			"VM firmware variables SHA-256": "OCEAN_E2E_VM_LINUX_VARS_PIN"} {
 			if value := os.Getenv(input); value != "" {
@@ -265,6 +265,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool { return c.ID == "VM-01" || c.ID == "VM-02" }
 	case "vm-worker-linux":
 		available = func(c harness.Case) bool { return c.ID == "VM-03" }
+	case "vm-worker-linux-fence":
+		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-37" }
 	default:
 		t.Fatalf("unknown acceptance profile %q", profile)
 	}

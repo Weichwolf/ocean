@@ -31,17 +31,8 @@ import (
 
 const vmLabSpare = "farm-1-node-06"
 
-type packagedVMFence struct {
-	planned lab.Plan
-	auth    []byte
-}
-
-func loadPackagedVMFence(t *testing.T) *packagedVMFence {
+func loadWindowsVMCheckpointAuth(t *testing.T, authPath string) []byte {
 	t.Helper()
-	authPath := os.Getenv("OCEAN_E2E_VM_SMB_AUTH")
-	if authPath == "" {
-		return nil
-	}
 	info, err := os.Stat(authPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() < 1 || info.Size() > 4096 {
 		t.Fatal("provide a private SMB authentication file for the disposable Windows checkpoint account")
@@ -51,11 +42,16 @@ func loadPackagedVMFence(t *testing.T) *packagedVMFence {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { clear(auth) })
+	return auth
+}
+
+func loadPackagedVMFence(t *testing.T) lab.Plan {
+	t.Helper()
 	plan, err := lab.LoadPlan(os.Getenv("OCEAN_E2E_VM_FENCE_PROFILE"))
 	if err != nil {
 		t.Fatalf("load the original VM lab profile: %v", err)
 	}
-	return &packagedVMFence{planned: plan, auth: auth}
+	return plan
 }
 
 func packagedVMFencerKey(t *testing.T, state string) ed25519.PublicKey {
@@ -84,14 +80,14 @@ type windowsVMCheckpoint struct {
 	BootedAt time.Time `json:"bootedAt"`
 }
 
-func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.Lab, worker directoryKVMHosts,
-	r *Region, api *httptest.Server, scope arm.SubscriptionScope, address arm.ResourceAddress, restart time.Time) {
+type vmRecoveryProbe struct {
+	unreachable func() bool
+	reconnect   func(time.Time) time.Time
+}
+
+func prepareWindowsVMRecovery(t *testing.T, ctx context.Context, worker directoryKVMHosts, auth []byte, first vmRecord, restart time.Time) vmRecoveryProbe {
 	t.Helper()
-	_, first, _, _, _, err := r.readVM(ctx, scope, address)
-	if err != nil || first.Reservation.HostID != vmLabPrimary || first.Observed != workload.Running || !first.Prepared {
-		t.Fatalf("the initial VM is not running on the expected writer: %v", err)
-	}
-	probe := startVMCheckpointClient(t, ctx, worker, f.auth)
+	probe := startVMCheckpointClient(t, ctx, worker, auth)
 	marker := make([]byte, 48)
 	rand.Read(marker)
 	worker.run(ctx, vmLabSpare, "sudo tee "+probe.path+"/sent >/dev/null", bytes.NewReader(marker))
@@ -122,12 +118,42 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 		t.Fatalf("unexpected initial Windows guest identity: %+v", before)
 	}
 	t.Logf("Windows build %s acknowledged an encrypted SMB checkpoint at 10.232.1.20", before.Build)
+	return vmRecoveryProbe{
+		unreachable: func() bool { _, err := probe.smb(ctx, "ls"); return err != nil },
+		reconnect: func(cutover time.Time) time.Time {
+			var after windowsVMCheckpoint
+			pollVMWorker(t, ctx, 2*time.Minute, "the replacement Windows SMB checkpoint and new boot record", func() bool {
+				var err error
+				after, err = probe.read(ctx)
+				return err == nil && after.BootedAt.After(cutover)
+			})
+			if after.UUID != before.UUID || after.GUID != before.GUID || after.Hostname != before.Hostname || after.Build != before.Build {
+				t.Fatalf("Windows machine identity changed during fenced replacement: %+v then %+v", before, after)
+			}
+			t.Log("the replacement returned the Windows identity and identical SMB checkpoint")
+			return time.Now()
+		},
+	}
+}
 
+// Measurements start immediately before the control-plane partition and the
+// out-of-band power cut. They include the selected client's reconnect time.
+type vmFenceTimings struct {
+	partitionToLease time.Duration
+	powerToRunning   time.Duration
+	powerToReconnect time.Duration
+}
+
+func verifyPackagedVMFence(t *testing.T, ctx context.Context, vmLab *lab.Lab, plan lab.Plan, worker directoryKVMHosts,
+	r *Region, api *httptest.Server, scope arm.SubscriptionScope, address arm.ResourceAddress, first vmRecord, probe vmRecoveryProbe) vmFenceTimings {
+	t.Helper()
+	partitioned := time.Now()
 	partitionVMPrimary(t, ctx, worker, api.URL)
 	pollVMWorker(t, ctx, 65*time.Second, "the partitioned worker's placement lease to expire", func() bool {
 		live, err := r.client.Get(ctx, r.hostKey("live", vmLabPrimary), clientv3.WithCountOnly())
 		return err == nil && live.Count == 0
 	})
+	timings := vmFenceTimings{partitionToLease: time.Since(partitioned)}
 	if _, err := r.reconcileVMFencePage(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +161,7 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 	if vmDiskMapping(t, ctx, worker, vmLabPrimary, first.Disk.ID) != 1 || vmDiskMapping(t, ctx, worker, vmLabSpare, first.Disk.ID) != 0 {
 		t.Fatal("lease loss changed the number of attached disk writers")
 	}
-	if _, err := probe.smb(ctx, "ls"); err == nil {
+	if !probe.unreachable() {
 		t.Fatal("the partitioned guest accepted traffic after its network policy lease expired")
 	}
 	t.Log("the partition expired the placement and network leases while the old worker alone retained the writable disk")
@@ -150,7 +176,7 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 	verifyVMFenceAssignment(t, ctx, r, scope, first, vmLabSpare)
 	verifyFenceHTTP(t, ctx, api, signed, http.StatusNoContent)
 	verifyFenceHTTP(t, ctx, api, signed, http.StatusNoContent)
-	pollVMWorker(t, ctx, 3*time.Minute, "the fenced Windows VM to boot on the standby worker", func() bool {
+	pollVMWorker(t, ctx, 3*time.Minute, "the fenced VM to boot on the standby worker", func() bool {
 		if _, err := r.reconcileVMFencePage(ctx, ""); err != nil {
 			t.Fatal(err)
 		}
@@ -159,18 +185,11 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 			record.Reservation.HostID == vmLabSpare && record.Reservation.Generation != first.Reservation.Generation &&
 			record.Disk == first.Disk && record.MachineID == first.MachineID
 	})
-	var after windowsVMCheckpoint
-	pollVMWorker(t, ctx, 2*time.Minute, "the replacement Windows SMB checkpoint and new boot record", func() bool {
-		var err error
-		after, err = probe.read(ctx)
-		return err == nil && after.BootedAt.After(started)
-	})
-	if after.UUID != before.UUID || after.GUID != before.GUID || after.Hostname != before.Hostname || after.Build != before.Build {
-		t.Fatalf("Windows machine identity changed during fenced replacement: %+v then %+v", before, after)
-	}
-	t.Logf("confirmed power loss, fenced replacement, identical SMB checkpoint and Windows identity after %s", time.Since(started).Round(time.Millisecond))
+	timings.powerToRunning = time.Since(started)
+	timings.powerToReconnect = probe.reconnect(started).Sub(started)
+	t.Logf("fenced replacement and successful client access after %s", timings.powerToReconnect.Round(time.Millisecond))
 
-	if err := vmLab.UpSelected(ctx, f.planned, "", 0, []string{vmLabPrimary}); err != nil {
+	if err := vmLab.UpSelected(ctx, plan, "", 0, []string{vmLabPrimary}); err != nil {
 		t.Fatal(err)
 	}
 	pollVMWorker(t, ctx, 75*time.Second, "the retired Debian worker to reboot", func() bool {
@@ -189,6 +208,7 @@ func (f packagedVMFence) verify(t *testing.T, ctx context.Context, vmLab *lab.La
 		t.Fatalf("the original worker regained a regional VM assignment: %v", err)
 	}
 	t.Log("the rebooted Debian worker rejoined without a VM assignment or writable disk map")
+	return timings
 }
 
 func partitionVMPrimary(t *testing.T, ctx context.Context, worker directoryKVMHosts, apiURL string) {
