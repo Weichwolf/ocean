@@ -2042,7 +2042,9 @@ AES-256/SHA-256, MODP 2048 with PFS, and a dedicated XFRM interface. The
 verifier checks installed CHILD SAs, bidirectional packets between the
 approved IPv4 prefixes, blocked traffic with an incorrect key or unauthorized
 addresses, forwarding lease expiry and renewal, and repeatable teardown.
-The forwarding deadline is eight seconds. Each peer stages its credential
+The gateway reports connected while the CHILD SA and the active kernel
+forwarding lease are both present. The forwarding deadline is eight seconds.
+Each peer stages its credential
 under an owner-only tmpfs directory and removes the file after submitting
 it through the private VICI socket. [strongSwan route-based IPsec](https://docs.strongswan.org/docs/latest/features/routeBasedVpn.html)
 
@@ -2083,6 +2085,13 @@ The runner writes `results.tsv`, `report.md`, and
 package versions and time to working IKE and CHILD SAs. `PROFILE-01`
 requires an additional run through the stock Azure CLI against ocean's
 management endpoint with the real tunnel and cleanup as evidence.
+
+The [captured Azure CLI 2.93.0 request fixture](../tests/e2e/testdata/ipsec-cli-requests.json)
+covers the virtual and local gateway PUTs, the inline incremental connection
+deployment, and direct connection show and delete requests. `TestIPsecCLIRequestShape`
+checks ARM routing and validation against this fixture. The request-shape
+test uses a substituted key and exercises rejection of foreign gateways,
+unsupported settings, and attempts to project the key into deployment output.
 
 ## Routed WireGuard gateway
 

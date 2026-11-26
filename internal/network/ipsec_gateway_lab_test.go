@@ -130,6 +130,11 @@ func TestRoutedIPsec(t *testing.T) {
 		t.Fatal(ctx.Err())
 	case <-time.After(9 * time.Second):
 	}
+	for namespace, gateway := range map[string]IPsecGateway{cloud: cloudSide, site: siteSide} {
+		if active, err := gateway.Connected(ctx, namespace); err != nil || active {
+			t.Fatalf("an expired forwarding lease was reported as connected: %v", err)
+		}
+	}
 	ping(customer, "", "10.91.1.4", false)
 	if err := cloudSide.RefreshLease(ctx, cloud); err != nil {
 		t.Fatal(err)

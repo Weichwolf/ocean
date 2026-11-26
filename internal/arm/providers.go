@@ -41,6 +41,9 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 			{ResourceType: "resourceGroups", Locations: []string{s.Location}, APIVersions: []string{resourceAPIVersion}},
 			{ResourceType: "deployments", Locations: []string{s.Location}, APIVersions: []string{deploymentAPIVersion}},
 		}
+		if s.VPN != nil {
+			types[1].APIVersions = append(types[1].APIVersions, resourceAPIVersion)
+		}
 	case "microsoft.network":
 		namespace = "Microsoft.Network"
 		types = []providerResourceType{
@@ -56,6 +59,12 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 		}
 		if s.VirtualMachines != nil {
 			types = append(types, providerResourceType{ResourceType: "networkInterfaces", Locations: []string{s.Location}, APIVersions: []string{VMNetworkAPIVersion}})
+		}
+		if s.VPN != nil {
+			for _, collection := range []string{"virtualNetworkGateways", "localNetworkGateways", "connections"} {
+				_, version := vpnResourceType(collection)
+				types = append(types, providerResourceType{ResourceType: collection, Locations: []string{s.Location}, APIVersions: []string{version}})
+			}
 		}
 	case "microsoft.compute":
 		if s.VirtualMachines == nil {

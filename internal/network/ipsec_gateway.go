@@ -36,6 +36,23 @@ type IPsecGateway struct {
 	Socket                        string
 }
 
+type IPsecPeer struct {
+	Endpoint netip.Addr
+	Prefixes []netip.Prefix
+}
+
+func (p IPsecPeer) Validate() error {
+	if !p.Endpoint.Is4() || !p.Endpoint.IsGlobalUnicast() || len(p.Prefixes) == 0 || len(p.Prefixes) > 32 {
+		return errors.New("the IPsec peer requires an IPv4 endpoint and one to 32 customer prefixes")
+	}
+	for index, prefix := range p.Prefixes {
+		if !privateNetworkPrefix(prefix) || prefix.Contains(p.Endpoint) || slices.ContainsFunc(p.Prefixes[:index], prefix.Overlaps) {
+			return errors.New("IPsec customer prefixes must be disjoint canonical private IPv4 networks outside the peer endpoint")
+		}
+	}
+	return nil
+}
+
 func (g IPsecGateway) validate(namespace string) error {
 	links := []string{namespace, g.Tunnel, g.Underlay, g.Inside}
 	for _, link := range links {
@@ -157,13 +174,16 @@ func (g IPsecGateway) Remove(ctx context.Context, namespace string) error {
 	return err
 }
 
-// Connected requires an established IKE session and an installed CHILD SA.
+// Connected requires confirmed kernel forwarding and installed IPsec state.
 func (g IPsecGateway) Connected(ctx context.Context, namespace string) (bool, error) {
 	if err := g.validate(namespace); err != nil {
 		return false, err
 	}
 	up, err := g.tunnelPresent(ctx, namespace)
 	if err != nil || !up {
+		return false, err
+	}
+	if live, err := g.forwardingLive(ctx, namespace); err != nil || !live {
 		return false, err
 	}
 	associations, err := g.associations(ctx, namespace)
@@ -174,6 +194,45 @@ func (g IPsecGateway) Connected(ctx context.Context, namespace string) (bool, er
 		if strings.Contains(line, "state=ESTABLISHED ") && strings.Contains(line, "name="+ipsecChild+" ") &&
 			strings.Contains(line, "state=INSTALLED ") {
 			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (g IPsecGateway) forwardingLive(ctx context.Context, namespace string) (bool, error) {
+	command := exec.CommandContext(ctx, "/usr/bin/ip", "netns", "exec", namespace, "/usr/sbin/nft", "-j", "list", "table", "inet", ipsecTable)
+	output, err := command.Output()
+	if err != nil {
+		return false, fmt.Errorf("inspect the IPsec forwarding lease: %w", err)
+	}
+	var rules struct {
+		Objects []struct {
+			Set struct {
+				Name     string          `json:"name"`
+				Elements json.RawMessage `json:"elem"`
+			} `json:"set"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(output, &rules); err != nil {
+		return false, fmt.Errorf("decode the IPsec forwarding lease: %w", err)
+	}
+	for _, object := range rules.Objects {
+		if object.Set.Name != "live_tunnel" || len(object.Set.Elements) == 0 {
+			continue
+		}
+		var elements []struct {
+			Element struct {
+				Interface string `json:"val"`
+				Expires   int    `json:"expires"`
+			} `json:"elem"`
+		}
+		if err := json.Unmarshal(object.Set.Elements, &elements); err != nil {
+			return false, fmt.Errorf("decode timed IPsec forwarding elements: %w", err)
+		}
+		for _, entry := range elements {
+			if entry.Element.Interface == g.Tunnel && entry.Element.Expires > 0 {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
