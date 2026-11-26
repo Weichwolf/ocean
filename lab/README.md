@@ -2364,11 +2364,68 @@ bin/ocean-rack -inventory /etc/ocean/rack-assets.json \
   -ironic-token /run/credentials/ocean-rack/ironic-token
 ```
 
-The preflight reads hardware identity. Address allocation, DNS publication,
-installation, and qualification require the commissioning workflow.
-`PROD-03` requires a separate run with physical approved and unapproved
-hardware. Run the preflight integration tests with
-`go test -race ./cmd/ocean-rack`. [DMTF Redfish specification](https://redfish.dmtf.org/schemas/v1/DSP0268_2025.2.pdf) · [Ironic Redfish driver](https://docs.openstack.org/ironic/latest/admin/drivers/redfish.html) · [Production acceptance matrix](../acceptance.tsv)
+Run the preflight integration tests with `go test -race ./cmd/ocean-rack`.
+[DMTF Redfish specification](https://redfish.dmtf.org/schemas/v1/DSP0268_2025.2.pdf) · [Ironic Redfish driver](https://docs.openstack.org/ironic/latest/admin/drivers/redfish.html)
+
+### Regional rack inventory and DNS
+
+Enable `region.rackProvisioning` on controller replicas with host enrollment.
+The controllers poll the signed inventory and keep its highest accepted
+revision and digest in regional etcd. The same revision must carry identical
+signed bytes. Removing an entry stops automatic processing for it. An
+existing reservation remains allocated for operator review.
+
+```json
+{
+  "inventoryFile": "/etc/ocean/rack-assets.json",
+  "signatureFile": "/etc/ocean/rack-assets.sig",
+  "publicKeyFile": "/etc/ocean/assets-public.pem",
+  "bmcCAFile": "/etc/ocean/bmc-ca.pem",
+  "ironicOrigin": "https://ironic.example.net",
+  "ironicCAFile": "/etc/ocean/ironic-ca.pem",
+  "ironicTokenFile": "/run/credentials/ocean/ironic-token",
+  "dns": {
+    "server": "10.74.16.53:53",
+    "keyFile": "/run/credentials/ocean/rack-a-dns.key"
+  },
+  "racks": {
+    "rack-a": {
+      "bmcCredentialFile": "/run/credentials/ocean/rack-a-bmc.json",
+      "network": "10.74.16.0/24",
+      "firstAddress": "10.74.16.100",
+      "lastAddress": "10.74.16.199",
+      "gateway": "10.74.16.1",
+      "dnsZone": "rack-a.ocean.example.net",
+      "profile": "debian-rack",
+      "cell": "cell-1",
+      "pool": "owned",
+      "roles": ["compute"],
+      "minimumCPU": 2,
+      "minimumMemoryMiB": 1024,
+      "requireKVM": true
+    }
+  }
+}
+```
+
+Keep the rack address range exclusive to Ocean and outside other address
+assignment pools. After Redfish and Ironic verification, the controllers
+reserve the host, Ironic node, system UUID, MAC, IPv4 address, and DNS name
+in one quorum transaction. Static host inventory shares the IPv4, MAC, and
+host ID constraints. Use equivalent rack policies on all controllers.
+Address range expansion preserves existing reservations.
+
+Install `bind9-dnsutils` on the controllers. Give their service account an
+owner-only TSIG key file authorized to add A records under the management
+zone. The controllers use `nsupdate` with RFC 2136 prerequisites and
+confirm the A record before recording successful publication. An occupied
+name with different data leaves the host pending. The Ironic token file can
+be replaced independently of the controller process.
+
+`RACK-01` uses disposable mTLS etcd, a local authoritative BIND primary
+and TLS management fixtures. `PROD-03` covers commissioning, installation
+and host qualification on physical hardware.
+[Rack inventory acceptance protocol](../tests/e2e/protocol.md#rack-inventory-and-dns) · [Debian nsupdate](https://manpages.debian.org/trixie/bind9-dnsutils/nsupdate.1.en.html) · [Production acceptance matrix](../acceptance.tsv)
 
 ## Leased host capacity and reservations
 

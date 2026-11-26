@@ -286,8 +286,9 @@ adds a trusted hardware inventory, out-of-band management and unattended
 Debian installation to the demonstrated first-boot enrollment path. The
 [rack inventory preflight](lab/README.md#rack-inventory-preflight) checks
 signed approvals against a site's Redfish BMCs and Ironic boot configuration
-before commissioning. Physical
-qualification also covers fencing, independent infrastructure failure
+before commissioning. Regional controllers reserve management addresses
+in etcd and publish management names to the site's private DNS primary.
+Physical qualification also covers fencing, independent infrastructure failure
 domains and measured performance under load. IPsec compatibility, Functions
 ZIP deployment and slots, and monetary Cost Management have separate
 conditional gates.

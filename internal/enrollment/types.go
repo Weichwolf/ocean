@@ -38,9 +38,15 @@ func (a Approval) Valid() bool {
 	mac, macErr := net.ParseMAC(a.MAC)
 	address, addrErr := netip.ParseAddr(a.Address)
 	digest, digestErr := hex.DecodeString(a.TokenSHA256)
-	if !hostName.MatchString(a.HostID) || !hostName.MatchString(a.Profile) || !hostName.MatchString(a.Cell) || !hostName.MatchString(a.Pool) ||
-		macErr != nil || len(mac) != 6 || mac.String() != a.MAC || addrErr != nil || !address.Is4() || !address.IsGlobalUnicast() ||
-		digestErr != nil || len(digest) != sha256.Size || a.ExpiresAt.IsZero() || a.MinimumCPU < 1 || a.MinimumMemoryMiB < 1 || len(a.Roles) == 0 ||
+	return hostName.MatchString(a.HostID) &&
+		macErr == nil && len(mac) == 6 && mac.String() == a.MAC && addrErr == nil && address.Is4() && address.IsGlobalUnicast() &&
+		digestErr == nil && len(digest) == sha256.Size && !a.ExpiresAt.IsZero() && a.ValidPlacementPolicy()
+}
+
+// ValidPlacementPolicy validates the part of an approval shared by hosts in a pool.
+func (a Approval) ValidPlacementPolicy() bool {
+	if !hostName.MatchString(a.Profile) || !hostName.MatchString(a.Cell) || !hostName.MatchString(a.Pool) ||
+		a.MinimumCPU < 1 || a.MinimumMemoryMiB < 1 || len(a.Roles) == 0 ||
 		(a.Reserved != nil && (a.Reserved.CPUMillis < 0 || a.Reserved.MemoryMiB < 0)) {
 		return false
 	}

@@ -96,6 +96,24 @@ prepared regional lab. The latter records the pinned CLI version, measured
 source quantities, rate schedule, typed cost results and isolation outcomes.
 [Cost Management lab guide](../../lab/README.md#cost-management)
 
+### Rack inventory and DNS
+
+Install BIND 9 and `bind9-dnsutils`, then run the `rack-inventory` profile
+with `OCEAN_E2E_ETCD_ENDPOINTS` and `OCEAN_E2E_ETCD_PKI` pointing to a
+disposable store. Set `OCEAN_E2E_RACK_BIND_BINARY` if `named` is outside
+the command path.
+
+```sh
+OCEAN_E2E_PROFILE=rack-inventory go test -tags=e2e -count=1 ./tests/e2e -run '^TestAcceptance$'
+```
+
+The probe starts an isolated authoritative primary on an unprivileged local
+port. It records the address owners, etcd revisions and reconciliation time
+and checks A records with an independent DNS client. The Redfish and Ironic
+endpoints are TLS fixtures. Physical rack commissioning uses `PROD-03`.
+
+### Workplace profile probes
+
 Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
 disposable endpoint to verify regional replica and writer fencing,
 acknowledgement, and replacement scheduling. This case uses signed fixture

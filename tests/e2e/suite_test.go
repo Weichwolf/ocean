@@ -290,6 +290,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool { return slices.Contains(small, c.ID) }
 	case "scale-16":
 		available = func(c harness.Case) bool { return c.ID == "LAB-02" }
+	case "rack-inventory":
+		available = func(c harness.Case) bool { return c.ID == "RACK-01" }
 	case "geo-4x3", "geo-4x4":
 		available = func(c harness.Case) bool { return c.ID == "PROFILE-04" || c.ID == "PROFILE-06" }
 	case "ipsec-gateway":

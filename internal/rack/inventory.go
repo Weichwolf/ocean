@@ -4,8 +4,10 @@ package rack
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ type Inventory struct {
 	NotBefore time.Time `json:"notBefore"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	Assets    []Asset   `json:"assets"`
+	Digest    string    `json:"-"`
 }
 
 type Asset struct {
@@ -87,6 +90,8 @@ func LoadInventory(inventoryFile, signatureFile, publicKeyFile string, now time.
 	if err := inventory.validate(); err != nil {
 		return Inventory{}, err
 	}
+	digest := sha256.Sum256(raw)
+	inventory.Digest = hex.EncodeToString(digest[:])
 	return inventory, nil
 }
 

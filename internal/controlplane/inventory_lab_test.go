@@ -36,12 +36,17 @@ func TestPublishLabInventory(t *testing.T) {
 
 func openLabRegion(t *testing.T) *Region {
 	t.Helper()
+	return openNamedLabRegion(t, "farm-1")
+}
+
+func openNamedLabRegion(t *testing.T, name string) *Region {
+	t.Helper()
 	endpoints := os.Getenv("OCEAN_E2E_ETCD_ENDPOINTS")
 	if endpoints == "" {
 		t.Skip("requires the isolated regional inventory lab")
 	}
 	pki := os.Getenv("OCEAN_E2E_ETCD_PKI")
-	region, err := openRegion(regionConfig{Name: "farm-1", InitialCell: "cell-1", Etcd: etcdConfig{
+	region, err := openRegion(regionConfig{Name: name, InitialCell: "cell-1", Etcd: etcdConfig{
 		Endpoints: strings.Split(endpoints, ","), CAFile: filepath.Join(pki, "storage-ca.pem"),
 		CertificateFile: filepath.Join(pki, "lab-operator.pem"), KeyFile: filepath.Join(pki, "lab-operator.key"),
 	}})

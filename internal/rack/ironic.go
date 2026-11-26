@@ -13,9 +13,9 @@ import (
 )
 
 type Ironic struct {
-	client *http.Client
-	origin string
-	token  string
+	client    *http.Client
+	origin    string
+	tokenFile string
 }
 
 // OpenIronic connects to the site's Ironic API using a private Keystone token file.
@@ -27,15 +27,22 @@ func OpenIronic(origin, caFile, tokenFile string) (*Ironic, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure Ironic TLS: %w", err)
 	}
+	if _, err := readIronicToken(tokenFile); err != nil {
+		return nil, err
+	}
+	return &Ironic{client: client, origin: origin, tokenFile: tokenFile}, nil
+}
+
+func readIronicToken(tokenFile string) (string, error) {
 	raw, err := readBounded(tokenFile, 16<<10, true)
 	if err != nil {
-		return nil, fmt.Errorf("read Ironic credentials: %w", err)
+		return "", fmt.Errorf("read Ironic credentials: %w", err)
 	}
 	token := strings.TrimSpace(string(raw))
 	if token == "" || strings.ContainsFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
-		return nil, errors.New("invalid Ironic token file")
+		return "", errors.New("invalid Ironic token file")
 	}
-	return &Ironic{client: client, origin: origin, token: token}, nil
+	return token, nil
 }
 
 // Verify checks that the site service will target the approved BMC and boot NIC.
@@ -109,7 +116,11 @@ func (i *Ironic) get(ctx context.Context, resource string, result any) error {
 	if err != nil {
 		return errors.New("invalid Ironic request")
 	}
-	req.Header.Set("X-Auth-Token", i.token)
+	token, err := readIronicToken(i.tokenFile)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Auth-Token", token)
 	req.Header.Set("X-OpenStack-Ironic-API-Version", "1.56")
 	return readManagementJSON(i.client, req, "Ironic", result)
 }

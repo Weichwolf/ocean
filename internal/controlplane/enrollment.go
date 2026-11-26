@@ -20,18 +20,23 @@ func (r *Region) seedHostInventory(ctx context.Context, inventory []enrollment.A
 		address := r.hostKey("address", approved.Address)
 		credential := r.hostKey("credential", strings.ToLower(approved.TokenSHA256))
 		cell := r.root + "/cells/" + approved.Cell + "/metadata"
+		rackHost := r.rackKey("hosts", approved.HostID)
 		data, _ := json.Marshal(approved)
 		txn := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(key), "=", 0), clientv3.Compare(clientv3.Version(mac), "=", 0),
 			clientv3.Compare(clientv3.Version(address), "=", 0), clientv3.Compare(clientv3.Version(credential), "=", 0),
-			clientv3.Compare(clientv3.Version(cell), ">", 0)).Then(clientv3.OpPut(key, string(data)), clientv3.OpPut(mac, approved.HostID),
-			clientv3.OpPut(address, approved.HostID), clientv3.OpPut(credential, approved.HostID)).
-			Else(clientv3.OpGet(key), clientv3.OpGet(mac), clientv3.OpGet(address), clientv3.OpGet(credential), clientv3.OpGet(cell))
+			clientv3.Compare(clientv3.Version(cell), ">", 0), clientv3.Compare(clientv3.Version(rackHost), "=", 0)).
+			Then(clientv3.OpPut(key, string(data)), clientv3.OpPut(mac, approved.HostID),
+				clientv3.OpPut(address, approved.HostID), clientv3.OpPut(credential, approved.HostID)).
+			Else(clientv3.OpGet(key), clientv3.OpGet(mac), clientv3.OpGet(address), clientv3.OpGet(credential), clientv3.OpGet(cell), clientv3.OpGet(rackHost))
 		result, err := txn.Commit()
 		if err != nil {
 			return err
 		}
 		if result.Succeeded {
 			continue
+		}
+		if len(result.Responses[5].GetResponseRange().Kvs) != 0 {
+			return errors.New("static host inventory conflicts with a rack assignment")
 		}
 		for index, want := range []string{string(data), approved.HostID, approved.HostID, approved.HostID} {
 			items := result.Responses[index].GetResponseRange().Kvs

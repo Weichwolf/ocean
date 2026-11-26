@@ -57,6 +57,7 @@ type regionConfig struct {
 	FunctionSlots       bool                       `json:"functionSlots,omitempty"`
 	ManagedDirectories  *enrollment.Capacity       `json:"managedDirectories,omitempty"`
 	DirectoryFenceKey   string                     `json:"directoryFencePublicKeyFile,omitempty"`
+	RackProvisioning    *rackProvisioningConfig    `json:"rackProvisioning,omitempty"`
 }
 
 type etcdConfig struct {
@@ -82,6 +83,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	}
 	if cfg.Region != nil && cfg.Region.DesktopLaunch != nil && cfg.HostEnrollment == nil {
 		return config.Server{}, service.Hooks{}, errors.New("desktop launch requires enrolled gateway hosts")
+	}
+	if cfg.Region != nil && cfg.Region.RackProvisioning != nil && cfg.HostEnrollment == nil {
+		return config.Server{}, service.Hooks{}, errors.New("rack provisioning requires host enrollment")
 	}
 	if cfg.Region != nil && cfg.Region.ManagedDirectories != nil &&
 		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil ||
@@ -158,6 +162,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				}
 				if cfg.Region.ManagedDirectories != nil {
 					go region.reconcileManagedDirectories(ctx, logger)
+				}
+				if region.rack != nil {
+					go region.reconcileRackHosts(ctx, logger)
 				}
 				region.reconcileOperations(ctx, logger)
 			}
@@ -261,6 +268,7 @@ type Region struct {
 	desktopLaunch     *desktopLaunchControl
 	telemetry         *telemetryControl
 	cost              *costManagementControl
+	rack              *rackProvisioning
 	cell              string
 }
 
@@ -270,6 +278,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	if cfg.CostManagement != nil && (cfg.Telemetry == nil || cfg.Workloads == nil) {
 		return nil, errors.New("cost management requires workload execution and the independent telemetry store")
+	}
+	rackProvisioning, err := openRackProvisioning(cfg.RackProvisioning)
+	if err != nil {
+		return nil, err
 	}
 	cost, err := openCostManagement(cfg.CostManagement)
 	if err != nil {
@@ -335,7 +347,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, cost: cost, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, ipsec: ipsec, workloads: workloads, storage: storage, cell: cfg.InitialCell,
-		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers}
+		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers, rack: rackProvisioning}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
