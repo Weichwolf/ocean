@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ type Step struct {
 	Name          string
 	Cases         []string
 	Command       []string
+	Env           []string
 	Timeout       time.Duration
 	Evidence      []EvidenceSource
 	BlockedReason string
@@ -105,16 +107,29 @@ func (runner Runner) Execute(ctx context.Context, step Step) Outcome {
 	}
 	deadline, cancel := context.WithTimeout(ctx, step.Timeout)
 	defer cancel()
-	command := exec.CommandContext(deadline, step.Command[0], step.Command[1:]...)
+	arguments := step.Command[1:]
+	goTest := step.Command[0] == "go" && len(arguments) > 0 && arguments[0] == "test"
+	if goTest {
+		arguments = append([]string{"test", "-mod=readonly", "-json", "-count=1"}, arguments[1:]...)
+	}
+	command := exec.CommandContext(deadline, step.Command[0], arguments...)
 	command.Dir = runner.Root
 	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1", "AZURE_CORE_COLLECT_TELEMETRY=0")
-	var log cappedLog
+	command.Env = append(command.Env, step.Env...)
+	var log, testEvents cappedLog
 	command.Stdout, command.Stderr = &log, &log
+	if goTest {
+		command.Stdout = &testEvents
+	}
 	started := time.Now()
 	runErr := command.Run()
 	out.Duration = time.Since(started)
+	var testStatus, testDetail string
+	if goTest {
+		testStatus, testDetail = inspectGoTests(&testEvents, &log)
+	}
 	name := step.Name + ".log"
-	logs := redact(fmt.Sprintf("Command %q\n\n", step.Command)) + redact(log.String())
+	logs := redact(fmt.Sprintf("Command %q\n\n", command.Args)) + redact(log.String())
 	if log.discarded > 0 {
 		logs += fmt.Sprintf("\n[Omitted %d bytes after the log limit.]\n", log.discarded)
 	}
@@ -132,6 +147,10 @@ func (runner Runner) Execute(ctx context.Context, step Step) Outcome {
 		}
 		return out
 	}
+	if goTest && testStatus != Pass {
+		out.Status, out.Detail = testStatus, testDetail
+		return out
+	}
 	for _, source := range step.Evidence {
 		if !identifier.MatchString(source.Name) {
 			out.Status, out.Detail = Fail, "Invalid evidence file name."
@@ -147,6 +166,54 @@ func (runner Runner) Execute(ctx context.Context, step Step) Outcome {
 	out.Status = Pass
 	out.Detail = "Local probe passed."
 	return out
+}
+
+func inspectGoTests(events, log *cappedLog) (string, string) {
+	decoder := json.NewDecoder(&events.Buffer)
+	type testID struct{ Package, Test string }
+	pending := make(map[testID]bool)
+	passed, skipped := false, false
+	for {
+		var event struct {
+			testID
+			Action string
+			Output string
+		}
+		err := decoder.Decode(&event)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return Fail, "Go test emitted invalid or incomplete results."
+		}
+		_, _ = io.WriteString(log, event.Output)
+		if event.Test == "" {
+			continue
+		}
+		switch event.Action {
+		case "run":
+			pending[event.testID] = true
+		case "pass", "skip":
+			if !pending[event.testID] {
+				return Fail, "Go test reported a result without a matching test start."
+			}
+			delete(pending, event.testID)
+			passed = passed || event.Action == "pass"
+			skipped = skipped || event.Action == "skip"
+		case "fail":
+			return Fail, "A required Go test failed."
+		}
+	}
+	if events.discarded > 0 || len(pending) > 0 {
+		return Fail, "Go test emitted invalid or incomplete results."
+	}
+	if skipped {
+		return Blocked, "A required Go test was skipped. See the captured output."
+	}
+	if !passed {
+		return Blocked, "The Go test probe did not run any matching tests."
+	}
+	return Pass, ""
 }
 
 func copyEvidence(source, destination string, started time.Time) error {
