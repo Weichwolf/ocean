@@ -289,8 +289,23 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
 			"-run", "^TestRegionalDesktopAssignments$", "./internal/controlplane"},
 		BlockedReason: regionalJoin.BlockedReason}
+	desktopJS, desktopEtcd := os.Getenv("OCEAN_E2E_DESKTOP_JS"), os.Getenv("OCEAN_E2E_DIRECTORY_ETCD")
+	desktopBrowserSMB := probe("desktop-browser-smb", options.domain, stateVariable, "verify_desktop_browser_smb.py",
+		[]string{"WORKPLACE-34"}, []string{"desktop-smb-results.tsv", "desktop-smb-browser.tsv",
+			"desktop-smb-session.log", "desktop-smb-audit.log", "desktop-smb-broker-security.tsv"},
+		"--guacamole-js", desktopJS, "--samba-image", options.sambaImage, "--etcd", desktopEtcd)
+	desktopBrowserSMB.Timeout = 4 * time.Minute
+	desktopBrowserSMB = requireFile(desktopBrowserSMB, desktopJS, "OCEAN_E2E_DESKTOP_JS with the pinned Guacamole browser bundle")
+	if desktopBrowserSMB.BlockedReason == "" && (desktopEtcd == "" || options.sambaImage == "") {
+		desktopBrowserSMB.BlockedReason = "Provide disposable loopback etcd and the local Samba controller image."
+	}
+	for _, program := range []string{"chromium", "podman", "openssl", "ssh"} {
+		if _, err := exec.LookPath(program); err != nil && desktopBrowserSMB.BlockedReason == "" {
+			desktopBrowserSMB.BlockedReason = "Install " + program + " for the desktop browser and SMB probe."
+		}
+	}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
 		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos,
-		desktopAssignments)
+		desktopAssignments, desktopBrowserSMB)
 }

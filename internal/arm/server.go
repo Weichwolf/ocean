@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/desktop"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/smb"
 	"github.com/Weichwolf/ocean/internal/workload"
@@ -39,6 +40,7 @@ type Server struct {
 	SMBShares           SMBStore
 	Desktops            DesktopStore
 	DesktopLaunch       DesktopLaunchStore
+	DesktopCIFS         DesktopCIFSStore
 	FunctionPlans       bool
 	Functions           FunctionStore
 	FunctionDomain      string
@@ -204,6 +206,10 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 // Handler serves ARM routes over the same ingress as identity and discovery.
 func (s Server) Handler(fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == desktop.KerberosPath && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
+			s.desktopKerberos(w, r)
+			return
+		}
 		if r.URL.Path == "/ocean/storage/smb-fences" && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()

@@ -792,6 +792,64 @@ The browser tunnel closes within the current authorization window of at most
 the viewer reloads once and can also reconnect on request. A replacement
 gateway establishes a new tunnel using the user's existing IdP session.
 
+### Personal SMB access from the browser desktop
+
+Add a broker entry to `region.desktopLaunch.smbBrokers` for each enabled
+tenant and subscription. The region derives the CIFS service principal from
+that tenant's configured SMB member. Provision a dedicated Samba account
+for constrained delegation with protocol transition and grant exactly that
+CIFS service. Install the account's keytab with mode `0600` and a trusted
+Kerberos configuration on each regional replica. The Kerberos configuration
+selects the tenant's KDCs. The broker uses MIT `kinit`, `kvno` and `klist`
+from Debian's `krb5-user` package.
+
+```json
+{
+  "tenantId": "84b678b0-0a39-47d3-a355-ff4d84de4a83",
+  "subscriptionId": "310dee94-5876-489a-a5a9-4e25515f30e6",
+  "account": "desktop-broker",
+  "keytabFile": "/etc/ocean-desktop/tenant-broker.keytab",
+  "kerberosConfigFile": "/etc/ocean-desktop/tenant-krb5.conf",
+  "guests": [
+    {
+      "machineId": "9feab7c2-1302-4622-a932-729678cd61ee",
+      "certificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+Provision a separate TLS client certificate for each VM under the regional
+listener's client CA. Pin its DER SHA-256 fingerprint in the broker entry.
+Place the certificate and private key inside the guest, readable by root.
+Add a `kerberos` object to the root-owned `/etc/ocean-desktop/guest.json`.
+It contains `region` for the regional ARM HTTPS origin, `caFile` for its
+trusted CA, `certificateFile` and `keyFile` for the guest's TLS identity,
+and `service` for the expected CIFS SPN including the Kerberos realm.
+Install `packaging/debian/60-ocean-desktop-cifs` as
+`/etc/X11/Xsession.d/60-ocean-desktop-cifs` in the Debian desktop.
+
+The signed XRDP login fails if a configured broker cannot obtain and verify
+the personal cache. The guest places the verified cache in its volatile
+runtime directory. A fresh signed login or reconnect obtains a new cache.
+Ordinary password-based RDP follows the regular domain PAM path.
+
+Select `WORKPLACE-34` with the disposable joined desktop and SMB member
+used by `WORKPLACE-32`. The gateway host needs the pinned `guacd` image
+available to rootless Podman. The development host needs Chromium and the
+Debian Python packages `python3-cryptography` and `python3-websocket`.
+The probe uses a test OIDC issuer and launch responder alongside the real
+gateway, guest and replicated Kerberos endpoint. It verifies a file
+round-trip and its Samba audit with the actual mapped AD user. It also
+checks guest certificate binding and replay rejection across replicas.
+
+```sh
+OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-32,WORKPLACE-34 \
+  OCEAN_E2E_DOMAIN_STATE="$LAB_STATE" OCEAN_E2E_DESKTOP_JS="$GUACAMOLE_JS" \
+  OCEAN_E2E_DIRECTORY_ETCD="$DISPOSABLE_LOOPBACK_ETCD" OCEAN_E2E_SAMBA_IMAGE="$LOCAL_SAMBA_IMAGE_ID" \
+  go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Small Debian desktop VM
 
 For `VM-03`, prepare a disposable Debian 13 UEFI cloud image on an 8 GiB

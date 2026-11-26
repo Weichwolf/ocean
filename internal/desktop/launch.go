@@ -67,20 +67,29 @@ func signedLaunch(machine, upn string, data []byte) []byte {
 // RedeemLaunch checks the recipient, signature and deadline before committing
 // the nonce to the guest's persistent replay state.
 func RedeemLaunch(key ed25519.PublicKey, machine, upn string, password []byte, now time.Time, stateDir string) error {
+	receipt, _, err := VerifyLaunch(key, machine, upn, password, now)
+	if err != nil {
+		return err
+	}
+	return consumeNonce(stateDir, receipt, now.Unix())
+}
+
+// VerifyLaunch returns the replay receipt and expiry for one signed launch.
+func VerifyLaunch(key ed25519.PublicKey, machine, upn string, password []byte, now time.Time) (string, time.Time, error) {
 	if len(key) != ed25519.PublicKeySize || !validRecipient(machine, upn) || !IsLaunchPassword(password) {
-		return ErrLaunchDenied
+		return "", time.Time{}, ErrLaunchDenied
 	}
 	var data [payloadBytes + ed25519.SignatureSize]byte
 	n, err := base64.RawURLEncoding.Strict().Decode(data[:], password[len(launchPrefix):])
 	if err != nil || n != len(data) || !ed25519.Verify(key, signedLaunch(machine, upn, data[:payloadBytes]), data[payloadBytes:]) {
-		return ErrLaunchDenied
+		return "", time.Time{}, ErrLaunchDenied
 	}
 	expires := int64(binary.BigEndian.Uint32(data[:4]))
 	deadline := time.Unix(expires, 0)
 	if !now.Before(deadline) || deadline.Sub(now) > LaunchLifetime {
-		return ErrLaunchDenied
+		return "", time.Time{}, ErrLaunchDenied
 	}
-	return consumeNonce(stateDir, strconv.FormatInt(expires, 10)+"-"+hex.EncodeToString(data[4:payloadBytes]), now.Unix())
+	return strconv.FormatInt(expires, 10) + "-" + hex.EncodeToString(data[4:payloadBytes]), deadline, nil
 }
 
 func consumeNonce(path, receipt string, now int64) error {

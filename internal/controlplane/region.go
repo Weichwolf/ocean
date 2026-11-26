@@ -176,6 +176,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 						resources.AuthenticateDesktop = compatibility.AuthenticateDesktop
 						if region.desktopLaunch != nil {
 							resources.DesktopLaunch = region
+							if len(region.desktopLaunch.brokers) != 0 {
+								resources.DesktopCIFS = region
+							}
 						}
 					}
 				}
@@ -252,7 +255,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, err
 	}
-	desktopLaunch, err := openDesktopLaunch(cfg.DesktopLaunch, vms != nil && cfg.ManagedDirectories != nil)
+	desktopLaunch, err := openDesktopLaunch(cfg.DesktopLaunch, vms != nil && cfg.ManagedDirectories != nil, smbMembers)
 	if err != nil {
 		return nil, err
 	}

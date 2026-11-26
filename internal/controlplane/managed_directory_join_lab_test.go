@@ -193,7 +193,7 @@ func testRegionalDirectory(t *testing.T, mode string) {
 		r.desktopLaunch, err = openDesktopLaunch(&desktopLaunchConfig{
 			SigningKeyFile: file("desktop-signing.seed", bytes.Repeat([]byte{25}, ed25519.SeedSize)),
 			Gateways:       []string{"desktop-gateway-a", "desktop-gateway-b"},
-		}, true)
+		}, true, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -223,6 +223,9 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	var access arm.DesktopSession
 	action := clientv3.OpGet(key, clientv3.WithCountOnly())
 	if gatewayGuards != nil {
+		if brokerScope, configured := r.desktopLaunch.brokerScopes[target.MachineID]; configured && brokerScope != scope {
+			return empty, arm.ErrDesktopDenied
+		}
 		user := strings.ToLower(result.User.UPN)
 		if !strings.HasSuffix(user, "@"+directory.Spec.DNSName) {
 			return empty, arm.ErrDesktopDenied

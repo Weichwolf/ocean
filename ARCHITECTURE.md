@@ -161,6 +161,16 @@ directory before opening the session. PAM still applies the domain account and
 session policies. Conventional private RDP logins keep the Debian password
 authentication path.
 
+For desktops with SMB enabled, the guest exchanges the short-lived launch
+credential for a personal CIFS service ticket over mTLS. The region pins the
+guest certificate to the stable VM ID and the tenant's SMB member, and all
+replicas share an etcd redemption receipt. A directory-managed service
+account delegates only to that member's CIFS SPN. Its keytab stays on the
+regional control plane. The guest verifies the returned cache and provides
+the five-minute ticket to Xsession through a volatile file readable by the
+mapped Linux user. The SMB member applies its existing share grants and
+audits the native AD principal.
+
 Pool policy constrains initial placement and recovery. The enrolled agent
 gets only the workload material required by its assignments. Regional key
 material protects sealed environment variables and volume keys. Assigned

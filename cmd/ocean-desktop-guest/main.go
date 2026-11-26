@@ -16,8 +16,9 @@ import (
 )
 
 type guestConfig struct {
-	MachineID string `json:"machineId"`
-	PublicKey string `json:"publicKey"`
+	MachineID string         `json:"machineId"`
+	PublicKey string         `json:"publicKey"`
+	Kerberos  *guestKerberos `json:"kerberos,omitempty"`
 }
 
 func main() {
@@ -52,8 +53,12 @@ func run(mode, path string) bool {
 	if err != nil {
 		return false
 	}
-	return desktop.RedeemLaunch(ed25519.PublicKey(public), settings.MachineID, os.Getenv("PAM_USER"), password,
-		time.Now(), "/var/lib/ocean-desktop/replay") == nil
+	account := os.Getenv("PAM_USER")
+	if err := desktop.RedeemLaunch(ed25519.PublicKey(public), settings.MachineID, account, password,
+		time.Now(), "/var/lib/ocean-desktop/replay"); err != nil {
+		return false
+	}
+	return settings.Kerberos == nil || installCIFSCache(*settings.Kerberos, account, password) == nil
 }
 
 func loadGuestConfig(path string) (guestConfig, error) {

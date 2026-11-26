@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,17 +18,21 @@ import (
 )
 
 type desktopLaunchConfig struct {
-	SigningKeyFile string   `json:"signingKeyFile"`
-	Gateways       []string `json:"gateways"`
+	SigningKeyFile string                `json:"signingKeyFile"`
+	Gateways       []string              `json:"gateways"`
+	SMBBrokers     []desktopBrokerConfig `json:"smbBrokers,omitempty"`
 }
 
 type desktopLaunchControl struct {
-	signer   ed25519.PrivateKey
-	gateways []string
-	manifest string
+	signer         ed25519.PrivateKey
+	gateways       []string
+	manifest       string
+	brokerManifest string
+	brokers        map[[sha256.Size]byte]desktopBrokerGuest
+	brokerScopes   map[string]arm.SubscriptionScope
 }
 
-func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool) (*desktopLaunchControl, error) {
+func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool, smb *smbControl) (*desktopLaunchControl, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -47,6 +52,16 @@ func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool) (*desktopLa
 	}
 	defer clear(seed)
 	signer := ed25519.NewKeyFromSeed(seed)
+	brokers, publicBrokers, err := configureDesktopBrokers(cfg.SMBBrokers, smb)
+	if err != nil {
+		return nil, err
+	}
+	brokerScopes := make(map[string]arm.SubscriptionScope, len(brokers))
+	for _, binding := range publicBrokers {
+		for _, guest := range binding.Guests {
+			brokerScopes[guest.MachineID] = binding.Scope
+		}
+	}
 	manifest, err := json.Marshal(struct {
 		Gateways  []string `json:"gateways"`
 		PublicKey []byte   `json:"publicKey"`
@@ -54,12 +69,30 @@ func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool) (*desktopLa
 	if err != nil {
 		return nil, err
 	}
-	return &desktopLaunchControl{signer: signer, gateways: gateways, manifest: string(manifest)}, nil
+	control := &desktopLaunchControl{signer: signer, gateways: gateways, manifest: string(manifest), brokers: brokers, brokerScopes: brokerScopes}
+	if len(publicBrokers) != 0 {
+		data, err := json.Marshal(publicBrokers)
+		if err != nil {
+			return nil, err
+		}
+		control.brokerManifest = string(data)
+	}
+	return control, nil
 }
 
 func (r *Region) bootstrapDesktopLaunch(ctx context.Context) error {
-	key := r.root + "/desktop-launch/config"
-	if r.desktopLaunch == nil {
+	var manifest, brokers string
+	if r.desktopLaunch != nil {
+		manifest, brokers = r.desktopLaunch.manifest, r.desktopLaunch.brokerManifest
+	}
+	if err := r.bootstrapDesktopManifest(ctx, r.root+"/desktop-launch/config", manifest); err != nil {
+		return err
+	}
+	return r.bootstrapDesktopManifest(ctx, r.root+"/desktop-launch/kerberos-config", brokers)
+}
+
+func (r *Region) bootstrapDesktopManifest(ctx context.Context, key, manifest string) error {
+	if manifest == "" {
 		read, err := r.client.Get(ctx, key, clientv3.WithCountOnly())
 		if err == nil && read.Count != 0 {
 			return errors.New("the region requires its desktop launch configuration")
@@ -67,12 +100,12 @@ func (r *Region) bootstrapDesktopLaunch(ctx context.Context) error {
 		return err
 	}
 	result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.Version(key), "=", 0)).
-		Then(clientv3.OpPut(key, r.desktopLaunch.manifest)).Else(clientv3.OpGet(key)).Commit()
+		Then(clientv3.OpPut(key, manifest)).Else(clientv3.OpGet(key)).Commit()
 	if err != nil || result.Succeeded {
 		return err
 	}
 	items := result.Responses[0].GetResponseRange().Kvs
-	if len(items) != 1 || string(items[0].Value) != r.desktopLaunch.manifest {
+	if len(items) != 1 || string(items[0].Value) != manifest {
 		return errors.New("desktop launch configuration differs from the regional record")
 	}
 	return nil
