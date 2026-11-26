@@ -283,7 +283,10 @@ The lab has topology definitions for four farms of three nodes and for adding
 a fourth node to each farm. Those topologies support future mesh, pairing,
 whole-farm outage and geo-scaling acceptance. Physical rack provisioning
 adds a trusted hardware inventory, out-of-band management and unattended
-Debian installation to the demonstrated first-boot enrollment path. Physical
+Debian installation to the demonstrated first-boot enrollment path. The
+[rack inventory preflight](lab/README.md#rack-inventory-preflight) checks
+signed approvals against a site's Redfish BMCs and Ironic boot configuration
+before commissioning. Physical
 qualification also covers fencing, independent infrastructure failure
 domains and measured performance under load. IPsec compatibility, Functions
 ZIP deployment and slots, and monetary Cost Management have separate

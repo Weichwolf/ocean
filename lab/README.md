@@ -2313,6 +2313,63 @@ The installer uses the Debian repositories for package dependencies. The seed ca
 
 `ocean-lab up -enrollment-file` accepts a JSON manifest with `hostId`, `origin`, `caFile`, `tokenFile`, and `packageFile`. Build the approval from the same guest inventory before booting. The lab stores the seed with owner-only permissions and reuses the existing seed and disk on a restart. An existing guest rejects a different seed. [NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
 
+### Rack inventory preflight
+
+Run `make build` on the commissioning host and connect it to the site's
+management network. The asset authority signs the exact bytes of an inventory
+file with Ed25519. Supply its detached base64 signature and a separately
+provisioned PEM public key in SubjectPublicKeyInfo format. The signed revision
+must be positive and the current time must be within the signed UTC interval.
+Each entry binds the Ocean host and rack to one Ironic node and Redfish system.
+
+```json
+{
+  "revision": 7,
+  "notBefore": "2026-11-26T10:00:00Z",
+  "expiresAt": "2026-11-26T12:00:00Z",
+  "assets": [{
+    "hostId": "rack-a-host-01",
+    "rack": "rack-a",
+    "ironicNodeId": "5d5814ba-a5b7-4e19-82b0-947312ae49f7",
+    "bmcOrigin": "https://bmc-01.example.net",
+    "redfishSystem": "/redfish/v1/Systems/1",
+    "serial": "OCEAN-ASSET-0001",
+    "systemUuid": "0a9b8c7d-6e5f-4a3b-9210-123456789abc",
+    "bootMac": "02:00:00:10:00:01"
+  }]
+}
+```
+
+Create an owner-only credential file with the BMC reader's `username` and
+`password` JSON fields. The BMC certificate must validate against the site's
+BMC CA and match the signed origin. The preflight reads the Redfish
+ComputerSystem serial and UUID and verifies the selected NIC through that
+system's EthernetInterfaces collection. It checks both the current and
+permanent MAC when the firmware reports both.
+
+Pass the Ironic HTTPS origin, CA bundle, and an owner-only file containing a
+Keystone token that can read the node's driver configuration and ports.
+Ironic must support API version 1.56. The node must use the `redfish` driver
+with explicit HTTPS origin and system path, enabled BMC certificate checks,
+`pxe` or `ipxe` boot, and the `direct` deploy interface. The port inventory
+must expose exactly one PXE-enabled port with the approved MAC. Successful
+output identifies the host, rack, Ironic node, and inventory revision.
+
+```sh
+bin/ocean-rack -inventory /etc/ocean/rack-assets.json \
+  -signature /etc/ocean/rack-assets.sig -public-key /etc/ocean/assets-public.pem \
+  -host rack-a-host-01 -bmc-ca /etc/ocean/bmc-ca.pem \
+  -bmc-credential /run/credentials/ocean-rack/bmc.json \
+  -ironic-origin https://ironic.example.net -ironic-ca /etc/ocean/ironic-ca.pem \
+  -ironic-token /run/credentials/ocean-rack/ironic-token
+```
+
+The preflight reads hardware identity. Address allocation, DNS publication,
+installation, and qualification require the commissioning workflow.
+`PROD-03` requires a separate run with physical approved and unapproved
+hardware. Run the preflight integration tests with
+`go test -race ./cmd/ocean-rack`. [DMTF Redfish specification](https://redfish.dmtf.org/schemas/v1/DSP0268_2025.2.pdf) · [Ironic Redfish driver](https://docs.openstack.org/ironic/latest/admin/drivers/redfish.html) · [Production acceptance matrix](../acceptance.tsv)
+
 ## Leased host capacity and reservations
 
 An enrolled agent reports its current host capabilities every four seconds over mTLS. The coordinator checks the report against the approved inventory and publishes available capacity with a 15-second regional lease. Each host can declare its own `reserved` CPU and memory in the approval. The default reserves 100 millicores and 128 MiB. Revocation removes the availability key in the same transaction as the identity update.
