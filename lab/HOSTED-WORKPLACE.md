@@ -42,6 +42,8 @@ revocation from the tenant activity log using the grant UUID. Record the
 MFA flow and verified access-token claims, the controlled support ingress and
 its operator pool, and the expiry and restore checks. Review privileged
 infrastructure access and its records for each deployed bastion and host.
+Record the production support client's MFA and separate operator-pool source
+checks alongside the native Keycloak evidence from `WORKPLACE-63`.
 [Hosted support access](README.md#hosted-support-access)
 
 ## Operating procedures to exercise

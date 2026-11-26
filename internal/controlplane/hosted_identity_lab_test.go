@@ -218,7 +218,8 @@ func (k hostedKeycloakFixture) call(client *http.Client, method, path, media, bo
 		k.t.Fatal("the disposable Keycloak request failed")
 	}
 	defer func() { _ = response.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 256<<10))
+	// The administrative server-info document includes all provider metadata.
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		k.t.Fatal("could not read the disposable Keycloak response")
 	}
@@ -287,9 +288,10 @@ func (k hostedKeycloakFixture) onlineSessions(realm hostedKeycloakRealm) int {
 }
 
 type hostedKeycloakBrowser struct {
-	fixture hostedKeycloakFixture
-	client  *http.Client
-	realm   hostedKeycloakRealm
+	fixture  hostedKeycloakFixture
+	client   *http.Client
+	realm    hostedKeycloakRealm
+	clientID string
 }
 
 func (k hostedKeycloakFixture) browser(realm hostedKeycloakRealm) hostedKeycloakBrowser {
@@ -300,50 +302,72 @@ func (k hostedKeycloakFixture) browser(realm hostedKeycloakRealm) hostedKeycloak
 		k.t.Fatal(err)
 	}
 	client.Jar = jar
-	return hostedKeycloakBrowser{k, &client, realm}
+	return hostedKeycloakBrowser{fixture: k, client: &client, realm: realm, clientID: hostedBrowserClient}
 }
 
 var hostedKeycloakLoginForm = regexp.MustCompile(`(?i)<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"`)
 
 func (b hostedKeycloakBrowser) login() string {
 	b.fixture.t.Helper()
+	reply := b.browserTokens()
+	if reply.RefreshToken == "" {
+		b.fixture.t.Fatal("Keycloak did not issue a native refresh grant")
+	}
+	return reply.RefreshToken
+}
+
+func (b hostedKeycloakBrowser) browserTokens() hostedBrowserTokens {
+	b.fixture.t.Helper()
 	path, params, verifier := b.authorization()
 	status, response, page := b.fixture.call(b.client, http.MethodGet, path+"?"+params.Encode(), "", "", "")
 	if status == http.StatusOK {
-		form := hostedKeycloakLoginForm.FindSubmatch(page)
-		if len(form) != 2 {
-			b.fixture.t.Fatal("Keycloak did not return its password form")
-		}
-		endpoint, ok := strings.CutPrefix(html.UnescapeString(string(form[1])), b.fixture.origin)
-		if !ok || !strings.HasPrefix(endpoint, "/realms/"+b.realm.id.TenantID+"/login-actions/") {
-			b.fixture.t.Fatal("Keycloak returned a form outside the disposable tenant")
-		}
-		login := url.Values{"username": {hostedBrowserUser}, "password": {b.realm.password}}
-		status, response, _ = b.fixture.call(b.client, http.MethodPost, endpoint, "application/x-www-form-urlencoded", login.Encode(), "")
+		status, response, _ = b.submit(page, hostedKeycloakLoginForm,
+			url.Values{"username": {hostedBrowserUser}, "password": {b.realm.password}})
 	}
+	return b.exchange(status, response, params.Get("state"), verifier)
+}
+
+func (b hostedKeycloakBrowser) submit(page []byte, pattern *regexp.Regexp, values url.Values) (int, http.Header, []byte) {
+	b.fixture.t.Helper()
+	form := pattern.FindSubmatch(page)
+	if len(form) != 2 {
+		b.fixture.t.Fatal("Keycloak did not return the expected browser form")
+	}
+	endpoint, ok := strings.CutPrefix(html.UnescapeString(string(form[1])), b.fixture.origin)
+	if !ok || !strings.HasPrefix(endpoint, "/realms/"+b.realm.id.TenantID+"/login-actions/") {
+		b.fixture.t.Fatal("Keycloak returned a form outside the disposable tenant")
+	}
+	return b.fixture.call(b.client, http.MethodPost, endpoint, "application/x-www-form-urlencoded", values.Encode(), "")
+}
+
+type hostedBrowserTokens struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+func (b hostedKeycloakBrowser) exchange(status int, response http.Header, state, verifier string) hostedBrowserTokens {
+	b.fixture.t.Helper()
 	callback, ok := strings.CutPrefix(response.Get("Location"), hostedBrowserRedirect+"?")
 	query, err := url.ParseQuery(callback)
-	if status != http.StatusFound || !ok || err != nil || query.Get("state") != params.Get("state") || query.Get("code") == "" {
+	if status != http.StatusFound || !ok || err != nil || query.Get("state") != state || query.Get("code") == "" {
 		b.fixture.t.Fatalf("Keycloak did not issue a browser authorization code, status %d, callback %t, matching state %t, required action %t",
-			status, ok, query.Get("state") == params.Get("state"), strings.Contains(response.Get("Location"), "/required-action"))
+			status, ok, query.Get("state") == state, strings.Contains(response.Get("Location"), "/required-action"))
 	}
-	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {hostedBrowserClient}, "redirect_uri": {hostedBrowserRedirect},
+	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {b.clientID}, "redirect_uri": {hostedBrowserRedirect},
 		"code": {query.Get("code")}, "code_verifier": {verifier}}
 	status, _, data := b.token(form)
-	var reply struct {
-		RefreshToken string `json:"refresh_token"`
+	var reply hostedBrowserTokens
+	if err := json.Unmarshal(data, &reply); err != nil || status != http.StatusOK || reply.AccessToken == "" {
+		b.fixture.t.Fatalf("Keycloak did not issue a native access grant, status %d", status)
 	}
-	if err := json.Unmarshal(data, &reply); err != nil || status != http.StatusOK || reply.RefreshToken == "" {
-		b.fixture.t.Fatalf("Keycloak did not issue a native refresh grant, status %d", status)
-	}
-	return reply.RefreshToken
+	return reply
 }
 
 func (b hostedKeycloakBrowser) authorization() (string, url.Values, string) {
 	verifier := operationID() + operationID()
 	challenge := sha256.Sum256([]byte(verifier))
 	return "/realms/" + b.realm.id.TenantID + "/protocol/openid-connect/auth", url.Values{
-		"client_id": {hostedBrowserClient}, "redirect_uri": {hostedBrowserRedirect}, "response_type": {"code"}, "scope": {"openid"},
+		"client_id": {b.clientID}, "redirect_uri": {hostedBrowserRedirect}, "response_type": {"code"}, "scope": {"openid"},
 		"state": {operationID()}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])},
 	}, verifier
 }
@@ -354,7 +378,7 @@ func (b hostedKeycloakBrowser) token(form url.Values) (int, http.Header, []byte)
 }
 
 func (b hostedKeycloakBrowser) refresh(value string) int {
-	status, _, _ := b.token(url.Values{"grant_type": {"refresh_token"}, "client_id": {hostedBrowserClient}, "refresh_token": {value}})
+	status, _, _ := b.token(url.Values{"grant_type": {"refresh_token"}, "client_id": {b.clientID}, "refresh_token": {value}})
 	return status
 }
 

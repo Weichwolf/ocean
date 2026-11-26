@@ -2363,10 +2363,13 @@ In Keycloak, give named support users a dedicated interactive client and
 map the configured ACR to a level that requires MFA. Set this as the
 client's minimum ACR. Configure the browser sign-in flow to enforce the
 required second factor, authorization code with PKCE, and the exact ARM
-audience in the access token. Configure short-lived access tokens and make
-the client available only to those users. Ocean requires a signed bearer
-token with the configured ACR, a recent `auth_time` within 15 minutes, and the
-same named subject as the approval. Review the flow and token claims in the
+audience in the access token. Keep the Keycloak `basic` and `acr` scopes
+or configure the corresponding token mappers. Disable direct password
+grants and service accounts for the support client. Configure short-lived
+access tokens and make the client available only to the named users. Ocean
+requires a signed bearer token with the configured ACR, an `auth_time`
+within 15 minutes and the same named subject as the approval. Review the
+flow and token claims in the
 deployment before enabling the support ingress.
 [Keycloak ACR and step-up authentication](https://www.keycloak.org/docs/latest/server_admin/#_step-up-flow)
 
@@ -2824,6 +2827,16 @@ activity correlation, expiry and revocation. Its disposable signed issuer
 exercises the Ocean ACR, audience and sign-in-time checks. The probe tests
 the actual TLS socket source, a forged forwarding header, pool policy
 removal and regional restore with the original independent ledger.
+
+`WORKPLACE-63` uses the same disposable Keycloak inputs as `WORKPLACE-59`.
+The probe creates temporary tenant and operator realms and provisions a
+dedicated support client with an MFA browser flow, minimum ACR and ARM
+audience. The tenant approval and the operator diagnostic both use access
+tokens obtained through Keycloak's browser authorization-code flow with
+PKCE. The probe exercises a lower requested ACR, a rejected OTP, a denied
+direct password grant and the audited cutoff after tenant revocation. Enable
+the same Keycloak authentication requirements on the production support
+client and verify the deployed support ingress separately.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \

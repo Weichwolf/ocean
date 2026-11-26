@@ -102,5 +102,8 @@ func hostedWorkplaceSteps() []harness.Step {
 	}
 	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_HOSTED_KEYCLOAK_CA"), "the Keycloak CA file in OCEAN_E2E_HOSTED_KEYCLOAK_CA")
 	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin secret file in OCEAN_E2E_KEYCLOAK_ADMIN_SECRET")
-	return []harness.Step{step, placement, operator, telemetry, support, recovery, suspension, volume, smb, ha, vm, directory, keycloak}
+	supportMFA := keycloak
+	supportMFA.Name, supportMFA.Cases = "hosted-support-keycloak-mfa", []string{"WORKPLACE-63"}
+	supportMFA.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-run", "^TestHostedSupportKeycloakMFA$", "./internal/controlplane"}
+	return []harness.Step{step, placement, operator, telemetry, support, recovery, suspension, volume, smb, ha, vm, directory, keycloak, supportMFA}
 }

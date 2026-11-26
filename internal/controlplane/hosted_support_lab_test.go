@@ -134,7 +134,8 @@ func TestHostedSupportGrants(t *testing.T) {
 	az("delete", decision, "", ownerToken, "")
 	az("put", decision, body, ownerToken, "")
 	az("get", diagnostic, "", support, "AuthorizationFailed")
-	verifyHostedSupportAudit(t, az, scope, grantID, owner.Administrator, person, resourceID, ownerToken, started)
+	verifyHostedSupportAudit(t, az, scope, grantID, owner.Administrator, person, resourceID, ownerToken, started,
+		"grant/Succeeded", "read/Failed", "read/Failed", "read/Succeeded", "revoke/Succeeded")
 	revokedDurability := time.Since(revoked.RevokedAt)
 
 	restoredCfg := restoreHostedSMBLabSnapshot(t, ctx, cfg, archive, snapshot)
@@ -173,7 +174,7 @@ func readHostedSupportGrant(t *testing.T, raw []byte) identity.HostedSupportGran
 }
 
 func verifyHostedSupportAudit(t *testing.T, az func(string, string, string, string, string) []byte, scope arm.SubscriptionScope,
-	id, owner, support, resource, token string, started time.Time) {
+	id, owner, support, resource, token string, started time.Time, expected ...string) {
 	t.Helper()
 	query := "eventTimestamp ge '" + started.Add(-time.Second).Format(time.RFC3339Nano) + "' and eventTimestamp le '" +
 		time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano) + "' and resourceId eq '" + resource + "'"
@@ -207,7 +208,7 @@ func verifyHostedSupportAudit(t *testing.T, az func(string, string, string, stri
 		actions = append(actions, action+"/"+row.Status.Value)
 	}
 	slices.Sort(actions)
-	if !slices.Equal(actions, []string{"grant/Succeeded", "read/Failed", "read/Failed", "read/Succeeded", "revoke/Succeeded"}) {
+	if !slices.Equal(actions, expected) {
 		t.Fatalf("the support grant lacks its attributed activity: %v", actions)
 	}
 }
