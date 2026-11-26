@@ -30,6 +30,10 @@ func hostedWorkplaceSteps() []harness.Step {
 		Command: []string{"go", "test", "-tags=e2e", "-run", "^TestHostedRecoveryTarget$", "./internal/controlplane"}}
 	recovery = requireFile(recovery, os.Getenv("OCEAN_E2E_HOSTED_ETCD_ARCHIVE"), "the pinned etcd archive in OCEAN_E2E_HOSTED_ETCD_ARCHIVE")
 	recovery = requireFile(recovery, os.Getenv("OCEAN_E2E_HOSTED_AZ"), "the pinned Azure CLI executable in OCEAN_E2E_HOSTED_AZ")
+	telemetry := recovery
+	telemetry.Name, telemetry.Cases = "hosted-telemetry-policy", []string{"WORKPLACE-61"}
+	telemetry.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-run", "^TestHostedTelemetryPolicy$", "./internal/controlplane"}
+	telemetry.Timeout = 4 * time.Minute
 	suspension := recovery
 	suspension.Name, suspension.Cases = "hosted-container-suspension", []string{"WORKPLACE-49"}
 	suspension.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedContainerOffboarding$", "./internal/controlplane"}
@@ -94,5 +98,5 @@ func hostedWorkplaceSteps() []harness.Step {
 	}
 	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_HOSTED_KEYCLOAK_CA"), "the Keycloak CA file in OCEAN_E2E_HOSTED_KEYCLOAK_CA")
 	keycloak = requireFile(keycloak, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin secret file in OCEAN_E2E_KEYCLOAK_ADMIN_SECRET")
-	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha, vm, directory, keycloak}
+	return []harness.Step{step, placement, operator, telemetry, recovery, suspension, volume, smb, ha, vm, directory, keycloak}
 }

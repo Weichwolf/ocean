@@ -14,22 +14,27 @@ import (
 )
 
 func (r *Region) authorizeHostRole(id string, certificate []byte, role string, snapshot *clientv3.TxnResponse) error {
+	_, err := r.authorizeRegisteredHost(id, certificate, role, snapshot)
+	return err
+}
+
+func (r *Region) authorizeRegisteredHost(id string, certificate []byte, role string, snapshot *clientv3.TxnResponse) (enrollment.Host, error) {
 	registered := snapshot.Responses[0].GetResponseRange().Kvs
 	available := snapshot.Responses[1].GetResponseRange().Kvs
 	if len(registered) != 1 || len(available) != 1 || available[0].Lease == 0 {
-		return enrollment.ErrHostDenied
+		return enrollment.Host{}, enrollment.ErrHostDenied
 	}
 	var host enrollment.Host
 	var live enrollment.Availability
 	if json.Unmarshal(registered[0].Value, &host) != nil || json.Unmarshal(available[0].Value, &live) != nil ||
 		host.HostID != id || live.HostID != id || host.Cell != live.Cell || host.Pool != live.Pool {
-		return errors.New("invalid host registration or availability")
+		return enrollment.Host{}, errors.New("invalid host registration or availability")
 	}
 	if host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) || !r.hosted.allowsPool(host.Pool) ||
 		!slices.Contains(host.Roles, role) || !slices.Contains(live.Roles, role) {
-		return enrollment.ErrHostDenied
+		return enrollment.Host{}, enrollment.ErrHostDenied
 	}
-	return nil
+	return host, nil
 }
 
 func (r *Region) gatewayAssignments(ctx context.Context, id string, certificate []byte) ([]gatewayRecord, error) {

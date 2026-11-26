@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
@@ -107,13 +106,6 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		}
 	}
 	if cfg.Region != nil {
-		if cfg.Region.Telemetry != nil {
-			for _, endpoint := range cfg.Region.Telemetry.Etcd.Endpoints {
-				if slices.Contains(cfg.Region.Etcd.Endpoints, endpoint) {
-					return config.Server{}, service.Hooks{}, errors.New("telemetry requires separate etcd endpoints")
-				}
-			}
-		}
 		region, err := openRegion(*cfg.Region)
 		if err != nil {
 			return config.Server{}, service.Hooks{}, err
@@ -278,6 +270,10 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err := cfg.HostedWorkplace.validate(); err != nil {
 		return nil, err
 	}
+	telemetryPool, err := cfg.telemetryPool()
+	if err != nil {
+		return nil, err
+	}
 	if cfg.HostedWorkplace != nil && (cfg.Workloads == nil || !cfg.HostedWorkplace.allowsPlacement(cfg.Workloads.DefaultPlacement.Pools)) {
 		return nil, errors.New("the hosted region requires default placement in its approved operator pools")
 	}
@@ -334,7 +330,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
 	}
-	telemetry, err := openTelemetry(cfg.Telemetry)
+	telemetry, err := openTelemetry(cfg.Telemetry, telemetryPool)
 	if err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("open telemetry backend: %w", err)
@@ -354,6 +350,13 @@ func openRegion(cfg regionConfig) (*Region, error) {
 }
 
 func initialRecords(root, name, cell string, hosted *hostedRegionPolicy) ([2]string, [2]string) {
+	if hosted != nil && hosted.Telemetry != nil {
+		// The telemetry approval has a separate record so an established
+		// hosted region can enable it without replacing its topology metadata.
+		topology := *hosted
+		topology.Telemetry = nil
+		hosted = &topology
+	}
 	region := struct {
 		Name            string              `json:"name"`
 		InitialCell     string              `json:"initialCell"`
@@ -387,6 +390,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		}
 	}
 	if err := region.bootstrapAuditRetention(ctx); err != nil {
+		return err
+	}
+	if err := region.bootstrapHostedTelemetry(ctx); err != nil {
 		return err
 	}
 	if err := region.bootstrapPublicIPPool(ctx); err != nil {

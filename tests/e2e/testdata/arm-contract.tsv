@@ -259,3 +259,6 @@ WORKPLACE-59	hosted-keycloak-confirmation	2.93.0	none	2026-11-01	rest --method g
 WORKPLACE-60	hosted-export-share-create	2.93.0	none	2026-11-01	rest --method put --url {arm}{smb_share_id}?api-version=2026-11-01 --body @{smb_share_request} -o json
 WORKPLACE-60	hosted-export-regional-metadata	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/dataExport?api-version=2026-11-01 -o json
 WORKPLACE-60	hosted-export-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
+WORKPLACE-61	hosted-telemetry-query	2.93.0	none	2018-01-01	rest --method get --url {arm}{containerGroupId}/providers/Microsoft.Insights/metrics?api-version=2018-01-01&metricnames=CpuUsage -o json
+WORKPLACE-61	hosted-telemetry-workload-read	2.93.0	none	2024-05-01-preview	rest --method get --url {arm}{containerGroupId}?api-version=2024-05-01-preview -o json
+WORKPLACE-61	hosted-telemetry-outage-group-create	2.93.0	none	2024-11-01	rest --method put --url {arm}{resourceGroupId}?api-version=2024-11-01 --body @{regional_group_request} -o json

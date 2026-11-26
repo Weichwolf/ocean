@@ -12,6 +12,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/telemetry"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -22,13 +23,13 @@ type telemetryConfig struct {
 
 type telemetryControl struct {
 	client    *clientv3.Client
-	retention int64
+	retention time.Duration
+	pool      string
 	mu        sync.Mutex
-	lease     clientv3.LeaseID
-	leasedAt  time.Time
+	leases    map[time.Time]clientv3.LeaseID
 }
 
-func openTelemetry(config *telemetryConfig) (*telemetryControl, error) {
+func openTelemetry(config *telemetryConfig, pool string) (*telemetryControl, error) {
 	if config == nil {
 		return nil, nil
 	}
@@ -43,22 +44,33 @@ func openTelemetry(config *telemetryConfig) (*telemetryControl, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &telemetryControl{client: client, retention: config.RetentionSeconds}, nil
+	return &telemetryControl{client: client, retention: time.Duration(config.RetentionSeconds) * time.Second,
+		pool: pool, leases: make(map[time.Time]clientv3.LeaseID)}, nil
 }
 
-func (control *telemetryControl) currentLease(ctx context.Context) (clientv3.LeaseID, error) {
+// Batch expiries share leases by observation minute. Buffered observations thus
+// expire according to when they occurred, including after an ingestion retry.
+const telemetryLeaseWindow = time.Minute
+
+func (control *telemetryControl) leaseThrough(ctx context.Context, expires time.Time) (clientv3.LeaseID, error) {
 	control.mu.Lock()
 	defer control.mu.Unlock()
-	now := time.Now()
-	if control.lease != 0 && now.Sub(control.leasedAt) < time.Minute {
-		return control.lease, nil
+	now := time.Now().UTC()
+	if lease := control.leases[expires]; lease != 0 && expires.After(now) {
+		return lease, nil
 	}
-	granted, err := control.client.Grant(ctx, control.retention+60)
+	for old := range control.leases {
+		if !old.After(now) {
+			delete(control.leases, old)
+		}
+	}
+	ttl := max(1, int64((expires.Sub(now)+time.Second-1)/time.Second))
+	granted, err := control.client.Grant(ctx, ttl)
 	if err != nil {
 		return 0, err
 	}
-	control.lease, control.leasedAt = granted.ID, now
-	return control.lease, nil
+	control.leases[expires] = granted.ID
+	return granted.ID, nil
 }
 
 func (r *Region) telemetryPrefix(scope arm.SubscriptionScope, address arm.ResourceAddress, created int64) string {
@@ -76,16 +88,35 @@ func (r *Region) ReportTelemetry(ctx context.Context, host string, certificate [
 	if err != nil {
 		return err
 	}
-	if err := r.authorizeHostRole(host, certificate, "compute", snapshot); err != nil {
+	registration, err := r.authorizeRegisteredHost(host, certificate, "compute", snapshot)
+	if err != nil {
 		return err
 	}
 	assignments := make(map[telemetry.Assignment]string)
 	samples := make(map[string]telemetry.Sample)
+	allowed := make(map[arm.SubscriptionScope]bool)
+	earliest := time.Now().Add(-r.telemetry.retention)
 	for _, entry := range batch.Observations {
+		if entry.Sample.Time.Before(earliest) {
+			continue
+		}
 		id := entry.Assignment
 		prefix, found := assignments[id]
 		if !found {
 			scope := arm.SubscriptionScope{TenantID: id.TenantID, SubscriptionID: id.SubscriptionID}
+			if r.telemetry.pool != "" && validScope(scope) {
+				admitted, seen := allowed[scope]
+				if !seen {
+					admitted, err = r.hostedTelemetryAdmission(ctx, scope, registration.Pool, snapshot.Header.Revision)
+					if err != nil {
+						return err
+					}
+					allowed[scope] = admitted
+				}
+				if !admitted {
+					continue
+				}
+			}
 			prefix, err = r.telemetryAssignment(ctx, scope, host, id, snapshot.Header.Revision)
 			if err != nil {
 				return err
@@ -99,22 +130,43 @@ func (r *Region) ReportTelemetry(ctx context.Context, host string, certificate [
 			samples[key] = entry.Sample
 		}
 	}
+	return r.telemetry.store(ctx, samples)
+}
+
+func (control *telemetryControl) store(ctx context.Context, samples map[string]telemetry.Sample) error {
 	if len(samples) == 0 {
 		return nil
 	}
-	lease, err := r.telemetry.currentLease(ctx)
-	if err != nil {
-		return err
-	}
+	leases := make(map[time.Time]clientv3.LeaseID)
 	writes := make([]clientv3.Op, 0, len(samples))
 	for key, sample := range samples {
+		expires := sample.Time.UTC().Add(control.retention).Truncate(telemetryLeaseWindow).Add(telemetryLeaseWindow)
+		lease := leases[expires]
+		if lease == 0 {
+			var err error
+			lease, err = control.leaseThrough(ctx, expires)
+			if err != nil {
+				return err
+			}
+			leases[expires] = lease
+		}
 		data, err := json.Marshal(sample)
 		if err != nil {
 			return err
 		}
 		writes = append(writes, clientv3.OpPut(key, string(data), clientv3.WithLease(lease)))
 	}
-	_, err = r.telemetry.client.Txn(ctx).Then(writes...).Commit()
+	_, err := control.client.Txn(ctx).Then(writes...).Commit()
+	if errors.Is(err, rpctypes.ErrLeaseNotFound) {
+		// A backend restore or revoke can invalidate a cached lease.
+		control.mu.Lock()
+		for expiry, id := range leases {
+			if control.leases[expiry] == id {
+				delete(control.leases, expiry)
+			}
+		}
+		control.mu.Unlock()
+	}
 	return err
 }
 
@@ -157,6 +209,19 @@ func (r *Region) TelemetrySamples(ctx context.Context, scope arm.SubscriptionSco
 	}
 	if r.telemetry == nil {
 		return nil, telemetry.ErrDisabled
+	}
+	if r.telemetry.pool != "" {
+		allowed, err := r.hostedTelemetryAdmission(ctx, scope, "", resource.Header.Revision)
+		if err != nil || !allowed {
+			return nil, errors.Join(telemetry.ErrDisabled, err)
+		}
+	}
+	earliest := time.Now().Add(-r.telemetry.retention)
+	if start.Before(earliest) {
+		start = earliest
+	}
+	if start.After(end) {
+		return nil, nil
 	}
 	prefix := r.telemetryPrefix(scope, address, resource.Kvs[0].CreateRevision)
 	query, cancel := context.WithTimeout(ctx, 2*time.Second)

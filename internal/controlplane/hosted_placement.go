@@ -22,6 +22,7 @@ type hostedRegionPolicy struct {
 	BackupStagingDirectory string                          `json:"backupStagingDirectory,omitempty"`
 	BackupTargets          map[string]hostedBackupTarget   `json:"backupTargets,omitempty"`
 	DeletionLedger         *hostedLedgerPolicy             `json:"deletionLedger,omitempty"`
+	Telemetry              *hostedTelemetryPolicy          `json:"telemetry,omitempty"`
 }
 
 func euCountry(country string) bool {

@@ -31,6 +31,12 @@ applicable transfer mechanism and location restrictions before enabling a path.
 | Backups and restores | Independent target and key custodian, site and replica proof, archive expiry, restore isolation and replay of independent offboarding records |
 | Remote support | Approved access origins, short-lived scoped identities, MFA where supported, approval and revocation evidence, privileged session audit |
 
+For hosted telemetry, retain the approved backend origin list and its
+operator pool. Record the tenant placement decision, scoped access evidence
+and both the API cutoff and backend lease expiry. Record disk encryption,
+compaction and the expiry of independent external copies in the deployment
+review.
+
 ## Operating procedures to exercise
 
 1. Run the regional export as the tenant administrator before suspension.

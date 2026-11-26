@@ -2309,6 +2309,38 @@ measured delays and the profile's numeric limits.
 
 ### Hosted workplace placement and audit retention
 
+When enabling telemetry in the hosted profile, list the separately operated
+telemetry etcd origins and their approved pool in `region.hostedWorkplace.telemetry`.
+Use the same endpoints and retention in `region.telemetry` with the backend's
+client certificate and CA. The regional metadata store persists this approval.
+Start all replicas with the same settings. For an existing region, stop the
+old API replicas before enabling the policy and restart using the approved
+configuration.
+
+```json
+{
+  "operatorPool": "primary",
+  "endpoints": ["https://telemetry-a.ocean.test:2379", "https://telemetry-b.ocean.test:2379", "https://telemetry-c.ocean.test:2379"],
+  "retentionSeconds": 3600
+}
+```
+
+Both the reporting host pool and the telemetry pool must be allowed by the
+tenant's placement policy. The control plane discards expired observations
+and observations without a current assignment or allowed placement. Reads
+require the applicable ARM resource grant, an active tenant and continued
+approval of the telemetry pool. Removing the pool stops reads and new
+ingestion while stored observations follow their original expiry.
+
+Retention is 300 to 86400 seconds from the observation time. API queries
+exclude expired observations immediately. The corresponding etcd lease
+ends at the next minute boundary, plus etcd's lease expiry processing time
+while the backend is healthy. Configure backend compaction, storage volume
+encryption and retention on any external copies independently. Keep the
+telemetry endpoints, replica site records and backend storage out of the
+regional and deletion-ledger etcd clusters. Telemetry loss leaves regional
+workload operations available.
+
 Set `region.hostedWorkplace` when creating an EU-hosted region. Use the
 physical country of the management services for `country` and the verified
 physical country of each approved pool in `operatorPools`. Set the same
@@ -2719,6 +2751,13 @@ administrator and tests access denial for an ungrouped domain user and a
 foreign ARM tenant. It sends both records to `ocean-backup`, exercises pool
 and subscription checks, verifies recipient-only recovery and prunes the
 approved archive at its configured expiry. A prune before expiry preserves it.
+
+`WORKPLACE-61` uses disposable regional, ledger and telemetry etcd clusters.
+An enrolled mTLS reporter submits fresh, delayed and already-expired
+measurements for two tenants. Azure CLI checks scoped reads and revocation.
+The probe verifies pool and endpoint approval, denies a stale replica
+configuration, measures API and etcd expiry, and stops telemetry while
+the regional API continues to serve the workload.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
