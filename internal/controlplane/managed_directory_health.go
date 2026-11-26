@@ -92,7 +92,8 @@ func (r *Region) completeDirectoryProvisioning(ctx context.Context, tenant strin
 	}
 	directory.ProvisionedAt = time.Now().UTC()
 	data, _ := json.Marshal(directory)
-	guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", result.Kvs[0].ModRevision))
+	guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", result.Kvs[0].ModRevision),
+		clientv3.Compare(clientv3.Version(r.offboardingMarker(tenant)), "=", 0))
 	scope := arm.SubscriptionScope{TenantID: tenant, SubscriptionID: directory.SubscriptionID}
 	_, err = r.client.Txn(ctx).If(guards...).Then(clientv3.OpPut(key, string(data)),
 		r.auditOp(scope, arm.AuditEvent{Time: directory.ProvisionedAt, Actor: "managed-directory-controller",

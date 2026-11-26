@@ -34,7 +34,7 @@ type Store interface {
 	Enrollment(context.Context, string) (*Approval, *Host, int64, error)
 	RedeemEnrollment(context.Context, Host, int64) (bool, error)
 	PublishHostCapacity(context.Context, string, []byte, Report) error
-	HostAssignments(context.Context, string, []byte, string) (AssignmentPage, error)
+	HostAssignments(context.Context, string, []byte, string, bool) (AssignmentPage, error)
 }
 
 var (
@@ -91,6 +91,7 @@ func (a *Authority) Handler(fallback http.Handler) http.Handler {
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/identity", a.directoryIdentity)
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/replica-retired", a.directoryReplicaRetired)
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/health", a.directoryHealth)
+	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/suspension", a.directorySuspension)
 	mux.HandleFunc("GET /ocean/hosts/{host}/directories/{tenant}/{generation}/join-task", a.directoryJoinTask)
 	mux.HandleFunc("POST /ocean/hosts/{host}/directories/{tenant}/{generation}/join-task", a.directoryJoinTask)
 	mux.HandleFunc("GET /ocean/hosts/{host}/directories/{tenant}/{generation}/graph-task", a.directoryGraphTask)
@@ -272,7 +273,7 @@ func (a *Authority) placements(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	result, err := a.store.HostAssignments(ctx, hostID, peer.Raw, query.Get("continuation"))
+	result, err := a.store.HostAssignments(ctx, hostID, peer.Raw, query.Get("continuation"), r.Header.Get(DirectorySuspensionHeader) == "1")
 	if errors.Is(err, ErrHostDenied) {
 		reject(w, http.StatusForbidden, "HostIdentityDenied")
 		return

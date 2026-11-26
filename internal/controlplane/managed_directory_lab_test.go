@@ -295,7 +295,7 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 		if used, err := r.counter(ctx, r.hostKey("placement-usage", reservation.HostID)); err != nil || used.used != configured {
 			t.Fatalf("host capacity was not charged exactly once: %+v %v", used.used, err)
 		}
-		page, err := r.HostAssignments(ctx, reservation.HostID, []byte(reservation.HostID), "")
+		page, err := r.HostAssignments(ctx, reservation.HostID, []byte(reservation.HostID), "", false)
 		if err != nil || len(page.Assignments) != 1 {
 			t.Fatalf("controller assignment could not be read by its host: %+v %v", page, err)
 		}
@@ -310,7 +310,7 @@ func testManagedDirectoryPlacement(t *testing.T, ctx context.Context, r *Region,
 			controller.DNSName != directory.Spec.DNSName || controller.NetBIOSName != directory.Spec.NetBIOSName {
 			t.Fatalf("the host can not identify its own directory controller and peer: %+v", controller)
 		}
-		if _, err := r.HostAssignments(ctx, reservation.HostID, []byte("foreign-cert"), ""); !errors.Is(err, enrollment.ErrHostDenied) {
+		if _, err := r.HostAssignments(ctx, reservation.HostID, []byte("foreign-cert"), "", false); !errors.Is(err, enrollment.ErrHostDenied) {
 			t.Fatalf("a mismatched production certificate could read the assignment: %v", err)
 		}
 	}
@@ -537,7 +537,7 @@ func testDirectoryReplicaReplacement(t *testing.T, ctx context.Context, r *Regio
 		t.Fatalf("retired host confirmed its own cleanup: %v", err)
 	}
 	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
-	page, err := r.HostAssignments(ctx, primary.HostID, []byte(primary.HostID), "")
+	page, err := r.HostAssignments(ctx, primary.HostID, []byte(primary.HostID), "", false)
 	delivered := false
 	for _, assignment := range page.Assignments {
 		if assignment.TenantID == tenant.TenantID && assignment.Directory != nil && assignment.Directory.RetireReplica == retired.Generation {
@@ -693,7 +693,7 @@ func testDirectoryPrimaryReplacement(t *testing.T, ctx context.Context, r *Regio
 	}
 	assignment := func(controller Reservation) enrollment.DirectoryAssignment {
 		t.Helper()
-		page, err := r.HostAssignments(ctx, controller.HostID, []byte(controller.HostID), "")
+		page, err := r.HostAssignments(ctx, controller.HostID, []byte(controller.HostID), "", false)
 		if err == nil {
 			for _, a := range page.Assignments {
 				if a.Generation == controller.Generation && a.Directory != nil {

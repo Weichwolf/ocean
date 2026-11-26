@@ -58,24 +58,34 @@ func (j *joinClient) directoryRuntimeAvailable(ctx context.Context) bool {
 	return err == nil && json.Unmarshal(data, &mapping) == nil && directoryIDMapFits(mapping.UIDMap) && directoryIDMapFits(mapping.GIDMap)
 }
 
-func (j *joinClient) directoryTasks(ctx context.Context) (map[string]enrollment.Assignment, error) {
+func (j *joinClient) directoryTasks(ctx context.Context, suspension bool) (map[string]enrollment.Assignment, error) {
 	tasks := make(map[string]enrollment.Assignment)
 	if j.config.DirectoryImage == "" {
 		return tasks, nil
 	}
-	placements, err := j.networkAssignments(ctx)
+	placements, err := j.networkAssignments(ctx, suspension)
 	if err != nil {
 		return nil, err
 	}
 	for _, assignment := range placements {
 		directory := assignment.Directory
-		if directory == nil {
+		if directory == nil && !assignment.DirectorySuspended {
+			continue
+		}
+		if !taskIdentityPattern.MatchString(assignment.ID) || !taskIdentityPattern.MatchString(assignment.Generation) ||
+			!taskIdentityPattern.MatchString(assignment.TenantID) || !taskIdentityPattern.MatchString(assignment.SubscriptionID) {
+			return nil, errors.New("invalid directory task identity")
+		}
+		name := containerName(directoryTaskID(assignment))
+		if assignment.DirectorySuspended {
+			if !suspension || directory != nil || assignment.Network != nil || assignment.PrivateIPv4.IsValid() || assignment.SubnetID != "" {
+				return nil, errors.New("invalid suspended directory task")
+			}
+			tasks[name] = assignment
 			continue
 		}
 		index, peers := directory.ControllerIndex, directory.ControllerIPv4
-		if !taskIdentityPattern.MatchString(assignment.ID) || !taskIdentityPattern.MatchString(assignment.Generation) ||
-			!taskIdentityPattern.MatchString(assignment.TenantID) || !taskIdentityPattern.MatchString(assignment.SubscriptionID) ||
-			!directoryHostname.MatchString(directory.DNSName) || index < 1 || index > len(peers) || peers[index-1] != assignment.PrivateIPv4 ||
+		if !directoryHostname.MatchString(directory.DNSName) || index < 1 || index > len(peers) || peers[index-1] != assignment.PrivateIPv4 ||
 			directory.WriterIndex < 0 || directory.WriterIndex > len(peers) ||
 			!assignment.PrivateIPv4.Is4() || assignment.Resources.CPUMillis < 1 || assignment.Resources.MemoryMiB < 1 {
 			return nil, errors.New("invalid directory task in host assignments")
@@ -95,7 +105,6 @@ func (j *joinClient) directoryTasks(ctx context.Context) (map[string]enrollment.
 				return nil, errors.New("invalid directory recovery task")
 			}
 		}
-		name := containerName(directoryTaskID(assignment))
 		tasks[name] = assignment
 	}
 	return tasks, nil
@@ -239,7 +248,7 @@ func (j *joinClient) reconcileDirectoryControllers(ctx context.Context, logger *
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		round, cancel := context.WithTimeout(ctx, 20*time.Second)
-		tasks, err := j.directoryTasks(round)
+		tasks, err := j.directoryTasks(round, true)
 		if err == nil {
 			err = j.syncDirectoryContainers(round, tasks)
 		}
@@ -267,7 +276,7 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 	}
 	for name := range strings.FieldsSeq(string(restores)) {
 		controller, ok := strings.CutSuffix(name, directoryRestoreSuffix)
-		if task, assigned := tasks[controller]; ok && validRuntimeName(controller) && (!assigned || task.Directory.RecoveryID == "") {
+		if task, assigned := tasks[controller]; ok && validRuntimeName(controller) && (!assigned || !task.DirectorySuspended && task.Directory.RecoveryID == "") {
 			if err := podmanAction(ctx, "rm", "--force", "--ignore", name); err != nil {
 				failures = append(failures, err)
 			} else {
@@ -282,6 +291,10 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 		}
 	}
 	for name, task := range tasks {
+		if task.DirectorySuspended {
+			failures = append(failures, j.suspendDirectoryController(ctx, name, task))
+			continue
+		}
 		var health enrollment.DirectoryHealth
 		var syncErr error
 		if !task.NetworkUnavailable && task.Network != nil {
@@ -309,6 +322,39 @@ func (j *joinClient) syncDirectoryContainers(ctx context.Context, tasks map[stri
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (j *joinClient) suspendDirectoryController(ctx context.Context, name string, task enrollment.Assignment) error {
+	if err := podmanAction(ctx, "stop", "--ignore", "--time", "5", name); err != nil {
+		return err
+	}
+	if err := podmanAction(ctx, "rm", "--force", "--ignore", name, name+directoryRestoreSuffix); err != nil {
+		return err
+	}
+	if err := podmanAction(ctx, "secret", "rm", "--ignore", name); err != nil {
+		return err
+	}
+	// The root network reconciler removes the network marker after detaching
+	// the private network. The named volume stays in the rootless store.
+	for _, suffix := range []string{".ready", ".network"} {
+		if _, err := os.Lstat(filepath.Join(workloadRuntimeDirectory, name+suffix)); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("directory network withdrawal is pending")
+		}
+	}
+	path := j.url() + "/directories/" + task.TenantID + "/" + task.Generation + "/suspension"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return err
+	}
+	response, err := j.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("directory suspension report returned HTTP %d", response.StatusCode)
+	}
+	return nil
 }
 
 func (j *joinClient) syncDirectoryContainer(ctx context.Context, name string, a enrollment.Assignment) error {

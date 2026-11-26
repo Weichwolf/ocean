@@ -50,6 +50,9 @@ applicable transfer mechanism and location restrictions before enabling a path.
    For a VM, record the assigned worker's shutdown and disk-detachment
    acknowledgement. Track the retained encrypted image under the approved
    retention or deletion workflow.
+   For a managed directory, collect both controller withdrawal acknowledgements
+   and test client access to the private domain endpoints. Track the retained
+   directory volumes and any offline copies in the approved retention decision.
 3. Keep the authoritative deletion ledger independent of the backups it governs.
    Restore into an isolated environment. Verify that regional startup replays
    subsequent suspensions before accepting requests. Verify denied identities,

@@ -87,14 +87,23 @@ func (binding *authorizedDirectoryController) activeWriter() bool {
 }
 
 func (r *Region) authorizeDirectoryController(ctx context.Context, host string, certificate []byte, tenant, generation string) (*authorizedDirectoryController, error) {
-	if !validCapacity(r.directoryCapacity) || r.workloads == nil || !identifier.MatchString(tenant) || !identifier.MatchString(generation) {
-		return nil, enrollment.ErrHostDenied
-	}
 	if err := r.requireActiveHostedTenant(ctx, tenant); err != nil {
 		if errors.Is(err, identity.ErrTenantSuspended) {
 			return nil, enrollment.ErrHostDenied
 		}
 		return nil, err
+	}
+	binding, err := r.readDirectoryController(ctx, host, certificate, tenant, generation)
+	if err != nil {
+		return nil, err
+	}
+	binding.guards = append(binding.guards, clientv3.Compare(clientv3.Version(r.offboardingMarker(tenant)), "=", 0))
+	return binding, nil
+}
+
+func (r *Region) readDirectoryController(ctx context.Context, host string, certificate []byte, tenant, generation string) (*authorizedDirectoryController, error) {
+	if !validCapacity(r.directoryCapacity) || r.workloads == nil || !identifier.MatchString(tenant) || !identifier.MatchString(generation) {
+		return nil, enrollment.ErrHostDenied
 	}
 	key := r.managedDirectoryPlacementKey(tenant)
 	snapshot, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.hostKey("registered", host)), clientv3.OpGet(r.hostKey("live", host)),

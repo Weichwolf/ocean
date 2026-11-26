@@ -100,7 +100,7 @@ func (r *Region) hostReservationKey(scope arm.SubscriptionScope, host, id string
 
 // HostAssignments reads only the current certified host's placement records.
 // Authorization and the returned page share the same regional snapshot.
-func (r *Region) HostAssignments(ctx context.Context, id string, certificate []byte, after string) (enrollment.AssignmentPage, error) {
+func (r *Region) HostAssignments(ctx context.Context, id string, certificate []byte, after string, directorySuspension bool) (enrollment.AssignmentPage, error) {
 	const size = 32
 	prefix := r.hostReservationPrefix(id)
 	start := prefix
@@ -135,7 +135,18 @@ func (r *Region) HostAssignments(ctx context.Context, id string, certificate []b
 			return enrollment.AssignmentPage{}, errors.New("host assignment does not match its key")
 		}
 		if r.hosted != nil {
-			if _, err := r.hostedPoolGuard(ctx, scope, host.Pool, snapshot.Header.Revision); err != nil {
+			suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+			if err != nil {
+				return enrollment.AssignmentPage{}, err
+			}
+			if suspension != nil {
+				if directorySuspension && assignment.Directory != nil && suspension.SubscriptionID == scope.SubscriptionID {
+					page.Assignments = append(page.Assignments, enrollment.Assignment{ID: assignment.ID, Generation: assignment.Generation,
+						TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, DirectorySuspended: true})
+				}
+				continue
+			}
+			if _, err := r.hostedPlacementAt(ctx, scope, host.Pool, snapshot.Header.Revision); err != nil {
 				if errors.Is(err, ErrPlacementPolicy) {
 					continue
 				}

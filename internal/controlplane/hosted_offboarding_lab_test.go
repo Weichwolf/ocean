@@ -66,7 +66,7 @@ func seedHostedRestoreAssignments(t *testing.T, ctx context.Context, r *Region, 
 			t.Fatalf("failed to seed a tenant assignment in the snapshot: %v", err)
 		}
 	}
-	page, err := r.HostAssignments(ctx, "worker-a", []byte("worker-a"), "")
+	page, err := r.HostAssignments(ctx, "worker-a", []byte("worker-a"), "", false)
 	if err != nil || len(page.Assignments) != 2 {
 		t.Fatalf("expected two host assignments before offboarding: %v", err)
 	}
@@ -137,7 +137,7 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 	if err != nil || priorTask.Count != 1 {
 		t.Fatalf("the old snapshot did not preserve the suspended tenant's assignment: %v", err)
 	}
-	page, err := restored.HostAssignments(ctx, "worker-a", []byte("worker-a"), "")
+	page, err := restored.HostAssignments(ctx, "worker-a", []byte("worker-a"), "", false)
 	if err != nil || len(page.Assignments) != 1 || page.Assignments[0].TenantID != neighbor.TenantID {
 		t.Fatalf("replayed suspension did not withhold the old host assignment: %v", err)
 	}
@@ -215,8 +215,10 @@ func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfi
 	address := disposableEtcdAddress(t)
 	origin := "https://" + address
 	secret := write("onboarding.key", []byte(rand.Text()+rand.Text()))
-	initial := false
-	region.OperationController = &initial
+	if region.OperationController == nil {
+		initial := false
+		region.OperationController = &initial
+	}
 	contents, err := json.Marshal(settings{Server: config.Server{ListenAddress: address, TLS: tlsSettings}, Region: &region,
 		HostEnrollment: &enrollment.Config{CertificateFile: caFile, KeyFile: keyFile("api-ca.key", signer), InventoryFile: write("inventory.json", inventory)},
 		Identity: &identity.Config{Provider: issuer, Authority: issuer, ProviderCAFile: pemFile("issuer.pem", "CERTIFICATE", issuerCert.Raw),

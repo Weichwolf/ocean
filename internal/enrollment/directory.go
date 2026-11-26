@@ -14,6 +14,7 @@ var ErrDirectoryAssignmentChanged = errors.New("directory assignment changed")
 var directoryDomainSID = regexp.MustCompile(`^S-1-5-21(-[0-9]{1,10}){3}$`)
 
 const DirectoryDomainSIDHeader = "Ocean-Directory-Domain-Sid"
+const DirectorySuspensionHeader = "Ocean-Directory-Suspension"
 
 type DirectoryBootstrap struct {
 	Credential []byte
@@ -40,6 +41,38 @@ type directoryBootstrapStore interface {
 
 type directoryHealthStore interface {
 	ReportDirectoryHealth(context.Context, string, []byte, string, string, DirectoryHealth) error
+}
+
+type directorySuspensionStore interface {
+	ReportDirectorySuspension(context.Context, string, []byte, string, string) error
+}
+
+func (a *Authority) directorySuspension(w http.ResponseWriter, r *http.Request) {
+	store, enabled := a.store.(directorySuspensionStore)
+	host, tenant, generation := r.PathValue("host"), r.PathValue("tenant"), r.PathValue("generation")
+	if !enabled || !hostName.MatchString(host) || !hostName.MatchString(tenant) || !hostName.MatchString(generation) || r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	peer := verifiedHostCertificate(r)
+	if peer == nil {
+		reject(w, http.StatusUnauthorized, "HostCertificateRequired")
+		return
+	}
+	if _, err := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, 0)); err != nil {
+		reject(w, http.StatusBadRequest, "InvalidDirectorySuspension")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	switch err := store.ReportDirectorySuspension(ctx, host, peer.Raw, tenant, generation); {
+	case errors.Is(err, ErrDirectoryAssignmentChanged):
+		reject(w, http.StatusConflict, "DirectoryAssignmentChanged")
+	case err != nil:
+		replyWorkloadError(w, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (a *Authority) directoryHealth(w http.ResponseWriter, r *http.Request) {

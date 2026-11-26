@@ -75,5 +75,13 @@ func hostedWorkplaceSteps() []harness.Step {
 	vm = requireFile(vm, filepath.Join(os.Getenv("OCEAN_E2E_VM_LINUX_STATE"), "state.json"), "the prepared KVM lab")
 	vm = requireFile(vm, os.Getenv("OCEAN_E2E_VM_LINUX_SSH_KEY"), "the disposable Debian VM SSH key")
 	vm = requireFile(vm, os.Getenv("OCEAN_E2E_VM_LINUX_KNOWN_HOSTS"), "the pinned Debian VM host key")
-	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha, vm}
+	directory := recovery
+	directory.Name, directory.Cases = "hosted-directory-offboarding", []string{"WORKPLACE-58"}
+	directory.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedDirectoryOffboarding$", "./internal/controlplane"}
+	directory.Timeout = 8 * time.Minute
+	if directory.BlockedReason == "" && (os.Getenv("OCEAN_E2E_PACKAGED_DIRECTORY_STATE") == "" || os.Getenv("OCEAN_E2E_SAMBA_IMAGE") == "") {
+		directory.BlockedReason = "Provide the disposable Samba KVM state and pinned Samba image."
+	}
+	directory = requireFile(directory, filepath.Join(os.Getenv("OCEAN_E2E_PACKAGED_DIRECTORY_STATE"), "state.json"), "the three-node directory lab")
+	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha, vm, directory}
 }

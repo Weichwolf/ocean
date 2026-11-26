@@ -96,6 +96,7 @@ type Assignment struct {
 	Network            *network.SubnetPolicy `json:"network,omitempty"`
 	NetworkUnavailable bool                  `json:"networkUnavailable,omitempty"`
 	Directory          *DirectoryAssignment  `json:"directory,omitempty"`
+	DirectorySuspended bool                  `json:"directorySuspended,omitempty"`
 }
 
 // DirectoryAssignment identifies one controller and its peers in a private AD domain.

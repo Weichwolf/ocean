@@ -88,7 +88,7 @@ func reconcileFirewalls(ctx context.Context, registryPath string, client *joinCl
 	}
 	var assignments map[placementIdentity]enrollment.Assignment
 	if len(registry.Endpoints) != 0 {
-		assignments, err = client.networkAssignments(ctx)
+		assignments, err = client.networkAssignments(ctx, false)
 	}
 	if err != nil {
 		// A slow or unavailable API cannot prevent local revocation.
@@ -224,13 +224,13 @@ func loadEndpointRegistry(path string) (endpointRegistry, error) {
 	return *value, nil
 }
 
-func (j *joinClient) networkAssignments(ctx context.Context) (map[placementIdentity]enrollment.Assignment, error) {
+func (j *joinClient) networkAssignments(ctx context.Context, directorySuspension bool) (map[placementIdentity]enrollment.Assignment, error) {
 	const maxPages = 32
 	assignments := make(map[placementIdentity]enrollment.Assignment)
 	seen := make(map[string]bool)
 	cursor := ""
 	for range maxPages {
-		page, err := j.networkAssignmentPage(ctx, cursor)
+		page, err := j.networkAssignmentPage(ctx, cursor, directorySuspension)
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +253,7 @@ func (j *joinClient) networkAssignments(ctx context.Context) (map[placementIdent
 	return nil, errors.New("network assignments exceed the page limit")
 }
 
-func (j *joinClient) networkAssignmentPage(ctx context.Context, cursor string) (enrollment.AssignmentPage, error) {
+func (j *joinClient) networkAssignmentPage(ctx context.Context, cursor string, directorySuspension bool) (enrollment.AssignmentPage, error) {
 	var page enrollment.AssignmentPage
 	path := j.url() + "/placements"
 	if cursor != "" {
@@ -262,6 +262,9 @@ func (j *joinClient) networkAssignmentPage(ctx context.Context, cursor string) (
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return page, err
+	}
+	if directorySuspension {
+		request.Header.Set(enrollment.DirectorySuspensionHeader, "1")
 	}
 	response, err := j.client.Do(request)
 	if err != nil {

@@ -119,6 +119,12 @@ func directoryPlacementPending(err error) bool {
 }
 
 func (r *Region) placeManagedDirectory(ctx context.Context, tenantID string) error {
+	if err := r.requireActiveHostedTenant(ctx, tenantID); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return nil
+		}
+		return err
+	}
 	key := r.managedDirectoryPlacementKey(tenantID)
 	existing, err := r.client.Get(ctx, key)
 	if err != nil {
@@ -206,7 +212,7 @@ func (r *Region) reserveDirectoryControllers(ctx context.Context, tenantID, key 
 	placement.Bootstrap = r.workloads.sealer.Seal(nil, nil, []byte("Ocn9-"+rand.Text()), placement.bootstrapLabel(key))
 	controllerIPs := [directoryControllerCount]netip.Addr{addresses[0].address, addresses[1].address}
 	guards = append(guards, usage.compare(), clientv3.Compare(clientv3.ModRevision(policyKey), "=", revision),
-		clientv3.Compare(clientv3.Version(key), "=", 0))
+		clientv3.Compare(clientv3.Version(key), "=", 0), clientv3.Compare(clientv3.Version(r.offboardingMarker(tenantID)), "=", 0))
 	writes := []clientv3.Op{usage.write(addCapacity(perController, perController))}
 	if len(lock.Kvs) == 0 {
 		// Requests from before subnet holds were introduced acquire the hold

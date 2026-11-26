@@ -110,7 +110,7 @@ func TestRegionalPlacement(t *testing.T) {
 		}
 		policy("lab-default", capacity(3000, 3000))
 		denied(request("disconnected-host", 1200, 512), ErrNoEligibleHost)
-		if _, err := region.HostAssignments(ctx, large, largerIdentity.Certificate, ""); !errors.Is(err, enrollment.ErrHostDenied) {
+		if _, err := region.HostAssignments(ctx, large, largerIdentity.Certificate, "", false); !errors.Is(err, enrollment.ErrHostDenied) {
 			t.Fatalf("a disconnected host received assignments: %v", err)
 		}
 		return
@@ -144,12 +144,12 @@ func TestRegionalPlacement(t *testing.T) {
 	if err != nil || smallerIdentity == nil {
 		t.Fatalf("cannot read the smaller host's registered identity: %v", err)
 	}
-	assignments, err := region.HostAssignments(ctx, small, smallerIdentity.Certificate, "")
+	assignments, err := region.HostAssignments(ctx, small, smallerIdentity.Certificate, "", false)
 	if err != nil || len(assignments.Assignments) != 1 || assignments.Assignments[0].ID != wanted.ID ||
 		assignments.Assignments[0].Generation != results[0].Generation || assignments.Assignments[0].SubscriptionID != scope.SubscriptionID {
 		t.Fatalf("the host did not receive its committed assignment: %+v %v", assignments, err)
 	}
-	if _, err := region.HostAssignments(ctx, small, largerIdentity.Certificate, ""); !errors.Is(err, enrollment.ErrHostDenied) {
+	if _, err := region.HostAssignments(ctx, small, largerIdentity.Certificate, "", false); !errors.Is(err, enrollment.ErrHostDenied) {
 		t.Fatalf("a different host acquired the assignment: %v", err)
 	}
 	otherCell := wanted
@@ -157,7 +157,7 @@ func TestRegionalPlacement(t *testing.T) {
 	denied(otherCell, ErrReservationChanged)
 	release(results[0])
 	release(results[0])
-	assignments, err = region.HostAssignments(ctx, small, smallerIdentity.Certificate, "")
+	assignments, err = region.HostAssignments(ctx, small, smallerIdentity.Certificate, "", false)
 	if err != nil || len(assignments.Assignments) != 0 {
 		t.Fatalf("the released assignment remained visible: %+v %v", assignments, err)
 	}

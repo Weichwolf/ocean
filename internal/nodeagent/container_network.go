@@ -106,7 +106,7 @@ func RunContainerNetwork(ctx context.Context, settingsPath, agentPath string, lo
 		round, cancel := context.WithTimeout(ctx, 4*time.Second)
 		tasks, err := client.containerTasks(round, true)
 		if err == nil {
-			directories, directoryErr := client.directoryTasks(round)
+			directories, directoryErr := client.directoryTasks(round, false)
 			if directoryErr != nil && ctx.Err() == nil {
 				logger.Warn("directory network assignments will retry", "error", directoryErr)
 			}

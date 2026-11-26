@@ -114,7 +114,7 @@ func testDirectoryPairRecovery(t *testing.T, ctx context.Context, r *Region, ten
 	if after, err := r.counter(ctx, r.armPrefix(scope)+"placement-usage"); err != nil || after.used != tenantUsage.used {
 		t.Fatalf("recovery changed the tenant quota charge: %+v %v", after, err)
 	}
-	page, err := r.HostAssignments(ctx, writer.HostID, []byte(writer.HostID), "")
+	page, err := r.HostAssignments(ctx, writer.HostID, []byte(writer.HostID), "", false)
 	if err != nil || len(page.Assignments) != 1 || page.Assignments[0].Directory.RecoverySHA256 != fence.BackupSHA256 ||
 		page.Assignments[0].Directory.RecoveryID != fence.RecoveryID || page.Assignments[0].Directory.ControllerNames != placed.Names {
 		t.Fatalf("the recovery task is not bound to the assigned writer: %+v %v", page, err)

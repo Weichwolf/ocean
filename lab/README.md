@@ -2421,6 +2421,15 @@ available for the authorized retention or deletion workflow. A legacy VM worker
 sees the assignment withdrawn and can stop the VM, but only a worker with the
 suspension protocol can produce this receipt.
 
+For a managed Samba directory, network and legacy agents see both controller
+assignments withdrawn. An updated directory agent also receives a cleanup task
+containing the current assignment identity. Each host stops its Samba
+controller, removes the ephemeral runtime and bootstrap secret, and confirms
+withdrawal after the local private network attachment is gone. Each controller
+generation produces one `Ocean.Hosted/offboarding/stopDirectoryController`
+audit event. The reserved identities and named directory volumes are retained
+for the approved retention or deletion procedure.
+
 After suspension, an authenticated hosted operator can request deletion of a
 completed Azure Files or managed SMB share. Record the controller's approval in the
 deployment review and pass its opaque UUID as `approvalId`. Use a stable UUID
@@ -2642,6 +2651,13 @@ checkpoint in the Debian guest, suspends the tenant with stock Azure CLI, and
 checks the authenticated receipt, QEMU, the network namespace, LUKS and RBD.
 It then reads the checkpoint from a read-only mapping of the retained disk.
 
+`WORKPLACE-58` uses the three Debian guests prepared for packaged directory
+provisioning. Preload the pinned Samba OCI image under `ocean-agent` on both
+controller hosts. The probe stages the current binaries as transient services
+and checks the withdrawal receipts against both native controllers. The
+Debian client verifies DNS, fresh Kerberos and SYSVOL before suspension and
+checks direct DNS, Kerberos, LDAP and SMB denial afterward.
+
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
@@ -2656,6 +2672,8 @@ OCEAN_E2E_VM_LINUX_DISK_PIN="$DEBIAN_DISK_SHA256" \
 OCEAN_E2E_VM_LINUX_VARS_PIN="$DEBIAN_VARS_SHA256" \
 OCEAN_E2E_VM_LINUX_SSH_KEY="$DEBIAN_FIXTURE_SSH_KEY" \
 OCEAN_E2E_VM_LINUX_KNOWN_HOSTS="$DEBIAN_FIXTURE_KNOWN_HOSTS" \
+OCEAN_E2E_PACKAGED_DIRECTORY_STATE="$DISPOSABLE_DIRECTORY_LAB_STATE" \
+OCEAN_E2E_SAMBA_IMAGE="$PINNED_SAMBA_IMAGE_ID" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 
