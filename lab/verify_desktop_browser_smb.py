@@ -12,6 +12,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -285,6 +286,8 @@ def prepare_live_keycloak(work, cleanup, origin, ca, signer, deployment_ca, now)
     }
     if live_args.gateway_failover:
         cfg['standbyDer'] = '/fixture/standby.crt'
+    if live_args.native_other_password:
+        cfg['nativeRdp'] = True
     return cfg, (group, otp, deployment_ca)
 
 
@@ -404,6 +407,9 @@ udp_preference_limit = 1
     configured = None
     if live_args:
         configured, real = prepare_live_keycloak(work, cleanup, host_origin, ca, signer, cert_path, now)
+        if live_args.native_other_password:
+            broker_cfg['launch']['nativeGuests'] = [{'tenantId': tenant, 'subscriptionId': subscription,
+                'desktopId': desktop, 'machineId': machine, 'certificateSha256': guest_fingerprint}]
 
     def start_replica(replica, address, identity=None):
         config_path = work / f'broker-{replica}.json'
@@ -561,6 +567,79 @@ def gateway_configuration(listen, directory, certificate, filename, web_client, 
     }
 
 
+def verify_native_rdp(cleanup, pin, enable_native):
+    reader = 'smbreader@ad.ocean.test'
+    authorized = private_fixture_file(live_args.browser_password) + b'\n'
+    unassigned = private_fixture_file(live_args.native_other_password) + b'\n'
+    settings = '/etc/xrdp/sesman.ini'
+    original = g('sudo cat ' + settings)
+    changed, count = re.subn(rb'(?m)^TerminalServerUsers=.*$', b'TerminalServerUsers=domain users@ad.ocean.test', original)
+    if count != 1 or b'AlwaysGroupCheck=true' not in original:
+        raise RuntimeError('The joined guest requires its disposable XRDP workforce group settings.')
+    cleanup.callback(install, settings, original, '0644')
+    install(settings, changed, '0644')
+    g('sudo systemctl restart xrdp-sesman xrdp')
+    c('command -v xfreerdp3 && command -v xvfb-run && command -v xauth')
+
+    def login(account, password, *pam_actions):
+        command = shlex.join(['sudo', 'pamtester', 'xrdp-sesman', account, *pam_actions])
+        invoke = [Path('bin/ocean-lab'), 'ssh', '-state', state, guest, '--', command]
+        return subprocess.run(invoke, input=password, capture_output=True, timeout=20)
+
+    if login(user, authorized, 'authenticate').returncode == 0:
+        raise RuntimeError('A signed-only managed guest allowed a raw password.')
+    enable_native()
+    for account, password in ((user, authorized), (reader, unassigned)):
+        if login(account, password, 'authenticate').returncode != 0:
+            raise RuntimeError('A disposable workforce credential failed the normal PAM password stack.')
+
+    def remove_session(account):
+        g(shlex.join(['sudo', 'pkill', '-TERM', '-u', account, '-x', 'openbox|Xorg']) + ' || true')
+    for account in (user, reader):
+        remove_session(account)
+        cleanup.callback(remove_session, account)
+
+    client_pin = pin.replace(':', '').lower()
+    def connect(account, password, label, lifetime):
+        command = shlex.join(['timeout', '-k', '2s', lifetime, 'xvfb-run', '-a', 'xfreerdp3', '/v:10.232.1.12:3389',
+                              '/u:' + account, '/from-stdin:force', '/sec:tls', '/cert:fingerprint:sha256:' + client_pin,
+                              '/size:800x600', '/log-level:WARN'])
+        command += '; status=$?; test "$status" -eq 0 || test "$status" -eq 124'
+        log = cleanup.enter_context((report / f'desktop-native-{label}.log').open('wb'))
+        process = subprocess.Popen([Path('bin/ocean-lab'), 'ssh', '-state', state, gateway_host, '--', command],
+                                   stdin=subprocess.PIPE, stdout=log, stderr=log)
+        cleanup.callback(close_process, process)
+        process.stdin.write(password)
+        process.stdin.close()
+        return process
+
+    def session(account):
+        query = shlex.join(['pgrep', '-u', account, '-x', 'openbox'])
+        return bool(g(query + ' || true').strip())
+
+    started_at = time.monotonic()
+    assigned = connect(user, authorized, 'assigned', '16s')
+    wait(lambda: session(user), 14)
+    if assigned.poll() is not None:
+        raise RuntimeError('The assigned RDP connection closed before its desktop was observed.')
+    duration = round((time.monotonic() - started_at)*1000)
+    denied = connect(reader, unassigned, 'unassigned', '8s')
+    until = time.monotonic() + 10
+    while time.monotonic() < until and denied.poll() is None:
+        if session(reader):
+            raise RuntimeError('The private RDP client opened an unassigned account.')
+        time.sleep(0.2)
+    if denied.poll() is None or session(reader):
+        raise RuntimeError('The denied client did not exit cleanly without a desktop session.')
+    if assigned.wait(12) != 0:
+        raise RuntimeError('The native client exited unexpectedly after the desktop opened.')
+    remove_session(user)
+    (report / 'desktop-native-rdp.tsv').write_text('case\tresult\tduration_ms\n'
+        'password-fails-on-signed-only-guest\tPASS\t\n'
+        f'assigned-native-rdp-session\tPASS\t{duration}\n'
+        'unassigned-valid-password-denied\tPASS\t\n')
+
+
 def start_redundant_gateways(work, cleanup, ca, signer, now, regional, pin, web_client):
     directory = Path('/opt') / name
     public_port = urls.urlsplit(gateway).port
@@ -700,9 +779,12 @@ def main():
     parser.add_argument('--ldap-reader', type=Path)
     parser.add_argument('--domain-sid', type=Path)
     parser.add_argument('--browser-password', type=Path)
+    parser.add_argument('--native-other-password', type=Path)
     args = parser.parse_args()
     if args.gateway_failover and not args.live_keycloak:
         parser.error('Gateway failover requires the live Keycloak and regional ARM fixture.')
+    if args.native_other_password and not args.live_keycloak:
+        parser.error('Native admission requires the live Samba and regional ARM fixture.')
     endpoint = urls.urlsplit(args.etcd)
     if (endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1' or not endpoint.port or
             endpoint.username is not None or endpoint.path or endpoint.query or endpoint.fragment):
@@ -786,17 +868,22 @@ def main():
             g('test ! -e '+session_script+' && test ! -e /run/ocean-desktop-cifs')
             cleanup.callback(g, 'sudo unlink '+session_script)
             install(session_script, Path('packaging/debian/60-ocean-desktop-cifs').read_bytes(), '0644')
-            probe_result = prepare_user_probe(cleanup)
-            settings = json.dumps({'machineId': machine, 'publicKey': base64.b64encode(launch_signer.public_key().public_bytes_raw()).decode(),
-                                   'kerberos': broker}).encode()
+            settings = {'machineId': machine, 'publicKey': base64.b64encode(launch_signer.public_key().public_bytes_raw()).decode(),
+                        'kerberos': broker}
             install(helper, Path('bin/ocean-desktop-guest').read_bytes(), '0755')
-            install(configuration, settings, '0600')
+            install(configuration, json.dumps(settings).encode(), '0600')
             g('sudo install -d -m0700 /var/lib/ocean-desktop/replay')
             snippet = Path('packaging/debian/ocean-desktop-pam').read_bytes()
             install(stage, original.replace(b'@include common-auth', snippet + b'@include common-auth'), '0644')
             changed = True
             g('sudo systemctl start xrdp-sesman xrdp')
             pin = g('sudo openssl x509 -in /etc/xrdp/cert.pem -noout -fingerprint -sha256').decode().strip().split('=', 1)[1]
+            if args.native_other_password:
+                def enable_native():
+                    settings['native'] = {key: value for key, value in broker.items() if key != 'service'}
+                    install(configuration, json.dumps(settings).encode(), '0600')
+                verify_native_rdp(cleanup, pin, enable_native)
+            probe_result = prepare_user_probe(cleanup)
             if args.gateway_failover:
                 server_keys, fail_primary, standby_owns_vip = start_redundant_gateways(
                     work, cleanup, ca, ca_key, now, regional, pin, web_client)

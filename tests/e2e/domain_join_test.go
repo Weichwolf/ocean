@@ -337,8 +337,18 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		desktopGatewayHA.Evidence = append(desktopGatewayHA.Evidence,
 			harness.EvidenceSource{Name: filename, Path: filepath.Join(options.domain, "evidence", filename)})
 	}
+	desktopNative := desktopLive
+	desktopNative.Name, desktopNative.Cases = "desktop-native-admission", []string{"WORKPLACE-38"}
+	desktopNative.Timeout = 5 * time.Minute
+	readerPassword := filepath.Join(smbFixture, "smbreader")
+	desktopNative = requireFile(desktopNative, readerPassword, "the disposable SMB reader credential")
+	desktopNative.Command = append(append([]string(nil), desktopNative.Command...), "--native-other-password", readerPassword)
+	desktopNative.Evidence = append([]harness.EvidenceSource(nil), desktopNative.Evidence...)
+	for _, filename := range []string{"desktop-native-rdp.tsv", "desktop-native-assigned.log", "desktop-native-unassigned.log"} {
+		desktopNative.Evidence = append(desktopNative.Evidence, harness.EvidenceSource{Name: filename, Path: filepath.Join(options.domain, "evidence", filename)})
+	}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
 		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos,
-		desktopAssignments, desktopBrowserSMB, desktopLive, desktopGatewayHA)
+		desktopAssignments, desktopBrowserSMB, desktopLive, desktopGatewayHA, desktopNative)
 }

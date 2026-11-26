@@ -41,6 +41,7 @@ type Server struct {
 	Desktops            DesktopStore
 	DesktopLaunch       DesktopLaunchStore
 	DesktopCIFS         DesktopCIFSStore
+	DesktopNative       DesktopNativeStore
 	FunctionPlans       bool
 	Functions           FunctionStore
 	FunctionDomain      string
@@ -206,6 +207,10 @@ func networkRoute(group string, path []string) (armRoute, bool) {
 // Handler serves ARM routes over the same ingress as identity and discovery.
 func (s Server) Handler(fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == desktop.NativeAdmissionPath && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
+			s.desktopNativeAdmission(w, r)
+			return
+		}
 		if r.URL.Path == desktop.KerberosPath && strings.EqualFold(r.Host, strings.TrimPrefix(s.Origin, "https://")) {
 			s.desktopKerberos(w, r)
 			return

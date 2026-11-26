@@ -71,6 +71,17 @@ type DesktopLaunch struct {
 	Credential string `json:"credential"`
 }
 
+func desktopPeer(r *http.Request) *x509.Certificate {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+	peer, now := r.TLS.PeerCertificates[0], time.Now()
+	if peer == nil || now.Before(peer.NotBefore) || !now.Before(peer.NotAfter) {
+		return nil
+	}
+	return peer
+}
+
 func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request, subscription, group, name, action string) {
 	gatewayAction := action != "desktopAuthorization"
 	if s.Desktops == nil || s.AuthenticateDesktop == nil || gatewayAction && s.DesktopLaunch == nil {
@@ -94,13 +105,8 @@ func (s Server) authorizePersonalDesktop(w http.ResponseWriter, r *http.Request,
 	}
 	var peer *x509.Certificate
 	if gatewayAction {
-		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
-			writeError(w, http.StatusForbidden, "DesktopGatewayDenied", ErrDesktopGateway.Error())
-			return
-		}
-		peer = r.TLS.PeerCertificates[0]
-		now := time.Now()
-		if peer == nil || now.Before(peer.NotBefore) || !now.Before(peer.NotAfter) {
+		peer = desktopPeer(r)
+		if peer == nil {
 			writeError(w, http.StatusForbidden, "DesktopGatewayDenied", ErrDesktopGateway.Error())
 			return
 		}

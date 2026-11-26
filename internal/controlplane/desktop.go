@@ -144,15 +144,23 @@ func (r *Region) DeletePersonalDesktop(ctx context.Context, scope arm.Subscripti
 }
 
 func (r *Region) AuthorizePersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress) (arm.DesktopAdmission, error) {
-	access, err := r.resolvePersonalDesktop(ctx, principal, address, nil, false)
+	access, err := r.resolvePersonalDesktop(ctx, principal, address, desktopAccessOptions{})
 	return access.DesktopAdmission, err
 }
 
-func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, gatewayGuards []clientv3.Cmp, launch bool) (arm.DesktopSession, error) {
+type desktopAccessOptions struct {
+	gatewayGuards []clientv3.Cmp
+	launch        bool
+	nativeUser    string
+	machineID     string
+}
+
+func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.DesktopPrincipal, address arm.ResourceAddress, options desktopAccessOptions) (arm.DesktopSession, error) {
 	var empty arm.DesktopSession
 	started := time.Now().UTC()
-	if !principal.Tenant.Valid(principal.Tenant.TenantID) || !enrollment.ValidDirectoryJoinID(principal.UserID) ||
-		!enrollment.ValidDirectoryJoinID(principal.DirectoryID) || !started.Before(principal.ExpiresAt) {
+	native := options.nativeUser != ""
+	if !principal.Tenant.Valid(principal.Tenant.TenantID) || !started.Before(principal.ExpiresAt) ||
+		!native && (!enrollment.ValidDirectoryJoinID(principal.UserID) || !enrollment.ValidDirectoryJoinID(principal.DirectoryID)) {
 		return empty, arm.ErrDesktopDenied
 	}
 	scope := arm.SubscriptionScope{TenantID: principal.Tenant.TenantID, SubscriptionID: principal.Tenant.SubscriptionID}
@@ -172,7 +180,8 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	if err != nil {
 		return empty, err
 	}
-	if policy.DirectoryID != principal.DirectoryID || policy.PrincipalType == "User" && policy.PrincipalID != principal.UserID {
+	if native && policy.MachineID != options.machineID ||
+		!native && (policy.DirectoryID != principal.DirectoryID || policy.PrincipalType == "User" && policy.PrincipalID != principal.UserID) {
 		return empty, arm.ErrDesktopDenied
 	}
 	directory, guards, _, err := r.managedDirectorySnapshot(ctx, principal.Tenant)
@@ -180,7 +189,12 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 		return empty, arm.ErrDesktopDirectory
 	}
 	check := enrollment.DirectoryGraphInput{Operation: enrollment.DirectoryUserDesktopCheck, Selector: principal.UserID}
-	if len(principal.AppGroupIDs) != 0 {
+	if native {
+		if !strings.HasSuffix(options.nativeUser, "@"+directory.Spec.DNSName) {
+			return empty, arm.ErrDesktopDenied
+		}
+		check.Operation, check.Selector = enrollment.DirectoryNativeDesktopCheck, options.nativeUser
+	} else if len(principal.AppGroupIDs) != 0 {
 		check.Operation = enrollment.DirectoryUserSessionCheck
 		check.AppGroups = principal.AppGroupIDs
 	}
@@ -191,7 +205,8 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	if err != nil || result.Status != http.StatusOK && result.Status != http.StatusNotFound {
 		return empty, arm.ErrDesktopDirectory
 	}
-	if result.User == nil || result.User.ID != principal.UserID || !result.User.Enabled {
+	if result.User == nil || !result.User.Enabled || policy.PrincipalType == "User" && result.User.ID != policy.PrincipalID ||
+		!native && result.User.ID != principal.UserID || native && !strings.EqualFold(result.User.UPN, options.nativeUser) {
 		return empty, arm.ErrDesktopDenied
 	}
 	vm, ok := arm.NetworkResourceAddress(scope, policy.VirtualMachineID, arm.VirtualMachineType)
@@ -222,7 +237,7 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 	guards = append(guards, vmGuards...)
 	var access arm.DesktopSession
 	action := clientv3.OpGet(key, clientv3.WithCountOnly())
-	if gatewayGuards != nil {
+	if options.gatewayGuards != nil || native {
 		if brokerScope, configured := r.desktopLaunch.brokerScopes[target.MachineID]; configured && brokerScope != scope {
 			return empty, arm.ErrDesktopDenied
 		}
@@ -235,15 +250,19 @@ func (r *Region) resolvePersonalDesktop(ctx context.Context, principal identity.
 			return empty, err
 		}
 		guards = append(guards, nicGuards...)
-		guards = append(guards, gatewayGuards...)
+		guards = append(guards, options.gatewayGuards...)
 		access.User, access.PrivateIP, access.NetworkInterface, access.SubnetID = user, nic.IP, nic.Address.ID(scope), nic.SubnetID
 		access.Generation = target.Reservation.Generation
 		if !enrollment.ValidDirectoryJoinID(access.Generation) {
 			return empty, arm.ErrDesktopOffline
 		}
-		if launch {
-			action = r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: principal.UserID,
-				Action: arm.DesktopType + "/launch/action", Target: resource.Address.ID(scope), Outcome: "Authorized"})
+		if options.launch || native {
+			auditAction := arm.DesktopType + "/launch/action"
+			if native {
+				auditAction = arm.DesktopType + "/nativeAdmission/action"
+			}
+			action = r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: result.User.ID,
+				Action: auditAction, Target: resource.Address.ID(scope), Outcome: "Authorized"})
 		}
 	}
 	guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", read.Kvs[0].ModRevision),

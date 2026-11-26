@@ -158,8 +158,12 @@ The XRDP guest helper verifies a signed, single-use launch credential for the
 guest's pinned machine ID and canonical AD sign-in name. The credential expires
 within 15 seconds and the guest commits its receipt to a private persistent
 directory before opening the session. PAM still applies the domain account and
-session policies. Conventional private RDP logins keep the Debian password
-authentication path.
+session policies. For private native RDP, PAM authenticates the AD password
+and then requests admission from the region with the guest's client
+certificate. Its fingerprint binds one tenant, subscription, desktop and
+machine ID. The region checks the current AD user or group grant, the running
+VM and its private NIC. A managed guest admits raw passwords only with the
+native admission hook configured.
 
 For desktops with SMB enabled, the guest exchanges the short-lived launch
 credential for a personal CIFS service ticket over mTLS. The region pins the

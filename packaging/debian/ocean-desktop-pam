@@ -3,3 +3,5 @@
 # Keep Debian's account and session includes so domain access policy still applies.
 auth [success=ignore default=1] pam_exec.so quiet quiet_log seteuid expose_authtok /usr/libexec/ocean/ocean-desktop-guest -mode classify
 auth [success=done default=die] pam_exec.so quiet quiet_log seteuid expose_authtok /usr/libexec/ocean/ocean-desktop-guest -mode redeem
+auth requisite pam_exec.so quiet quiet_log seteuid /usr/libexec/ocean/ocean-desktop-guest -mode require-native
+account requisite pam_exec.so quiet quiet_log seteuid /usr/libexec/ocean/ocean-desktop-guest -mode authorize-account

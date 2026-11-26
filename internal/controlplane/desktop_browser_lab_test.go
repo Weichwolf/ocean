@@ -31,6 +31,7 @@ type desktopBrowserLabSettings struct {
 	WorkloadKey      string                         `json:"workloadKey"`
 	GatewayDER       string                         `json:"gatewayDer"`
 	StandbyDER       string                         `json:"standbyDer,omitempty"`
+	NativeRDP        bool                           `json:"nativeRdp,omitempty"`
 	WriterDER        string                         `json:"writerDer"`
 	WriterGeneration string                         `json:"writerGeneration"`
 	Application      identity.DesktopBrowserFixture `json:"application"`
@@ -130,6 +131,9 @@ func setupDesktopBrowserLab(t *testing.T, ctx context.Context, r *Region, api *a
 		t.Fatal(err)
 	}
 	api.Desktops, api.DesktopLaunch, api.AuthenticateDesktop = r, r, compat.AuthenticateDesktop
+	if cfg.NativeRDP {
+		api.DesktopNative = r
+	}
 	return desktopLabDirectoryWorker(r, tenant, writer, directory.DomainSID)
 }
 

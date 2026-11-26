@@ -18,6 +18,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/desktop"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -84,17 +85,27 @@ func TestDesktopKerberosLabService(t *testing.T) {
 	}
 	handler := api.Handler(fallback)
 	var liveDenial atomic.Bool
+	var nativeGranted, nativeDenied atomic.Bool
 	launchOK := map[string]*atomic.Bool{"gateway-fixture": new(atomic.Bool), "gateway-b": new(atomic.Bool)}
 	if settings.Browser != nil {
 		regional := handler
 		handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			launch := strings.HasSuffix(req.URL.Path, "/launch")
-			if !launch && !strings.HasSuffix(req.URL.Path, "/renew") {
+			native := settings.Browser.NativeRDP && req.URL.Path == desktop.NativeAdmissionPath
+			if !native && !launch && !strings.HasSuffix(req.URL.Path, "/renew") {
 				regional.ServeHTTP(w, req)
 				return
 			}
 			observed := desktopLabHTTPStatus{ResponseWriter: w}
 			regional.ServeHTTP(&observed, req)
+			if native {
+				if observed.code == http.StatusNoContent {
+					nativeGranted.Store(true)
+				}
+				if observed.code == http.StatusForbidden && w.Header().Get("x-ms-error-code") == "DesktopGuestDenied" {
+					nativeDenied.Store(true)
+				}
+			}
 			if launch && observed.code == http.StatusOK && req.TLS != nil && len(req.TLS.PeerCertificates) > 0 {
 				if gateway := launchOK[req.TLS.PeerCertificates[0].Subject.CommonName]; gateway != nil {
 					gateway.Store(true)
@@ -130,6 +141,12 @@ func TestDesktopKerberosLabService(t *testing.T) {
 					verifyDesktopBrowserAudit(t, ctx, r, *settings.Browser)
 					if !liveDenial.Load() {
 						t.Fatal("the current regional authorization did not explicitly deny an active renewal")
+					}
+					if settings.Browser.NativeRDP {
+						if !nativeGranted.Load() || !nativeDenied.Load() {
+							t.Fatal("the private RDP path must exercise both native admission and explicit denial")
+						}
+						t.Log("the regional API admitted the assigned native RDP account and denied another authenticated account")
 					}
 					if settings.Browser.StandbyDER != "" {
 						if !launchOK["gateway-fixture"].Load() || !launchOK["gateway-b"].Load() {

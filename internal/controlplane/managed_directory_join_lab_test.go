@@ -201,7 +201,7 @@ func testRegionalDirectory(t *testing.T, mode string) {
 			t.Fatal(err)
 		}
 		handler = (arm.Server{Origin: api.URL, Location: r.name, Authenticate: compat.AuthenticateARM, Inventory: r,
-			Roles: r, VirtualMachines: r, Desktops: r, DesktopLaunch: r,
+			Roles: r, VirtualMachines: r, Desktops: r, DesktopLaunch: r, DesktopNative: r,
 			AuthenticateDesktop: func(_ context.Context, req *http.Request) (identity.DesktopPrincipal, error) {
 				value, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer fixture-browser:")
 				user, group, found := strings.Cut(value, ":")
@@ -301,7 +301,12 @@ func testRegionalDirectory(t *testing.T, mode string) {
 				certificate := directoryFixtureHostCertificate(t, ca, caPrivate, host, int64(i+4))
 				gateways = append(gateways, desktopLabGateway{host: host, certificate: certificate.Certificate[0], client: mtls(certificate)})
 			}
-			fixture.verifyDesktops(t, r, scope, gateways, writer)
+			native := make([]desktopLabGateway, 0, 2)
+			for i, host := range []string{"native-desktop-a", "native-desktop-b"} {
+				certificate := directoryFixtureHostCertificate(t, ca, caPrivate, host, int64(i+6))
+				native = append(native, desktopLabGateway{host: host, certificate: certificate.Certificate[0], client: mtls(certificate)})
+			}
+			fixture.verifyDesktops(t, r, scope, gateways, native, writer)
 		} else {
 			fixture.verify(t, mode == "groups")
 		}

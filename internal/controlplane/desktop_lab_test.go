@@ -33,7 +33,7 @@ type desktopLabGateway struct {
 	client      *http.Client
 }
 
-func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.SubscriptionScope, gateways []desktopLabGateway, nonGateway *http.Client) {
+func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.SubscriptionScope, gateways, native []desktopLabGateway, nonGateway *http.Client) {
 	t.Helper()
 	defer f.startWorker(t)()
 	const group = "desktop-lab"
@@ -148,6 +148,7 @@ func (f regionalGraphFixture) verifyDesktops(t *testing.T, r *Region, scope arm.
 		t.Fatal(err)
 	}
 	check("desktop-b", browserUser, second, arm.ErrDesktopDenied)
+	f.verifyNativeDesktopAdmission(t, r, scope, vmB, assigned, second, user, securityGroup, native, nonGateway, az)
 	otherUser := browserUser
 	otherUser.UserID = operationID()
 	check("desktop-a", otherUser, assigned, arm.ErrDesktopDenied)

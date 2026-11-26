@@ -712,7 +712,9 @@ obtain a credential the guest verifier accepts. It checks that renewal requires
 the same enrolled gateway identity and returns the session binding without an
 RDP credential. Removing the user from the application's AD group denies
 renewal even when the desktop was assigned directly to that user. Use a Samba
-worker image with the desktop session authorization operation. The companion case `VM-03`
+worker image with the desktop session and native admission operations. Native
+admission tests use two guest certificates, check direct and group access,
+and reject missing, unbound and foreign identities. The companion case `VM-03`
 boots the small Debian VM and verifies profile persistence.
 
 ```sh
@@ -832,7 +834,7 @@ Install `packaging/debian/60-ocean-desktop-cifs` as
 The signed XRDP login fails if a configured broker cannot obtain and verify
 the personal cache. The guest places the verified cache in its volatile
 runtime directory. A fresh signed login or reconnect obtains a new cache.
-Ordinary password-based RDP follows the regular domain PAM path.
+Private password-based RDP uses the native admission hook described below.
 
 Select `WORKPLACE-34` with the disposable joined desktop and SMB member
 used by `WORKPLACE-32`. The gateway host needs the pinned `guacd` image
@@ -887,6 +889,49 @@ window manager stays running across reconnection. The browser uses its
 existing Keycloak session. Removing the desktop application grant must
 still disconnect the replacement tunnel within 15 seconds. The guest
 VM and regional test endpoint remain running during this gateway test.
+
+### Native access on the private RDP network
+
+Use the complete `packaging/debian/ocean-desktop-pam` snippet in
+`/etc/pam.d/xrdp-sesman`. Replace earlier copies of the snippet during upgrade.
+Keep Debian's `common-auth`, `common-account` and session stack. The managed
+guest admits signed browser launches by default. Enabling native RDP requires
+a `native` object in its root-owned guest configuration with the regional
+`region` HTTPS origin, `caFile`, `certificateFile` and `keyFile`. Protect
+the certificate's key with mode `0600` and root ownership.
+
+Add a binding like this to `region.desktopLaunch.nativeGuests` on every
+regional replica. Use the existing personal desktop and its VM machine ID.
+Register the guest certificate's DER SHA-256 fingerprint. A guest can use its
+existing SMB broker client certificate for the same machine.
+
+```json
+{
+  "tenantId": "84b678b0-0a39-47d3-a355-ff4d84de4a83",
+  "subscriptionId": "310dee94-5876-489a-a5a9-4e25515f30e6",
+  "desktopId": "/subscriptions/310dee94-5876-489a-a5a9-4e25515f30e6/resourceGroups/workplace/providers/Ocean.Desktop/personalDesktops/personal",
+  "machineId": "9feab7c2-1302-4622-a932-729678cd61ee",
+  "certificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+On the private network, connect with the canonical workforce UPN
+(`user@example.test`) and the normal AD password. PAM authenticates the
+password locally. The account hook then submits only the canonical UPN to
+`POST /ocean/desktops/native-admission` with guest mutual TLS. The region
+looks up the bound tenant and desktop, verifies the current AD grant and
+private VM attachment, and audits successful admission under the native
+directory object ID. An unavailable dependency or a revoked grant denies
+the login. The public desktop entry point is the HTTPS gateway.
+
+Select `WORKPLACE-38` using the live browser fixtures from `WORKPLACE-35`.
+Place the disposable `smbreader` password in
+`OCEAN_E2E_SMB_MEMBER_FIXTURE/smbreader`. Install `pamtester` inside the
+desktop and `freerdp3-x11`, `xvfb`, and `xauth` on `farm-1-node-08`.
+The probe proves both passwords are valid when the native feature is enabled,
+then verifies the assigned account opens a native X session and the other
+account reaches a regional admission denial. The browser and encrypted SMB
+check exercise the same guest with the native admission hook installed.
 
 ### Small Debian desktop VM
 

@@ -6,7 +6,7 @@ from samba.dcerpc.misc import GUID
 from samba.dcerpc.security import dom_sid
 from samba.ndr import ndr_pack, ndr_unpack
 
-from directory_users import ALIAS, USER_FILTER, GraphFailure, ensure_ou, get_user, lookup, page, user_view, workforce_dn
+from directory_users import ALIAS, USERNAME, USER_FILTER, GraphFailure, ensure_ou, get_user, lookup, page, user_view, workforce_dn
 from domain_join import REQUEST_ID, object_guid, replace
 
 GROUP_OU = "OU=Ocean Workforce Groups"
@@ -38,10 +38,15 @@ def group_by_selector(database, scope, selector):
     return found[0]
 
 
-def desktop_user(database, task):
-    if not REQUEST_ID.fullmatch(task["selector"]):
+def desktop_user(database, domain, task):
+    selector = task["selector"]
+    if task["operation"] == "userNativeDesktopCheck":
+        name, _, suffix = selector.partition("@")
+        if suffix != domain or not USERNAME.fullmatch(name):
+            raise GraphFailure(400)
+    elif not REQUEST_ID.fullmatch(selector):
         raise GraphFailure(400)
-    user = get_user(database, workforce_dn(database), task["selector"])
+    user = get_user(database, workforce_dn(database), selector)
     view = user_view(database, user)
     if not view["accountEnabled"]:
         raise GraphFailure(404)

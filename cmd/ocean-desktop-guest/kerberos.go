@@ -3,13 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,11 +22,8 @@ import (
 const cacheDirectory = "/run/ocean-desktop-cifs"
 
 type guestKerberos struct {
-	Region          string `json:"region"`
-	CAFile          string `json:"caFile"`
-	CertificateFile string `json:"certificateFile"`
-	KeyFile         string `json:"keyFile"`
-	Service         string `json:"service"`
+	guestTLS
+	Service string `json:"service"`
 }
 
 var cifsService = regexp.MustCompile(`^cifs/[a-z0-9][a-z0-9.-]{0,252}@[A-Z0-9][A-Z0-9.-]{0,252}$`)
@@ -96,34 +90,11 @@ func workforceUID(ctx context.Context, user string) (int, error) {
 }
 
 func (settings guestKerberos) fetch(ctx context.Context, user string, ticket []byte) ([]byte, error) {
-	origin, err := url.Parse(settings.Region)
-	if err != nil || origin.Scheme != "https" || origin.Hostname() == "" || origin.User != nil || origin.Path != "" ||
-		origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" || origin.String() != settings.Region {
-		return nil, errors.New("invalid desktop Kerberos regional HTTPS endpoint")
-	}
-	ca, err := os.ReadFile(settings.CAFile)
+	client, err := settings.client()
 	if err != nil {
 		return nil, err
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(ca) {
-		return nil, errors.New("the desktop Kerberos region requires its trusted CA")
-	}
-	key, err := os.Lstat(settings.KeyFile)
-	if err != nil || !key.Mode().IsRegular() || key.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("the desktop Kerberos identity key must be private")
-	}
-	owner, ok := key.Sys().(*syscall.Stat_t)
-	if !ok || owner == nil || owner.Uid != 0 {
-		return nil, errors.New("the desktop Kerberos identity key must be owned by root")
-	}
-	identity, err := tls.LoadX509KeyPair(settings.CertificateFile, settings.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{identity}, RootCAs: roots, MinVersion: tls.VersionTLS12}}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	defer client.CloseIdleConnections()
 	body, err := json.Marshal(desktop.KerberosRequest{User: user, Credential: ticket})
 	if err != nil {
 		return nil, err

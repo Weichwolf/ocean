@@ -21,6 +21,7 @@ type desktopLaunchConfig struct {
 	SigningKeyFile string                `json:"signingKeyFile"`
 	Gateways       []string              `json:"gateways"`
 	SMBBrokers     []desktopBrokerConfig `json:"smbBrokers,omitempty"`
+	NativeGuests   []desktopNativeConfig `json:"nativeGuests,omitempty"`
 }
 
 type desktopLaunchControl struct {
@@ -30,6 +31,8 @@ type desktopLaunchControl struct {
 	brokerManifest string
 	brokers        map[[sha256.Size]byte]desktopBrokerGuest
 	brokerScopes   map[string]arm.SubscriptionScope
+	nativeGuests   map[[sha256.Size]byte]desktopNativeGuest
+	nativeManifest string
 }
 
 func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool, smb *smbControl) (*desktopLaunchControl, error) {
@@ -56,10 +59,20 @@ func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool, smb *smbCon
 	if err != nil {
 		return nil, err
 	}
+	native, nativeManifest, err := configureDesktopNative(cfg.NativeGuests)
+	if err != nil {
+		return nil, err
+	}
 	brokerScopes := make(map[string]arm.SubscriptionScope, len(brokers))
 	for _, binding := range publicBrokers {
 		for _, guest := range binding.Guests {
 			brokerScopes[guest.MachineID] = binding.Scope
+		}
+	}
+	for fingerprint, guest := range native {
+		if broker, ok := brokers[fingerprint]; ok &&
+			(broker.machineID != guest.machineID || brokerScopes[broker.machineID] != guest.scope) {
+			return nil, errors.New("a desktop certificate must bind the same machine and tenant for native access and SMB")
 		}
 	}
 	manifest, err := json.Marshal(struct {
@@ -69,7 +82,8 @@ func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool, smb *smbCon
 	if err != nil {
 		return nil, err
 	}
-	control := &desktopLaunchControl{signer: signer, gateways: gateways, manifest: string(manifest), brokers: brokers, brokerScopes: brokerScopes}
+	control := &desktopLaunchControl{signer: signer, gateways: gateways, manifest: string(manifest), brokers: brokers, brokerScopes: brokerScopes,
+		nativeGuests: native, nativeManifest: nativeManifest}
 	if len(publicBrokers) != 0 {
 		data, err := json.Marshal(publicBrokers)
 		if err != nil {
@@ -81,14 +95,17 @@ func openDesktopLaunch(cfg *desktopLaunchConfig, haveProviders bool, smb *smbCon
 }
 
 func (r *Region) bootstrapDesktopLaunch(ctx context.Context) error {
-	var manifest, brokers string
+	var manifest, brokers, native string
 	if r.desktopLaunch != nil {
-		manifest, brokers = r.desktopLaunch.manifest, r.desktopLaunch.brokerManifest
+		manifest, brokers, native = r.desktopLaunch.manifest, r.desktopLaunch.brokerManifest, r.desktopLaunch.nativeManifest
 	}
 	if err := r.bootstrapDesktopManifest(ctx, r.root+"/desktop-launch/config", manifest); err != nil {
 		return err
 	}
-	return r.bootstrapDesktopManifest(ctx, r.root+"/desktop-launch/kerberos-config", brokers)
+	if err := r.bootstrapDesktopManifest(ctx, r.root+"/desktop-launch/kerberos-config", brokers); err != nil {
+		return err
+	}
+	return r.bootstrapDesktopManifest(ctx, r.root+"/desktop-launch/native-config", native)
 }
 
 func (r *Region) bootstrapDesktopManifest(ctx context.Context, key, manifest string) error {
@@ -133,7 +150,7 @@ func (r *Region) resolveGatewayDesktop(ctx context.Context, principal identity.D
 	if err != nil {
 		return arm.DesktopSession{}, err
 	}
-	return r.resolvePersonalDesktop(ctx, principal, address, guards, launch)
+	return r.resolvePersonalDesktop(ctx, principal, address, desktopAccessOptions{gatewayGuards: guards, launch: launch})
 }
 
 func (r *Region) desktopGatewayGuards(ctx context.Context, gateway string, certificate []byte) ([]clientv3.Cmp, error) {

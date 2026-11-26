@@ -23,13 +23,8 @@ func (s Server) desktopKerberos(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
-		writeError(w, http.StatusForbidden, "DesktopGuestDenied", "Desktop guest access denied.")
-		return
-	}
-	peer := r.TLS.PeerCertificates[0]
-	now := time.Now()
-	if peer == nil || now.Before(peer.NotBefore) || !now.Before(peer.NotAfter) {
+	peer := desktopPeer(r)
+	if peer == nil {
 		writeError(w, http.StatusForbidden, "DesktopGuestDenied", "Desktop guest access denied.")
 		return
 	}

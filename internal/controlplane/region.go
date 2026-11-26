@@ -176,6 +176,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 						resources.AuthenticateDesktop = compatibility.AuthenticateDesktop
 						if region.desktopLaunch != nil {
 							resources.DesktopLaunch = region
+							if len(region.desktopLaunch.nativeGuests) != 0 {
+								resources.DesktopNative = region
+							}
 							if len(region.desktopLaunch.brokers) != 0 {
 								resources.DesktopCIFS = region
 							}

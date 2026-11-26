@@ -19,10 +19,11 @@ type guestConfig struct {
 	MachineID string         `json:"machineId"`
 	PublicKey string         `json:"publicKey"`
 	Kerberos  *guestKerberos `json:"kerberos,omitempty"`
+	Native    *guestTLS      `json:"native,omitempty"`
 }
 
 func main() {
-	mode := flag.String("mode", "", "classify or redeem an XRDP launch credential")
+	mode := flag.String("mode", "", "XRDP launch credential or native admission action")
 	path := flag.String("config", "/etc/ocean-desktop/guest.json", "root-owned guest configuration")
 	flag.Parse()
 	if !run(*mode, *path) {
@@ -31,7 +32,18 @@ func main() {
 }
 
 func run(mode, path string) bool {
-	if os.Geteuid() != 0 || os.Getenv("PAM_SERVICE") != "xrdp-sesman" || os.Getenv("PAM_TYPE") != "auth" {
+	if os.Geteuid() != 0 || os.Getenv("PAM_SERVICE") != "xrdp-sesman" {
+		return false
+	}
+	pamType := os.Getenv("PAM_TYPE")
+	switch mode {
+	case "authorize-account":
+		return pamType == "account" && authorizeAccount(path, os.Getenv("PAM_USER"))
+	case "require-native":
+		settings, err := loadGuestConfig(path)
+		return pamType == "auth" && err == nil && settings.Native != nil
+	}
+	if pamType != "auth" {
 		return false
 	}
 	password, err := io.ReadAll(io.LimitReader(os.Stdin, int64(desktop.MaxLaunchBytes)+1))
