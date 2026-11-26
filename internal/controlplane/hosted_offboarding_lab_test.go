@@ -148,8 +148,10 @@ func verifyHostedSuspension(t *testing.T, ctx context.Context, cfg regionConfig,
 	if closeErr := reply.Body.Close(); closeErr != nil || readErr != nil || reply.StatusCode != http.StatusUnauthorized || !bytes.Contains(contents, []byte("invalid_grant")) {
 		t.Fatalf("suspended OAuth grant reached the issuer: %v %v", readErr, closeErr)
 	}
+	verifyHostedTenantExport(t, ctx, restored, az, origin, tenant, neighbor, operatorClient, operatorRealm, operator, sign)
 	stopLedger()
 	az("get", groups(neighbor.SubscriptionID), "", neighborToken, "ServiceUnavailable")
+	az("get", "/ocean/tenants/"+neighbor.TenantID+"/dataExport?api-version=2026-11-01", "", neighborToken, "ServiceUnavailable")
 	startup, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
 	if err := restored.bootstrap(startup); err == nil {

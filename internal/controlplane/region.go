@@ -178,6 +178,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
 				}
+				if err := compatibility.EnableHostedExport(region); err != nil {
+					_ = region.close()
+					return config.Server{}, service.Hooks{}, err
+				}
 			}
 			if cfg.Region.ManagedDirectories != nil {
 				if err := compatibility.EnableManagedDirectories(region); err != nil {

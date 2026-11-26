@@ -2392,6 +2392,34 @@ az rest --method put --url "$offboarding" --body "$OCEAN_OFFBOARDING_REQUEST"
 az rest --method get --url "$offboarding"
 ```
 
+Before suspending the tenant, the administrator registered at onboarding can
+export a snapshot of the tenant's regional records. Use that administrator's
+ARM token. Each successful page records a scoped `Ocean.Hosted/dataExports/read`
+activity event.
+
+```sh
+az rest --method get \
+  --url "$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/dataExport?api-version=2026-11-01" \
+  -o json
+```
+
+The `ocean-hosted-export-v1` envelope contains tenant and subscription IDs,
+`capturedAt`, and up to 64 `records` per page. Records cover subscription
+membership, placement policy and reservation counters, managed directory
+metadata, resource groups, resource references and lifecycle metadata, role
+assignments, application metadata, and activity within its retention window.
+Provider payloads, tags, credentials, raw telemetry, business files and
+directory entries are outside this export.
+
+Use the same administrator and follow each returned `nextLink` with
+`az rest --method get --url "$NEXT_LINK" -o json`. A page can contain no
+records and still have a continuation. All pages use the initial etcd
+revision. The continuation expires after ten minutes or when that revision
+becomes unavailable. On `ExportSnapshotExpired`, start a fresh export and
+keep pages from different runs in separate files. Save completed pages on
+approved storage with restricted permissions. An authorized backup operator
+can then archive them using `ocean-backup create -kind export`.
+
 Register independent key recovery sites under `hostedWorkplace.recoveryTargets`
 before bootstrapping the hosted region. Each target names an `operatorPool`,
 the exact HTTPS `metadataOrigins` of its restored etcd cluster, and an absolute
@@ -2492,8 +2520,9 @@ Run `WORKPLACE-42` through `WORKPLACE-44` against a disposable loopback etcd
 instance with the pinned Azure CLI. The probes use synthetic tenant and host
 identities and test the ARM responses, etcd keys, volume key assignment,
 SMB writer generation and signed operator authorization. `WORKPLACE-45`
-through `WORKPLACE-47` start disposable mutual TLS etcd clusters from the
-pinned archive and exercise backup, retention, recovery and offboarding replay.
+through `WORKPLACE-48` start disposable mutual TLS etcd clusters from the
+pinned archive and exercise backup, retention, recovery, offboarding replay
+and the tenant export.
 The harness writes Markdown and TSV reports and logs.
 
 ```sh

@@ -25,7 +25,7 @@ func hostedWorkplaceSteps() []harness.Step {
 	operator.Name = "hosted-operator-placement"
 	operator.Cases = []string{"WORKPLACE-44"}
 	operator.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedOperatorPlacement$", "./internal/controlplane"}
-	recovery := harness.Step{Name: "hosted-backup-and-recovery", Cases: []string{"WORKPLACE-45", "WORKPLACE-46", "WORKPLACE-47"}, Timeout: 2 * time.Minute,
+	recovery := harness.Step{Name: "hosted-backup-and-recovery", Cases: []string{"WORKPLACE-45", "WORKPLACE-46", "WORKPLACE-47", "WORKPLACE-48"}, Timeout: 2 * time.Minute,
 		Command: []string{"go", "test", "-tags=e2e", "-run", "^TestHostedRecoveryTarget$", "./internal/controlplane"}}
 	recovery = requireFile(recovery, os.Getenv("OCEAN_E2E_HOSTED_ETCD_ARCHIVE"), "the pinned etcd archive in OCEAN_E2E_HOSTED_ETCD_ARCHIVE")
 	recovery = requireFile(recovery, os.Getenv("OCEAN_E2E_HOSTED_AZ"), "the pinned Azure CLI executable in OCEAN_E2E_HOSTED_AZ")

@@ -44,6 +44,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	clear(wrappingKey)
 	quota := enrollment.Capacity{CPUMillis: 800, MemoryMiB: 512}
 	cfg := regionConfig{Name: "hosted-recovery", InitialCell: "cell-1", Etcd: source,
+		AuditRetention:     3600,
 		DeletionLedgerEtcd: &ledger,
 		HostedWorkplace: &hostedRegionPolicy{Country: "DE", OperatorPools: map[string]string{"primary": "DE", "partner": "NL"},
 			DeletionLedger: &hostedLedgerPolicy{OperatorPool: "primary", ClusterID: fmt.Sprintf("%x", ledgerID), Endpoints: ledger.Endpoints},
@@ -70,6 +71,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedHostedRestoreAssignments(t, ctx, region, tenant, neighbor, quota)
+	seedHostedExportFixture(t, ctx, region, tenant, neighbor)
 	account := arm.ResourceAddress{Group: "lab", Path: storage.AccountType + "/fixture"}
 	share := arm.ResourceAddress{Group: account.Group, Path: account.Path + "/fileServices/default/shares/fixture"}
 	volume := storage.Volume{ID: "vol-" + operationID(), SizeMiB: 1024}

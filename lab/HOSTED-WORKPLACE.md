@@ -33,8 +33,10 @@ applicable transfer mechanism and location restrictions before enabling a path.
 
 ## Operating procedures to exercise
 
-1. Run an authorized export and record the request, approver, tenant scope,
-   format, checksums and delivery route. Verify a foreign request is denied.
+1. Run the regional export as the tenant administrator before suspension.
+   Include authorized directory and file exports as required by the request.
+   Record the request, approver, scope, formats, checksums and delivery route.
+   Verify a foreign request is denied. [Regional tenant export](README.md#hosted-workplace-placement-and-audit-retention)
 2. For offboarding, record the frozen tenant scope and the controller's return,
    deletion and any retention decisions. Revoke access and credentials,
    withdraw workload assignments, and track deletion of live data and the
@@ -56,5 +58,6 @@ Use tenant and resource identifiers from synthetic fixtures in shared evidence.
 Exclude credentials, encryption keys, user data and unrelated identifiers.
 Record the tested revision, configuration identifiers, profile, dated results,
 deployment owner and reviewer. The repository's hosted-workplace lab verifies
-ARM activity retention and placement controls. The review also requires
+activity retention, placement, recovery, offboarding replay and the regional
+tenant export. The review also requires
 deployment evidence from the actual storage, backup and support infrastructure.
