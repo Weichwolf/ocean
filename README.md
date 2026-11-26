@@ -187,15 +187,18 @@ as blocked.
 `make lint` runs pinned versions of Staticcheck, errcheck, errorlint, nilness,
 and bodyclose with and without the `e2e` build tag. These tools check errors and
 type assertions, error wrapping, provable nil dereferences, and unclosed HTTP
-response bodies.
+response bodies. The local Go analyzer also rejects `_` assignments for errors
+from direct calls to JSON and YAML decoders, selected file persistence operations,
+and etcd transaction commits. `make check` runs the analyzer's regression tests.
 
 `make security` runs a pinned gosec scan of the production Go source. Its rule
-list covers insecure TLS and SSH settings, weak cryptography, missing HTTP
-header timeouts, exposed profiling endpoints, and common injection and archive
-handling errors. `make vuln` checks for known vulnerabilities reachable from
-the production commands and their dependencies, including the Go standard
-library. Go downloads missing modules and tools on first use. The vulnerability
-scan queries the Go vulnerability database and requires network access.
+list covers insecure TLS and SSH settings, weak cryptography, HTTP parsing,
+timeouts, cookie and redirect settings, file permissions, exposed profiling
+endpoints, and common injection and archive handling errors. `make vuln` checks
+for known vulnerabilities reachable from the production commands and their
+dependencies, including the Go standard library. Go downloads missing modules
+and tools on first use. The vulnerability scan queries the Go vulnerability
+database and requires network access.
 
 Handle returned errors and check type assertions. Use explicit error discards
 for intentional best-effort operations such as closing a read-only response body.

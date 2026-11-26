@@ -292,7 +292,9 @@ func matches(data map[string]json.RawMessage, field, want string) bool {
 
 func jsonString(raw json.RawMessage) string {
 	var value string
-	_ = json.Unmarshal(raw, &value)
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
 	return value
 }
 

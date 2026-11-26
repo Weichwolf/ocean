@@ -9,7 +9,7 @@ GOVULNCHECK_VERSION := v1.10.0
 ERRORLINT_VERSION := v1.9.1
 X_TOOLS_VERSION := v0.53.0
 GOSEC_VERSION := v2.30.0
-GOSEC_RULES := G106,G108,G110,G111,G112,G114,G116,G201,G202,G203,G303,G305,G307,G401,G402,G403,G404,G405,G406
+GOSEC_RULES := G106,G108,G109,G110,G111,G112,G113,G114,G116,G119,G120,G121,G122,G123,G124,G125,G201,G202,G203,G303,G305,G306,G307,G401,G402,G403,G404,G405,G406,G408,G505,G602,G710
 FUZZ_TIME ?= 10s
 FUZZ_WORKERS ?= 2
 
@@ -20,11 +20,12 @@ build:
 	$(GO_BUILD) -o bin/ ./cmd/...
 
 check:
-	formatter=$$(go env GOROOT)/bin/gofmt && files=$$("$$formatter" -l cmd internal tests) && test -z "$$files" || { printf '%s\n' "$$files"; exit 1; }
+	formatter=$$(go env GOROOT)/bin/gofmt && files=$$("$$formatter" -l cmd internal tests tools/lint) && test -z "$$files" || { printf '%s\n' "$$files"; exit 1; }
 	go mod tidy -diff
 	go mod verify
 	go -C tools/lint mod tidy -diff
 	go -C tools/lint mod verify
+	go -C tools/lint test -mod=readonly ./...
 	out=$$(mktemp -d) && trap 'rm -rf -- "$$out"' 0 && $(GO_BUILD) -o "$$out/" ./cmd/...
 	go vet -mod=readonly ./...
 	go vet -mod=readonly -tags=e2e ./...
@@ -36,8 +37,11 @@ check:
 
 lint:
 	set -e; toolchain=$$(go env GOVERSION); export GOTOOLCHAIN="$$toolchain"; original_flags="$$GOFLAGS"; \
+	out=$$(mktemp -d); trap 'rm -rf -- "$$out"' 0; \
+	GOWORK=off go -C tools/lint build -mod=readonly -o "$$out/discardederrors" .; \
 	for tags in '' e2e; do \
 		export GOFLAGS="$$original_flags -mod=readonly -tags=$$tags"; \
+		go vet -vettool="$$out/discardederrors" ./...; \
 		go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) -tags=$$tags ./...; \
 		go run github.com/kisielk/errcheck@$(ERRCHECK_VERSION) -mod=readonly -asserts -tags=$$tags ./...; \
 		go run codeberg.org/polyfloyd/go-errorlint@$(ERRORLINT_VERSION) -errorf ./...; \
