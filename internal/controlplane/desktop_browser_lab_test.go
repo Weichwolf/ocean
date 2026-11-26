@@ -30,6 +30,7 @@ type desktopBrowserLabSettings struct {
 	UserID           string                         `json:"userId"`
 	WorkloadKey      string                         `json:"workloadKey"`
 	GatewayDER       string                         `json:"gatewayDer"`
+	StandbyDER       string                         `json:"standbyDer,omitempty"`
 	WriterDER        string                         `json:"writerDer"`
 	WriterGeneration string                         `json:"writerGeneration"`
 	Application      identity.DesktopBrowserFixture `json:"application"`
@@ -92,15 +93,20 @@ func setupDesktopBrowserLab(t *testing.T, ctx context.Context, r *Region, api *a
 	writerCert := get(cfg.WriterDER)
 	ops := []clientv3.Op{putJSON(r.managedDirectoryKey(tenant.TenantID), directory),
 		putJSON(r.managedDirectoryPlacementKey(tenant.TenantID), placement)}
-	for _, host := range []struct {
+	type fixtureHost struct {
 		id, role      string
 		certificate   []byte
 		directory, vm bool
-	}{
+	}
+	hosts := []fixtureHost{
 		{writer.HostID, "compute", writerCert, true, false},
 		{"gateway-fixture", "gateway", get(cfg.GatewayDER), false, false},
 		{desktopLabHost, "compute", nil, false, true},
-	} {
+	}
+	if cfg.StandbyDER != "" {
+		hosts = append(hosts, fixtureHost{"gateway-b", "gateway", get(cfg.StandbyDER), false, false})
+	}
+	for _, host := range hosts {
 		roles := []string{host.role}
 		entry := enrollment.Host{HostID: host.id, Cell: r.cell, Pool: "approved", Roles: roles, Certificate: host.certificate}
 		live, err := json.Marshal(enrollment.Availability{HostID: host.id, Cell: r.cell, Pool: "approved", Roles: roles,

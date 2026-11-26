@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import http.server
 import io
+import ipaddress
 import json
 import os
 import secrets
@@ -29,7 +30,7 @@ from urllib.error import HTTPError
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from websocket import create_connection
 
@@ -43,6 +44,9 @@ cifs = 'cifs/files04.ad.ocean.test@' + realm
 checkpoint = 'ocean-browser-smb-' + secrets.token_hex(10)
 
 gateway_host = 'farm-1-node-08'
+standby_gateway_host = 'farm-1-node-07'
+gateway_observer = 'farm-1-node-05'
+gateway_vip = '10.231.1.210'
 user = 'smbwriter@ad.ocean.test'
 machine = '9feab7c2-1302-4622-a932-729678cd61ee'
 tenant = '84b678b0-0a39-47d3-a355-ff4d84de4a83'
@@ -173,12 +177,12 @@ def serve(server, context):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return 'https://127.0.0.1:' + str(server.server_port)
 
-def forward_port(node_name, flag, spec):
+def forward_port(node_name, flag, spec, *extra):
     machines = json.loads(region.run([Path('bin/ocean-lab').absolute(), 'status', '-state', state]))
     node = next(entry for entry in machines if entry['guest']['name'] == node_name)
     return subprocess.Popen(['ssh', '-N', '-p', str(node['sshPort']), '-i', str(state / 'ssh-key'), '-o', 'IdentitiesOnly=yes',
                              '-o', 'StrictHostKeyChecking=yes', '-o', f'HostKeyAlias={node_name}', '-o', f'UserKnownHostsFile={state / "known-hosts"}',
-                             '-o', 'ExitOnForwardFailure=yes', flag, spec, 'ocean@127.0.0.1'],
+                             '-o', 'ExitOnForwardFailure=yes', flag, spec, *extra, 'ocean@127.0.0.1'],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def close_process(proc):
@@ -279,6 +283,8 @@ def prepare_live_keycloak(work, cleanup, origin, ca, signer, deployment_ca, now)
                         'Callback': gateway + '/oauth/callback', 'GroupID': group_id, 'User': user,
                         'OTPSecret': base64.b32encode(otp).decode()},
     }
+    if live_args.gateway_failover:
+        cfg['standbyDer'] = '/fixture/standby.crt'
     return cfg, (group, otp, deployment_ca)
 
 
@@ -485,7 +491,9 @@ def prepare_user_probe(cleanup):
         f'import shutil; shutil.rmtree({result!r}, ignore_errors=True)'))
     cleanup.callback(write_user, original_user)
     # Replace only the fixture account's sessions left by earlier probes.
-    g('sudo pkill -TERM -u '+shlex.quote(user)+' -x openbox || true')
+    stop_session = shlex.join(['sudo', 'pkill', '-TERM', '-u', user, '-x', 'openbox|Xorg']) + ' || true'
+    g(stop_session)
+    cleanup.callback(g, stop_session)
     write_user(f"""#!/bin/sh
 umask 077
 probe={shlex.quote(result)}
@@ -539,6 +547,142 @@ def finish_live_login(command, otp_secret):
     wait(submit_otp, 15)
 
 
+def gateway_configuration(listen, directory, certificate, filename, web_client, pin, guacd_port):
+    return {
+        'listenAddress': listen,
+        'tls': {'certificateFile': str(directory / certificate), 'keyFile': str(directory / filename)},
+        'publicOrigin': gateway,
+        'hostConfigFile': str(directory / 'host.json'),
+        'identity': {'issuer': issuer, 'caFile': str(directory / 'provider.pem'), 'clientId': web_client},
+        'guacamoleScriptFile': str(directory / 'guacamole.min.js'),
+        'guacamoleScriptSha256': hashlib.sha256(script.read_bytes()).hexdigest(),
+        'desktops': {'personal': {'desktopId': desktop, 'subnetId': subnet, 'fingerprint': pin,
+                                  'guacd': f'127.0.0.1:{guacd_port}'}},
+    }
+
+
+def start_redundant_gateways(work, cleanup, ca, signer, now, regional, pin, web_client):
+    directory = Path('/opt') / name
+    public_port = urls.urlsplit(gateway).port
+    region_port = urls.urlsplit(regional).port
+    identity_port = urls.urlsplit(live_args.keycloak_origin).port
+    gateway_unit, vrrp_unit = name + '-app', name + '-vrrp'
+    primary, standby = gateway_host, standby_gateway_host
+    peers = ((primary, '10.231.1.18', '10.231.1.17', 150, 'identity', 'gateway-fixture'),
+             (standby, '10.231.1.17', '10.231.1.18', 100, 'standby', 'gateway-b'))
+
+    def remote(node, command):
+        return region.ssh(state, node, command, timeout=25)
+
+    def stop(node):
+        log = remote(node, shlex.join(['sudo', 'journalctl', '--no-pager', '-u', gateway_unit, '-u', vrrp_unit]))
+        (report / f'desktop-gateway-{node}.log').write_bytes(log)
+        remote(node, shlex.join(['sudo', 'systemctl', 'stop', gateway_unit, vrrp_unit]) + ' || true')
+        remote(node, shlex.join(['podman', 'rm', '-f', '--ignore', name]))
+        remote(node, shlex.join(['sudo', 'rm', '-r', '-f', '--', str(directory)]))
+
+    def owners():
+        current = []
+        for node, *_ in peers:
+            addresses = json.loads(remote(node, 'ip -j -4 address show dev mgmt0'))[0]['addr_info']
+            if any(address['local'] == gateway_vip for address in addresses):
+                current.append(node)
+        return current
+
+    if owners():
+        raise RuntimeError(f'The disposable desktop gateway address {gateway_vip} is already in use.')
+    server_keys = []
+    for node, address, peer, priority, local_prefix, host_id in peers:
+        # Both services see the original loopback TLS origins through guest SSH forwards.
+        forward = forward_port(node, '-R', f'127.0.0.1:{region_port}:127.0.0.1:{region_port}',
+                               '-R', f'127.0.0.1:{identity_port}:127.0.0.1:{identity_port}')
+        cleanup.callback(close_process, forward)
+        remote(node, 'test -x /usr/sbin/keepalived && command -v curl && podman image exists ' + shlex.quote(image))
+        cleanup.callback(stop, node)
+        key = ec.generate_private_key(ec.SECP256R1())
+        leaf = (x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host_id)]))
+                .issuer_name(ca.subject).public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - datetime.timedelta(minutes=1)).not_valid_after(now + datetime.timedelta(hours=1))
+                .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.public_key()), False)
+                .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.IPv4Address('127.0.0.1'))]), False)
+                .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)
+                .sign(signer, hashes.SHA256()))
+        server_keys.append(key.public_key())
+        host_cfg = {'enrollment': {'origin': regional, 'hostId': host_id, 'managementInterface': 'mgmt0',
+                                   'stateDirectory': str(directory), 'caFile': str(directory / 'ca.pem'),
+                                   'tokenFile': str(directory / 'unused')}}
+        gateway_cfg = gateway_configuration(f'0.0.0.0:{public_port}', directory, 'server.pem', 'server.key',
+                                            web_client, pin, remote_port)
+        ready = shlex.join(['/usr/bin/curl', '--noproxy', '*', '--fail', '--silent', '--output', '/dev/null',
+                            '--max-time', '1', '--cacert', str(directory / 'ca.pem'), gateway + '/readyz'])
+        config = f"""global_defs {{
+    router_id {host_id}
+    script_user root
+    enable_script_security
+}}
+vrrp_script gateway_ready {{
+    script "{directory}/bin/ready"
+    interval 1
+    timeout 1
+    rise 1
+    fall 1
+    init_fail
+}}
+vrrp_instance DESKTOP {{
+    state BACKUP
+    interface mgmt0
+    virtual_router_id 97
+    priority {priority}
+    advert_int 1
+    unicast_src_ip {address}
+    unicast_peer {{
+        {peer}
+    }}
+    virtual_ipaddress {{
+        {gateway_vip}/24 dev mgmt0
+    }}
+    track_script {{
+        gateway_ready
+    }}
+}}
+"""
+        region.upload(state, node, {
+            'bin/ocean-desktop-gateway': Path('bin/ocean-desktop-gateway').read_bytes(),
+            'bin/ready': ('#!/bin/sh\nexec ' + ready + '\n').encode(),
+            'ca.pem': ca.public_bytes(serialization.Encoding.PEM),
+            'provider.pem': live_args.keycloak_ca.read_bytes(),
+            'server.pem': leaf.public_bytes(serialization.Encoding.PEM),
+            'server.key': key_pem(key),
+            'identity.crt': (work / f'{local_prefix}.crt').read_bytes(),
+            'identity.key': (work / f'{local_prefix}.key').read_bytes(),
+            'host.json': json.dumps(host_cfg).encode(),
+            'gateway.json': json.dumps(gateway_cfg).encode(),
+            'guacamole.min.js': script.read_bytes(),
+            'keepalived.conf': config.encode(),
+        }, str(directory))
+        remote(node, shlex.join(['sudo', 'chown', 'ocean', str(directory / 'identity.crt')]) + ' && ' +
+               shlex.join(['sudo', 'chmod', '0600', str(directory / 'identity.crt')]))
+        remote(node, shlex.join(['nice', '-n', '10', 'podman', 'run', '--pull=never', '--rm', '-d', '--name', name,
+                                  '--publish', f'127.0.0.1:{remote_port}:4822', '--entrypoint', '/bin/sh', image,
+                                  '-ec', 'exec nice -n 10 /opt/guacamole/entrypoint.sh']))
+        remote(node, shlex.join(['sudo', 'systemd-run', '--collect', '--unit', gateway_unit, '--uid=ocean', '--property=Nice=10',
+                                  str(directory / 'bin/ocean-desktop-gateway'), '-config', str(directory / 'gateway.json')]))
+        remote(node, shlex.join(['sudo', 'systemd-run', '--collect', '--unit', vrrp_unit, '/usr/sbin/keepalived',
+                                  '--dont-fork', '--log-console', '--vrrp', '--use-file', str(directory / 'keepalived.conf'),
+                                  '--pid', str(directory / 'keepalived.pid'), '--vrrp_pid', str(directory / 'vrrp.pid')]))
+        region.eventually(lambda: remote(node, ready), 15)
+
+    wait(lambda: owners() == [primary], 15)
+    ingress = forward_port(gateway_observer, '-L', f'127.0.0.1:{public_port}:{gateway_vip}:{public_port}')
+    cleanup.callback(close_process, ingress)
+
+    def fail_primary():
+        remote(primary, shlex.join(['sudo', 'systemctl', 'kill', '--signal=SIGKILL', gateway_unit]))
+
+    return server_keys, fail_primary, lambda: owners() == [standby]
+
+
 def main():
     global state, report, script, broker_image, etcd, host_cert, issuer, gateway
     global live_args, tenant, subscription, desktop, subnet, nic
@@ -548,6 +692,7 @@ def main():
     parser.add_argument('--samba-image', required=True)
     parser.add_argument('--etcd', required=True)
     parser.add_argument('--live-keycloak', action='store_true')
+    parser.add_argument('--gateway-failover', action='store_true')
     parser.add_argument('--keycloak-origin')
     parser.add_argument('--keycloak-ca', type=Path)
     parser.add_argument('--keycloak-client')
@@ -556,6 +701,8 @@ def main():
     parser.add_argument('--domain-sid', type=Path)
     parser.add_argument('--browser-password', type=Path)
     args = parser.parse_args()
+    if args.gateway_failover and not args.live_keycloak:
+        parser.error('Gateway failover requires the live Keycloak and regional ARM fixture.')
     endpoint = urls.urlsplit(args.etcd)
     if (endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1' or not endpoint.port or
             endpoint.username is not None or endpoint.path or endpoint.query or endpoint.fragment):
@@ -592,20 +739,27 @@ def main():
             cert_path, key_path = work / 'tls.pem', work / 'tls.key'
             subprocess.run(['openssl', 'req', '-new', '-x509', '-newkey', 'rsa:2048', '-noenc', '-days', '1',
                             '-subj', '/CN=Ocean browser fixture', '-addext', 'subjectAltName=IP:127.0.0.1',
-                            '-addext', 'basicConstraints=critical,CA:TRUE', '-out', str(cert_path), '-keyout', str(key_path)],
+                            '-addext', 'basicConstraints=critical,CA:TRUE',
+                            '-addext', 'keyUsage=critical,digitalSignature,keyCertSign,cRLSign',
+                            '-out', str(cert_path), '-keyout', str(key_path)],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             ca = x509.load_pem_x509_certificate(cert_path.read_bytes())
             ca_key = serialization.load_pem_private_key(key_path.read_bytes(), None)
-            key = ed25519.Ed25519PrivateKey.generate()
             now = datetime.datetime.now(datetime.timezone.utc)
-            leaf = x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'gateway-fixture')])).issuer_name(ca.subject)
-            leaf = leaf.public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(minutes=1)).not_valid_after(now+datetime.timedelta(hours=1))
-            leaf = leaf.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), False).sign(ca_key, hashes.SHA256())
-            host_cert = leaf.public_bytes(serialization.Encoding.DER)
-            (work / 'identity.crt').write_bytes(host_cert)
-            (work / 'identity.key').write_bytes(key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-            for file in ['identity.crt', 'identity.key']:
-                (work / file).chmod(0o600)
+            hosts = [('identity', 'gateway-fixture')]
+            if args.gateway_failover:
+                hosts.append(('standby', 'gateway-b'))
+            for prefix, host_id in hosts:
+                key = ed25519.Ed25519PrivateKey.generate()
+                leaf = pem_leaf(ca, ca_key, host_id, key, now)
+                cert = leaf.public_bytes(serialization.Encoding.DER)
+                (work / f'{prefix}.crt').write_bytes(cert)
+                (work / f'{prefix}.key').write_bytes(key.private_bytes(
+                    serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+                for extension in ('crt', 'key'):
+                    (work / f'{prefix}.{extension}').chmod(0o600)
+                if prefix == 'identity':
+                    host_cert = cert
             if live_args:
                 issuer = live_args.keycloak_origin + '/realms/' + tenant
                 web_client, identity_ca = live_args.client_id, live_args.keycloak_ca
@@ -643,37 +797,49 @@ def main():
             changed = True
             g('sudo systemctl start xrdp-sesman xrdp')
             pin = g('sudo openssl x509 -in /etc/xrdp/cert.pem -noout -fingerprint -sha256').decode().strip().split('=', 1)[1]
-            c(shlex.join(['nice', '-n', '10', 'podman', 'run', '--pull=never', '--rm', '-d', '--name', name,
-                          '--publish', f'127.0.0.1:{remote_port}:4822', '--entrypoint', '/bin/sh', image, '-ec', 'exec nice -n 10 /opt/guacamole/entrypoint.sh']))
-            started = True
-            mapped = port()
-            forward = forward_port(gateway_host, '-L', f'127.0.0.1:{mapped}:127.0.0.1:{remote_port}')
-            cleanup.callback(close_process, forward)
-            host_cfg = work / 'host.json'
-            host_cfg.write_text(json.dumps({'enrollment': {'origin': regional, 'hostId': 'gateway-fixture', 'managementInterface': 'lo',
-                                                             'stateDirectory': str(work), 'caFile': str(cert_path), 'tokenFile': str(work / 'unused')}}))
-            config = work / 'gateway.json'
-            config.write_text(json.dumps({'listenAddress': f'127.0.0.1:{gateway_port}', 'tls': {'certificateFile': str(cert_path), 'keyFile': str(key_path)},
-                                          'publicOrigin': gateway, 'hostConfigFile': str(host_cfg), 'identity': {'issuer': issuer, 'caFile': str(identity_ca), 'clientId': web_client},
-                                          'guacamoleScriptFile': str(script), 'guacamoleScriptSha256': hashlib.sha256(script.read_bytes()).hexdigest(),
-                                          'desktops': {'personal': {'desktopId': desktop, 'subnetId': subnet, 'fingerprint': pin, 'guacd': f'127.0.0.1:{mapped}'}}}))
-            gateway_log = cleanup.enter_context((report / 'desktop-smb-gateway.log').open('wb'))
-            server = subprocess.Popen(['bin/ocean-desktop-gateway', '-config', str(config)], stdout=gateway_log, stderr=gateway_log)
-            cleanup.callback(close_process, server)
+            if args.gateway_failover:
+                server_keys, fail_primary, standby_owns_vip = start_redundant_gateways(
+                    work, cleanup, ca, ca_key, now, regional, pin, web_client)
+            else:
+                c(shlex.join(['nice', '-n', '10', 'podman', 'run', '--pull=never', '--rm', '-d', '--name', name,
+                              '--publish', f'127.0.0.1:{remote_port}:4822', '--entrypoint', '/bin/sh', image,
+                              '-ec', 'exec nice -n 10 /opt/guacamole/entrypoint.sh']))
+                started = True
+                mapped = port()
+                forward = forward_port(gateway_host, '-L', f'127.0.0.1:{mapped}:127.0.0.1:{remote_port}')
+                cleanup.callback(close_process, forward)
+                (work / 'host.json').write_text(json.dumps({'enrollment': {
+                    'origin': regional, 'hostId': 'gateway-fixture', 'managementInterface': 'lo',
+                    'stateDirectory': str(work), 'caFile': str(cert_path), 'tokenFile': str(work / 'unused')}}))
+                (work / 'provider.pem').write_bytes(identity_ca.read_bytes())
+                # The regional and local browser gateway share the disposable TLS CA.
+                local = gateway_configuration(f'127.0.0.1:{gateway_port}', work, 'tls.pem', 'tls.key', web_client, pin, mapped)
+                local['guacamoleScriptFile'] = str(script)
+                config = work / 'gateway.json'
+                config.write_text(json.dumps(local))
+                gateway_log = cleanup.enter_context((report / 'desktop-smb-gateway.log').open('wb'))
+                server = subprocess.Popen(['bin/ocean-desktop-gateway', '-config', str(config)], stdout=gateway_log, stderr=gateway_log)
+                cleanup.callback(close_process, server)
+                server_keys = [ca.public_key()]
             trust = ssl.create_default_context(cafile=cert_path)
+            readiness_error = None
             def healthy():
+                nonlocal readiness_error
                 try:
                     with urlrequest.urlopen(gateway + '/readyz', context=trust, timeout=2) as reply:
                         return reply.status == 204
-                except OSError:
+                except OSError as error:
+                    readiness_error = error
                     return False
-            wait(healthy, 15)
-            pub = ca.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-            spki = base64.b64encode(hashlib.sha256(pub).digest()).decode()
+            try:
+                wait(healthy, 15)
+            except RuntimeError as error:
+                raise RuntimeError(f'The shared HTTPS gateway was not ready: {readiness_error}') from error
             if real:
-                public_identity = x509.load_pem_x509_certificate(identity_ca.read_bytes()).public_key().public_bytes(
-                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-                spki += ',' + base64.b64encode(hashlib.sha256(public_identity).digest()).decode()
+                server_keys.append(x509.load_pem_x509_certificate(identity_ca.read_bytes()).public_key())
+            spki = ','.join(base64.b64encode(hashlib.sha256(key.public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).digest()).decode()
+                for key in server_keys)
             profile = work / 'chromium'
             chrome_log = cleanup.enter_context((report / 'desktop-smb-chromium.log').open('wb'))
             chrome = subprocess.Popen(['chromium', '--headless', '--disable-dev-shm-usage', '--no-first-run', '--remote-debugging-port=0',
@@ -687,6 +853,8 @@ def main():
             cdp = create_connection(endpoint, suppress_origin=True, timeout=5)
             cleanup.callback(cdp.close)
             msgid = 0
+            tunnels = set()
+            upgrades = []
             def command(method, params):
                 nonlocal msgid
                 msgid += 1
@@ -695,10 +863,20 @@ def main():
                     result = json.loads(cdp.recv())
                     if result.get('id') == msgid:
                         return result.get('result', {})
+                    event = result.get('method')
+                    params = result.get('params', {})
+                    if event == 'Network.webSocketCreated':
+                        target = urls.urlsplit(params['url'])
+                        if (target.scheme, target.netloc, target.path) == ('wss', urls.urlsplit(gateway).netloc, '/d/personal/tunnel'):
+                            tunnels.add(params['requestId'])
+                    if event == 'Network.webSocketHandshakeResponseReceived' and params['requestId'] in tunnels:
+                        upgrades.append(params['response']['status'])
             def browser_state():
-                expression = '({status: document.querySelector("#status")?.textContent, canvas: document.querySelectorAll("canvas").length, path: location.pathname, text: document.body?.innerText?.slice(0, 120)})'
+                expression = ('({status: document.querySelector("#status")?.textContent, canvas: document.querySelectorAll("canvas").length, '
+                              'path: location.pathname, page: performance.timeOrigin, text: document.body?.innerText?.slice(0, 120)})')
                 return command('Runtime.evaluate', {'expression': expression, 'returnByValue': True}).get('result', {}).get('value', {})
             before = int(g('sudo wc -l /var/log/xrdp-sesman.log').split()[0])
+            command('Network.enable', {})
             command('Page.navigate', {'url': gateway + '/d/personal'})
             if real:
                 finish_live_login(command, real[1])
@@ -731,6 +909,38 @@ def main():
             if permissions != f'600 {uid}':
                 raise RuntimeError('the CIFS cache was not private to the desktop account')
             g(shlex.join(['sudo', '-u', 'smbreader@ad.ocean.test', 'test', '!', '-r', cache_path]))
+            if args.gateway_failover:
+                old_page = browser_state().get('page')
+                if upgrades != [101] or browser_state().get('status') != 'Desktop connected':
+                    raise RuntimeError(f'Expected one connected primary WebSocket. Observed upgrade statuses: {upgrades}.')
+                openbox = shlex.join(['pgrep', '-u', user, '-x', 'openbox'])
+                session_pid = g(openbox).strip()
+                if len(session_pid.splitlines()) != 1:
+                    raise RuntimeError('Expected exactly one active window manager for the desktop account.')
+                started_at = time.monotonic()
+                fail_primary()
+                wait(standby_owns_vip, 18)
+                vip_ms = round((time.monotonic() - started_at) * 1000)
+
+                def reconnected():
+                    visible = browser_state()
+                    (report / 'desktop-gateway-reconnect-state.json').write_text(json.dumps(visible))
+                    return (visible.get('page') != old_page and visible.get('path') == '/d/personal' and
+                            visible.get('status') == 'Desktop connected' and visible.get('canvas', 0) > 0)
+
+                wait(reconnected, 30)
+                reconnect_ms = round((time.monotonic() - started_at) * 1000)
+                if upgrades != [101, 101] or g(openbox).strip() != session_pid:
+                    raise RuntimeError('The standby must reopen the same XRDP session over a second WebSocket.')
+                guest_log = g(f'sudo tail -n +{before + 1} /var/log/xrdp-sesman.log').decode()
+                (report / 'desktop-smb-xrdp.log').write_text(guest_log)
+                (report / 'desktop-gateway-failover.tsv').write_text(
+                    'case\tresult\tduration_ms\n'
+                    f'vrrp-standby-sole-owner\tPASS\t{vip_ms}\n'
+                    f'same-profile-browser-reconnect\tPASS\t{reconnect_ms}\n'
+                    'initial-https-websocket-101\tPASS\t\n'
+                    'standby-https-websocket-101\tPASS\t\n')
+                print(f'Standby acquired the HTTPS address in {vip_ms} ms; the browser reopened its session in {reconnect_ms} ms.')
             if browser_state().get('status') != 'Desktop connected':
                 raise RuntimeError('The browser tunnel was not active before revocation.')
             started_at = time.monotonic()

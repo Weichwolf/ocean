@@ -871,6 +871,23 @@ secret through the same environment variables as `WORKPLACE-20`, plus
 private fixture admin connection. Run the preceding command with
 `OCEAN_E2E_CASES=WORKPLACE-35`.
 
+Select `WORKPLACE-36` for desktop gateway failover with the same fixtures.
+Prepare `farm-1-node-07` and `farm-1-node-08` with Debian's `keepalived`,
+`curl` and rootless Podman, and pull the pinned `guacd` image on both.
+The two gateway VMs must share the lab management segment and each reach
+the private desktop network. The probe uses unicast VRRP on `mgmt0` and
+reserves `10.231.1.210` on that disposable segment. An SSH forward from
+`farm-1-node-05` gives the local Chromium a stable HTTPS origin.
+
+The probe kills the active gateway process after opening the personal
+desktop and proving the encrypted SMB data path. It measures address
+transfer and browser recovery, checks both HTTP 101 upgrades and regional
+ARM launches under separate gateway certificates, and confirms the same
+window manager stays running across reconnection. The browser uses its
+existing Keycloak session. Removing the desktop application grant must
+still disconnect the replacement tunnel within 15 seconds. The guest
+VM and regional test endpoint remain running during this gateway test.
+
 ### Small Debian desktop VM
 
 For `VM-03`, prepare a disposable Debian 13 UEFI cloud image on an 8 GiB

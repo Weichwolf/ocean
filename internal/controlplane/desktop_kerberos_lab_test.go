@@ -84,15 +84,22 @@ func TestDesktopKerberosLabService(t *testing.T) {
 	}
 	handler := api.Handler(fallback)
 	var liveDenial atomic.Bool
+	launchOK := map[string]*atomic.Bool{"gateway-fixture": new(atomic.Bool), "gateway-b": new(atomic.Bool)}
 	if settings.Browser != nil {
 		regional := handler
 		handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			if !strings.HasSuffix(req.URL.Path, "/renew") {
+			launch := strings.HasSuffix(req.URL.Path, "/launch")
+			if !launch && !strings.HasSuffix(req.URL.Path, "/renew") {
 				regional.ServeHTTP(w, req)
 				return
 			}
 			observed := desktopLabHTTPStatus{ResponseWriter: w}
 			regional.ServeHTTP(&observed, req)
+			if launch && observed.code == http.StatusOK && req.TLS != nil && len(req.TLS.PeerCertificates) > 0 {
+				if gateway := launchOK[req.TLS.PeerCertificates[0].Subject.CommonName]; gateway != nil {
+					gateway.Store(true)
+				}
+			}
 			if observed.code == http.StatusForbidden && w.Header().Get("x-ms-error-code") == "DesktopAccessDenied" {
 				liveDenial.Store(true)
 			}
@@ -123,6 +130,12 @@ func TestDesktopKerberosLabService(t *testing.T) {
 					verifyDesktopBrowserAudit(t, ctx, r, *settings.Browser)
 					if !liveDenial.Load() {
 						t.Fatal("the current regional authorization did not explicitly deny an active renewal")
+					}
+					if settings.Browser.StandbyDER != "" {
+						if !launchOK["gateway-fixture"].Load() || !launchOK["gateway-b"].Load() {
+							t.Fatal("both distinct mTLS gateway identities must receive a successful ARM launch")
+						}
+						t.Log("both gateway identities received HTTP 200 for the assigned desktop launch")
 					}
 					t.Log("the regional API denied a renewal after the live directory change")
 				}

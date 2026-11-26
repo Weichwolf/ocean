@@ -327,8 +327,18 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	desktopLive.Command = append(append([]string(nil), desktopLive.Command...), "--live-keycloak",
 		"--keycloak-origin", origin, "--keycloak-ca", ca, "--keycloak-client", client, "--keycloak-secret", secret,
 		"--ldap-reader", reader, "--domain-sid", sid, "--browser-password", password)
+	desktopGatewayHA := desktopLive
+	desktopGatewayHA.Name, desktopGatewayHA.Cases = "desktop-browser-gateway-failover", []string{"WORKPLACE-36"}
+	desktopGatewayHA.Timeout = 5 * time.Minute
+	desktopGatewayHA.Command = append(append([]string(nil), desktopGatewayHA.Command...), "--gateway-failover")
+	desktopGatewayHA.Evidence = append([]harness.EvidenceSource(nil), desktopGatewayHA.Evidence...)
+	for _, filename := range []string{"desktop-gateway-failover.tsv", "desktop-gateway-reconnect-state.json",
+		"desktop-gateway-farm-1-node-07.log", "desktop-gateway-farm-1-node-08.log", "desktop-smb-xrdp.log"} {
+		desktopGatewayHA.Evidence = append(desktopGatewayHA.Evidence,
+			harness.EvidenceSource{Name: filename, Path: filepath.Join(options.domain, "evidence", filename)})
+	}
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
 		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos,
-		desktopAssignments, desktopBrowserSMB, desktopLive)
+		desktopAssignments, desktopBrowserSMB, desktopLive, desktopGatewayHA)
 }
