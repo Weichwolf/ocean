@@ -9,7 +9,7 @@ endpoint="//files04.ad.ocean.test/$share"
 private=$(mktemp -d)
 cache=$private/ticket
 mounted=false
-if [[ $mode != read && $mode != locked ]]; then
+if [[ $mode != read && $mode != locked && $mode != verify-checkpoint ]]; then
     cache="/tmp/krb5cc_$(id -u)"
     test ! -e "$cache"
 fi
@@ -32,7 +32,7 @@ printf '%s\n' '[libdefaults]' 'default_realm = AD.OCEAN.TEST' 'dns_lookup_kdc = 
 printf '%s\n' "$password" | kinit smbwriter@AD.OCEAN.TEST
 unset password
 kvno cifs/files04.ad.ocean.test
-if [[ $mode == read || $mode == locked ]]; then
+if [[ $mode == read || $mode == locked || $mode == verify-checkpoint ]]; then
     smb=(smbclient "$endpoint" -I "$address" --use-kerberos=required --use-krb5-ccache="$KRB5CCNAME" --client-protection=encrypt)
     if [[ $mode == locked ]]; then
         if result=$("${smb[@]}" -c "get $marker $private/downloaded" 2>&1) ||
@@ -40,6 +40,11 @@ if [[ $mode == read || $mode == locked ]]; then
             printf 'Expected the existing byte-range lock to deny a read. Got %s\n' "$result" >&2
             exit 1
         fi
+        exit
+    fi
+    if [[ $mode == verify-checkpoint ]]; then
+        "${smb[@]}" -c "get ocean-windows-$run.txt $private/downloaded"
+        printf '%s' "$run" | cmp - "$private/downloaded"
         exit
     fi
     "${smb[@]}" -c "get $marker-unlocked $private/downloaded"

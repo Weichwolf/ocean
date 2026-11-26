@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,14 +82,7 @@ func TestHostedSMBOffboarding(t *testing.T) {
 	cfg.SMBMembers = []smbBinding{binding}
 	r := openHostedLabRegion(t, ctx, cfg)
 	seedHostedLabTenant(t, ctx, r, tenant)
-	domain := identity.ManagedDirectory{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, ID: operationID(),
-		RequestedAt: time.Now().UTC(), ProvisionedAt: time.Now().UTC(), DomainSID: member.DomainSID,
-		Spec: identity.DirectorySpec{DNSName: member.DNSDomain, NetBIOSName: member.NetBIOSDomain}}
-	if _, err := r.client.Txn(ctx).Then(putJSON(r.managedDirectoryKey(scope.TenantID), domain),
-		putJSON(r.managedDirectoryPlacementKey(scope.TenantID), directoryPlacement{DirectoryID: domain.ID,
-			Controllers: [directoryControllerCount]Reservation{{PrivateIPv4: netip.MustParseAddr("10.232.1.11")}}})).Commit(); err != nil {
-		t.Fatal(err)
-	}
+	seedHostedSMBDomain(t, ctx, r, binding)
 	operatorRealm, operatorClient, operator := operationID(), operationID(), operationID()
 	issuer, sign := hostedOperatorIssuer(t, operatorRealm, tenant.TenantID)
 	workers := hostedLabInventory(cfg)

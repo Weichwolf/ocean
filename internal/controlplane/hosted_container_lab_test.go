@@ -102,7 +102,12 @@ func openHostedLabRegion(t *testing.T, ctx context.Context, cfg regionConfig) *R
 
 func registerHostedOffboardingWorker(t *testing.T, ctx context.Context, r *Region, hostCert []byte) enrollment.Host {
 	t.Helper()
-	host := seedHostedPlacementWorker(t, ctx, r, hostedSuspensionHost, "primary")
+	return registerNamedHostedLabWorker(t, ctx, r, hostedSuspensionHost, hostCert)
+}
+
+func registerNamedHostedLabWorker(t *testing.T, ctx context.Context, r *Region, name string, hostCert []byte) enrollment.Host {
+	t.Helper()
+	host := seedHostedPlacementWorker(t, ctx, r, name, "primary")
 	host.Certificate = hostCert
 	if _, err := r.client.Do(ctx, putJSON(r.hostKey("registered", host.HostID), host)); err != nil {
 		t.Fatal(err)

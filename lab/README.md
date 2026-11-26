@@ -2604,6 +2604,14 @@ shares. The test withdraws both and deletes the approved image, then reads
 the preserved checkpoint in read-only mode. Startup against an older
 regional snapshot reapplies the same decision with a fresh receipt gate.
 
+`WORKPLACE-55` uses the same domain lab with the prepared standby on
+`farm-1-node-08` and the SMB HA profile. Use disposable guests. The test
+copies the encrypted Samba membership image and powers off
+`farm-1-node-04` before publishing a signed fence. It verifies Kerberos
+reconnect on the standby, reboots the former writer, and exercises
+suspension and approved deletion with the new owner. It removes its test
+images and restores the original guest configurations.
+
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \
 OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
@@ -2612,6 +2620,7 @@ OCEAN_E2E_HOSTED_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64
 OCEAN_E2E_HOSTED_PODMAN_IMAGE="$(podman image inspect --format '{{.ID}}' docker.io/library/debian:trixie-slim)" \
 OCEAN_E2E_HOSTED_CEPH_STATE="$DISPOSABLE_CEPH_LAB_STATE" \
 OCEAN_E2E_SMB_MEMBER_FIXTURE="$DISPOSABLE_SMB_MEMBER_FIXTURE" \
+OCEAN_E2E_SMB_FAILOVER_PROFILE="$PWD/lab/profiles/smb-ha.yaml" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 

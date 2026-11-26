@@ -56,5 +56,12 @@ func hostedWorkplaceSteps() []harness.Step {
 	}
 	smb = requireFile(smb, filepath.Join(fixture, "member-rbd.json"), "the disposable SMB member identity")
 	smb = requireFile(smb, filepath.Join(fixture, "smbwriter"), "the disposable SMB writer credential")
-	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb}
+	ha := smb
+	ha.Name, ha.Cases = "hosted-smb-ha-offboarding", []string{"WORKPLACE-55"}
+	ha.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedSMBHAOffboarding$", "./internal/controlplane"}
+	ha.Timeout = 6 * time.Minute
+	ha = requireFile(ha, os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE"), "the SMB HA lab profile in OCEAN_E2E_SMB_FAILOVER_PROFILE")
+	ha = requireFile(ha, filepath.Join(fixture, "failover-state-id"), "the encrypted Samba membership image ID")
+	ha = requireFile(ha, filepath.Join(fixture, "failover-state.key"), "the private Samba membership image key")
+	return []harness.Step{step, placement, operator, recovery, suspension, volume, smb, ha}
 }
