@@ -11,15 +11,16 @@ import (
 )
 
 type rackProvisioningConfig struct {
-	InventoryFile string                `json:"inventoryFile"`
-	SignatureFile string                `json:"signatureFile"`
-	PublicKeyFile string                `json:"publicKeyFile"`
-	BMCCAFile     string                `json:"bmcCAFile"`
-	IronicOrigin  string                `json:"ironicOrigin"`
-	IronicCAFile  string                `json:"ironicCAFile"`
-	IronicToken   string                `json:"ironicTokenFile"`
-	DNS           rack.DNSConfig        `json:"dns"`
-	Racks         map[string]rackPolicy `json:"racks"`
+	InventoryFile string                   `json:"inventoryFile"`
+	SignatureFile string                   `json:"signatureFile"`
+	PublicKeyFile string                   `json:"publicKeyFile"`
+	BMCCAFile     string                   `json:"bmcCAFile"`
+	IronicOrigin  string                   `json:"ironicOrigin"`
+	IronicCAFile  string                   `json:"ironicCAFile"`
+	IronicToken   string                   `json:"ironicTokenFile"`
+	DNS           rack.DNSConfig           `json:"dns"`
+	Racks         map[string]rackPolicy    `json:"racks"`
+	Installation  *rack.InstallationConfig `json:"installation,omitempty"`
 }
 
 type rackPolicy struct {
@@ -37,6 +38,7 @@ type rackPolicy struct {
 	MinimumMemoryMiB int                  `json:"minimumMemoryMiB"`
 	RequireKVM       bool                 `json:"requireKVM"`
 	Reserved         *enrollment.Capacity `json:"reserved,omitempty"`
+	Resolvers        []netip.Addr         `json:"resolvers,omitempty"`
 }
 
 func (p rackPolicy) valid() bool {
@@ -62,10 +64,11 @@ func (p rackPolicy) placement() enrollment.Approval {
 }
 
 type rackProvisioning struct {
-	cfg    rackProvisioningConfig
-	bmcs   map[string]*rack.Redfish
-	ironic *rack.Ironic
-	dns    *rack.DNS
+	cfg     rackProvisioningConfig
+	bmcs    map[string]*rack.Redfish
+	ironic  *rack.Ironic
+	dns     *rack.DNS
+	install *rack.Installation
 }
 
 func openRackProvisioning(cfg *rackProvisioningConfig) (*rackProvisioning, error) {
@@ -94,5 +97,22 @@ func openRackProvisioning(cfg *rackProvisioningConfig) (*rackProvisioning, error
 	if err != nil {
 		return nil, err
 	}
-	return &rackProvisioning{cfg: *cfg, bmcs: bmcs, ironic: ironic, dns: dns}, nil
+	var installation *rack.Installation
+	if cfg.Installation != nil {
+		installation, err = rack.OpenInstallation(*cfg.Installation)
+		if err != nil {
+			return nil, err
+		}
+		for name, policy := range cfg.Racks {
+			if len(policy.Resolvers) == 0 {
+				return nil, fmt.Errorf("rack %s requires a management DNS resolver for installation", name)
+			}
+			for _, addr := range policy.Resolvers {
+				if !addr.Is4() || !addr.IsGlobalUnicast() {
+					return nil, fmt.Errorf("rack %s has an invalid management DNS resolver", name)
+				}
+			}
+		}
+	}
+	return &rackProvisioning{cfg: *cfg, bmcs: bmcs, ironic: ironic, dns: dns, install: installation}, nil
 }

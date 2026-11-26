@@ -2388,6 +2388,18 @@ existing reservation remains allocated for operator review.
     "server": "10.74.16.53:53",
     "keyFile": "/run/credentials/ocean/rack-a-dns.key"
   },
+  "installation": {
+    "enrollmentOrigin": "https://management.ocean.example.net",
+    "enrollmentCAFile": "/etc/ocean/management-ca.pem",
+    "credentialKeyFile": "/run/credentials/ocean/rack-enrollment.key",
+    "debianImageURL": "https://artifacts.example.net/debian-13-ocean.qcow2",
+    "debianImageSHA256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "agentPackageURL": "https://artifacts.example.net/ocean-agent.deb",
+    "agentPackageSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ironicResourceClass": "ocean-debian",
+    "minimumDiskGiB": 16,
+    "cpuArchitecture": "x86_64"
+  },
   "racks": {
     "rack-a": {
       "bmcCredentialFile": "/run/credentials/ocean/rack-a-bmc.json",
@@ -2395,6 +2407,7 @@ existing reservation remains allocated for operator review.
       "firstAddress": "10.74.16.100",
       "lastAddress": "10.74.16.199",
       "gateway": "10.74.16.1",
+      "resolvers": ["10.74.16.53", "10.74.16.54"],
       "dnsZone": "rack-a.ocean.example.net",
       "profile": "debian-rack",
       "cell": "cell-1",
@@ -2422,9 +2435,51 @@ confirm the A record before recording successful publication. An occupied
 name with different data leaves the host pending. The Ironic token file can
 be replaced independently of the controller process.
 
-`RACK-01` uses disposable mTLS etcd, a local authoritative BIND primary
-and TLS management fixtures. `PROD-03` covers commissioning, installation
-and host qualification on physical hardware.
+### Debian rack installation
+
+The site's asset import prepares matching Ironic nodes and boot ports before
+the servers are installed in the rack. Use a dedicated Ironic resource class
+for Ocean and grant the controller's credentials access to inspect, provide,
+allocate and deploy those nodes. Configure Redfish management and power,
+`redfish` or `agent` inspection, `pxe` or `ipxe` boot, `noop` storage for
+the local disk, and `direct` deployment
+with a verified Ironic Python Agent kernel and ramdisk on the site's
+provisioning network. Leave `force_persistent_boot_device` unset or set it to
+`Default`. Ironic uses temporary network boots for commissioning and
+deployment and sets disk boot at the end of deployment.
+[Ironic boot interfaces](https://docs.openstack.org/ironic/2025.1/admin/interfaces/boot.html) · [Ironic deployment guide](https://docs.openstack.org/ironic/latest/install/standalone/deploy.html)
+
+Replace the sample digests with those of a vetted Debian 13 whole-disk
+cloud image and the Ocean package. The Debian image needs cloud-init
+ConfigDrive support, curl, CA certificates and access to Debian package
+repositories. If the package server uses a private CA, add
+`installation.packageCAFile`. Give all controller replicas equivalent
+installation configurations and the same private `credentialKeyFile`
+containing 32 random bytes in unpadded base64url format.
+
+Ocean commissions the inspected node, submits a single-candidate Ironic
+allocation and pins the Debian image by SHA-256. Ironic receives an
+authenticated ConfigDrive request with the reserved IPv4, gateway and
+resolvers, hostname, agent configuration, and per-installation credential.
+The Ironic Python Agent downloads the exact pinned image over HTTPS.
+The agent bootstrap verifies the package's SHA-256 before installing it.
+Keep the ConfigDrive and deployment channel private through installation.
+The regional store keeps the credential digest. Enrollment becomes
+available when Ironic reports the matching installation active and the
+credential remains within its one-hour validity interval.
+
+The existing enrollment authority checks the agent's local key, address,
+MAC and Debian/runtime report before granting an individual certificate.
+Workloads become eligible after the agent presents that certificate over
+mTLS and publishes qualified capacity. Failed, expired or externally
+reallocated deployments require site intervention. Keep the committed
+deployment record during recovery. Already admitted hosts require an
+explicit reinstallation and identity recovery procedure.
+
+`RACK-01` exercises inventory and DNS. `RACK-02` tests commissioning
+requests against a TLS fixture and boots an actual Debian KVM guest with
+the submitted ConfigDrive. `PROD-03` qualifies the site's physical
+commissioning and boot path.
 [Rack inventory acceptance protocol](../tests/e2e/protocol.md#rack-inventory-and-dns) · [Debian nsupdate](https://manpages.debian.org/trixie/bind9-dnsutils/nsupdate.1.en.html) · [Production acceptance matrix](../acceptance.tsv)
 
 ## Leased host capacity and reservations

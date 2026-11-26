@@ -40,7 +40,7 @@ func readManagementJSON(client *http.Client, req *http.Request, service string, 
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s returned HTTP %d", service, response.StatusCode)
+		return managementStatus{service: service, code: response.StatusCode}
 	}
 	const limit = 1 << 20
 	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
@@ -54,4 +54,13 @@ func readManagementJSON(client *http.Client, req *http.Request, service string, 
 		return fmt.Errorf("invalid %s response", service)
 	}
 	return nil
+}
+
+type managementStatus struct {
+	service string
+	code    int
+}
+
+func (e managementStatus) Error() string {
+	return fmt.Sprintf("%s returned HTTP %d", e.service, e.code)
 }

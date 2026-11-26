@@ -112,6 +112,21 @@ port. It records the address owners, etcd revisions and reconciliation time
 and checks A records with an independent DNS client. The Redfish and Ironic
 endpoints are TLS fixtures. Physical rack commissioning uses `PROD-03`.
 
+Run `RACK-02` with the same DNS and etcd prerequisites, KVM on an x86-64
+host, ssh, genisoimage, a Debian 13 generic cloud QCOW2 image and the built
+agent package.
+
+```sh
+OCEAN_E2E_RACK_IMAGE="$DEBIAN_IMAGE" OCEAN_E2E_RACK_PACKAGE="$AGENT_DEB" \
+  OCEAN_E2E_PROFILE=rack-install go test -tags=e2e -count=1 ./tests/e2e -run '^TestAcceptance$'
+```
+
+The lab captures the ConfigDrive from the approved Ironic request and
+uses it to seed the actual Debian guest. The probe records the early
+enrollment denial, runtime readiness, image and package digests, first
+boot duration, and readiness and certificate recovery after a disk reboot.
+Physical Ironic conductor and firmware actions remain part of `PROD-03`.
+
 ### Workplace profile probes
 
 Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a

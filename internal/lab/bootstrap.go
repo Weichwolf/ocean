@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/enrollment"
 )
 
 type bootstrapManifest struct {
@@ -81,20 +81,15 @@ func loadBootstrapSeed(manifestPath string, guests map[string]Guest) (*bootstrap
 	if !strings.HasPrefix(string(packageData[:min(len(packageData), 8)]), "!<arch>\n") || len(packageData) == 32<<20 {
 		return nil, errors.New("the lab seed requires a Debian package smaller than 32 MiB")
 	}
-	agentConfig, _ := json.Marshal(map[string]any{
-		"listenAddress": "127.0.0.1:8081",
-		"enrollment": map[string]string{"origin": manifest.Origin, "hostId": manifest.HostID, "managementInterface": "mgmt0",
-			"caFile": "/etc/ocean-agent/management-ca.pem", "tokenFile": "/etc/ocean-agent/enrollment.secret",
-			"stateDirectory": "/var/lib/ocean-agent/host-enrollment"},
-	})
+	agentConfig := enrollment.BootstrapAgentConfig(manifest.HostID, manifest.Origin)
 	hash := sha256.New()
-	for _, data := range [][]byte{agentConfig, ca, []byte(credential), packageData, []byte(provisionAgent)} {
+	for _, data := range [][]byte{[]byte(agentConfig), ca, []byte(credential), packageData, []byte(provisionAgent)} {
 		digest := sha256.Sum256(data)
 		hash.Write(digest[:])
 	}
 	prefix := "/root/ocean-bootstrap/"
 	return &bootstrapSeed{host: manifest.HostID, digest: hex.EncodeToString(hash.Sum(nil)), packageData: packageData, files: []any{
-		seedFile(prefix+"agent.json", string(agentConfig), "text/plain"),
+		seedFile(prefix+"agent.json", agentConfig, "text/plain"),
 		seedFile(prefix+"management-ca.pem", string(ca), "text/plain"),
 		seedFile(prefix+"enrollment.secret", credential, "text/plain"),
 		seedFile(prefix+"provision.sh", provisionAgent, "text/plain"),
@@ -117,14 +112,5 @@ install -m 0600 "$mountpoint/ocean-agent.deb" ocean-agent.deb
 umount "$mountpoint"
 trap - EXIT
 rmdir "$mountpoint"
-apt-get -q update
-OCEAN_AGENT_DEFER_START=1 apt-get -yq --no-install-recommends install /root/ocean-bootstrap/ocean-agent.deb
-install -m 0644 agent.json /etc/ocean-agent/config.json
-install -m 0644 management-ca.pem /etc/ocean-agent/management-ca.pem
-install -m 0600 -o ocean-agent -g ocean-agent enrollment.secret /etc/ocean-agent/enrollment.secret
-uid=$(id -u ocean-agent)
-loginctl enable-linger ocean-agent
-systemctl start "user@$uid.service"
-runuser -u ocean-agent -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user start ocean-agent.service
-rm -f -- ocean-agent.deb agent.json management-ca.pem enrollment.secret
-`
+` + enrollment.InstallBootstrapAgent + `runuser -u ocean-agent -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user start ocean-agent.service
+` + enrollment.CleanBootstrapAgentFiles

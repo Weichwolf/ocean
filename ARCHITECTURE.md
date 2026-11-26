@@ -288,6 +288,9 @@ Debian installation to the demonstrated first-boot enrollment path. The
 signed approvals against a site's Redfish BMCs and Ironic boot configuration
 before commissioning. Regional controllers reserve management addresses
 in etcd and publish management names to the site's private DNS primary.
+The site Ironic service commissions the approved node, installs a pinned
+Debian disk image, and supplies an authenticated ConfigDrive. The region
+releases mTLS enrollment only for the matching active installation.
 Physical qualification also covers fencing, independent infrastructure failure
 domains and measured performance under load. IPsec compatibility, Functions
 ZIP deployment and slots, and monetary Cost Management have separate

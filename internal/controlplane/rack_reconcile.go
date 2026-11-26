@@ -63,8 +63,14 @@ func (r *Region) reconcileRackAsset(ctx context.Context, feed string, asset rack
 		return errors.New("approved asset has no rack policy")
 	}
 	assignment, revision, err := r.loadRackAssignment(ctx, asset, policy)
-	if err != nil || assignment.DNSPublished {
+	if err != nil {
 		return err
+	}
+	if assignment.DNSPublished {
+		if r.rack.install == nil {
+			return nil
+		}
+		return r.reconcileRackInstallation(ctx, feed, assignment, revision, policy)
 	}
 	if err := r.rack.bmcs[asset.Rack].Verify(ctx, asset); err != nil {
 		return err

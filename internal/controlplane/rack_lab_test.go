@@ -192,7 +192,7 @@ include %q;
 zone %q { type primary; file "rack.zone"; update-policy { grant ocean-rack zonesub A; }; };
 `, directory, address.Port(), tsig, rackLabZone)
 	conf := writeRackLabFile(t, directory, "named.conf", config)
-	named := exec.CommandContext(ctx, os.Getenv("OCEAN_E2E_RACK_BIND_BINARY"), "-f", "-c", conf, "-n", "1", "-U", "1")
+	named := exec.CommandContext(ctx, os.Getenv("OCEAN_E2E_RACK_BIND_BINARY"), "-f", "-c", conf, "-n", "1")
 	dnsLog := filepath.Join(directory, "named.log")
 	log, err := os.OpenFile(dnsLog, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -231,18 +231,13 @@ func digRackLabDNS(ctx context.Context, address netip.AddrPort, name string) (st
 	return strings.TrimSpace(string(output)), err
 }
 
-func rackLabHardware(t *testing.T) ([]rack.Asset, *httptest.Server, *httptest.Server) {
+func rackLabBMC(t *testing.T) ([]rack.Asset, *httptest.Server) {
 	t.Helper()
 	var assets []rack.Asset
 	for index, id := range []string{"host-blue", "host-green", "mismatched", "occupied", "not-in-feed"} {
 		assets = append(assets, rack.Asset{HostID: id, Rack: "rack-a",
 			NodeID: fmt.Sprintf("00000000-0000-4000-8000-%012x", index+1), UUID: fmt.Sprintf("00000000-0000-4000-8001-%012x", index+1),
 			System: "/redfish/v1/Systems/" + id, Serial: "LAB-" + id, BootMAC: fmt.Sprintf("02:00:00:de:00:%02x", index+1)})
-	}
-	respond := func(w http.ResponseWriter, body any) {
-		if err := json.NewEncoder(w).Encode(body); err != nil {
-			t.Errorf("write site fixture response: %v", err)
-		}
 	}
 	bmc := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, password, ok := r.BasicAuth()
@@ -259,13 +254,13 @@ func rackLabHardware(t *testing.T) ([]rack.Asset, *httptest.Server, *httptest.Se
 				if asset.HostID == "mismatched" {
 					serial += "-different"
 				}
-				respond(w, map[string]any{"SerialNumber": serial, "UUID": asset.UUID, "EthernetInterfaces": link(collection)})
+				rackLabJSON(t, w, map[string]any{"SerialNumber": serial, "UUID": asset.UUID, "EthernetInterfaces": link(collection)})
 				return
 			case collection:
-				respond(w, map[string]any{"Members": []any{link(collection + "/1")}})
+				rackLabJSON(t, w, map[string]any{"Members": []any{link(collection + "/1")}})
 				return
 			case collection + "/1":
-				respond(w, map[string]string{"MACAddress": asset.BootMAC})
+				rackLabJSON(t, w, map[string]string{"MACAddress": asset.BootMAC})
 				return
 			}
 		}
@@ -275,6 +270,19 @@ func rackLabHardware(t *testing.T) ([]rack.Asset, *httptest.Server, *httptest.Se
 	for index := range assets {
 		assets[index].BMC = bmc.URL
 	}
+	return assets, bmc
+}
+
+func rackLabJSON(t *testing.T, w http.ResponseWriter, body any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		t.Errorf("write site fixture response: %v", err)
+	}
+}
+
+func rackLabHardware(t *testing.T) ([]rack.Asset, *httptest.Server, *httptest.Server) {
+	t.Helper()
+	assets, bmc := rackLabBMC(t)
 	ironic := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Auth-Token") != "lab-site-service" || r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -284,11 +292,11 @@ func rackLabHardware(t *testing.T) ([]rack.Asset, *httptest.Server, *httptest.Se
 			node := "/v1/nodes/" + asset.NodeID
 			switch r.URL.Path {
 			case node:
-				respond(w, map[string]any{"uuid": asset.NodeID, "driver": "redfish", "boot_interface": "ipxe", "deploy_interface": "direct",
+				rackLabJSON(t, w, map[string]any{"uuid": asset.NodeID, "driver": "redfish", "boot_interface": "ipxe", "deploy_interface": "direct",
 					"driver_info": map[string]any{"redfish_address": asset.BMC, "redfish_system_id": asset.System, "redfish_verify_ca": true}})
 				return
 			case node + "/ports/detail":
-				respond(w, map[string]any{"ports": []any{map[string]any{"node_uuid": asset.NodeID, "address": asset.BootMAC, "pxe_enabled": true}}})
+				rackLabJSON(t, w, map[string]any{"ports": []any{map[string]any{"node_uuid": asset.NodeID, "address": asset.BootMAC, "pxe_enabled": true}}})
 				return
 			}
 		}

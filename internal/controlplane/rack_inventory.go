@@ -65,9 +65,10 @@ func (r *Region) acceptRackFeed(ctx context.Context, feed rack.Inventory) (strin
 }
 
 func rackPolicyDigest(policy rackPolicy) string {
-	// Credential paths and address range expansion do not change an assigned host.
+	// Installation-only inputs and address range expansion preserve assignments.
 	policy.BMCCredential = ""
 	policy.First, policy.Last = netip.Addr{}, netip.Addr{}
+	policy.Resolvers = nil
 	data, _ := json.Marshal(policy)
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])

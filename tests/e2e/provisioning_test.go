@@ -35,12 +35,35 @@ func provisioningSteps(options labOptions) []harness.Step {
 		pkg,
 		host,
 		rackInventory,
+		rackInstallStep(options.evidence),
 		scale,
 		regional(options, "mixed-node-placement", "verify_lab_topology.py", []string{"LAB-03"},
 			[]string{"mixed-topology.json"}, "--profile", "storage-ha"),
 		regional(options, "placement", "verify_placement.py", []string{"LAB-03"}, []string{"host-placement.json"},
 			"--small", "farm-1-node-05", "--large", "farm-1-node-06", "--storage-workers"),
 	}
+}
+
+func rackInstallStep(evidence string) harness.Step {
+	step := rackInventoryStep(evidence)
+	step.Name, step.Cases, step.Timeout = "rack-debian-install-join", []string{"RACK-02"}, 7*time.Minute
+	step.Command = []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-run", "^TestRackInstallAndJoin$", "./internal/controlplane"}
+	path := filepath.Join(evidence, "rack-debian-install.json")
+	step.Env[1] = "OCEAN_E2E_RACK_EVIDENCE=" + path
+	step.Evidence = []harness.EvidenceSource{{Name: "rack-debian-install.json", Path: path}}
+	for _, input := range []string{"OCEAN_E2E_RACK_IMAGE", "OCEAN_E2E_RACK_PACKAGE"} {
+		file := os.Getenv(input)
+		step = requireFile(step, file, input)
+	}
+	for _, tool := range []string{"qemu-system-x86_64", "qemu-img", "genisoimage", "ssh", "ssh-keygen"} {
+		if _, err := exec.LookPath(tool); err != nil && step.BlockedReason == "" {
+			step.BlockedReason = "Install " + tool + " for the rack installation probe."
+		}
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil && step.BlockedReason == "" {
+		step.BlockedReason = "Provide local KVM access for the Debian first-boot probe."
+	}
+	return step
 }
 
 func rackInventoryStep(evidence string) harness.Step {
