@@ -2390,6 +2390,56 @@ ocean-recover -config "$RESTORED_REGION_CONFIG" -tenant "$OCEAN_CUSTOMER_TENANT"
   -target recovery-a -output /srv/ocean/recovery/keys/recovered.key
 ```
 
+Register `backupStagingDirectory` and `backupTargets` in the same hosted policy
+before creating the region. The staging directory stays on the approved source
+site. Each target specifies an approved operator pool, a private archive
+directory, a public age X25519 recipient and retention in seconds. The regional
+configuration contains only the public recipient. Keep its private identity in
+recovery custody. Use directories owned by the backup account with mode `0700`.
+
+```json
+{
+  "backupStagingDirectory": "/srv/ocean/backup-staging",
+  "backupTargets": {
+    "archive-a": {
+      "operatorPool": "primary",
+      "archiveDirectory": "/srv/ocean/backup-vault",
+      "recipient": "age1…",
+      "retentionSeconds": 2592000
+    }
+  }
+}
+```
+
+Use a dedicated regional etcd cluster for native snapshots. The selected pool
+must be allowed for the regional default and every active subscription. An
+ordinary write to etcd can continue during capture. Changes to the set of
+subscriptions or their pool policies cause the capture to abort. Ocean checks
+the native snapshot checksum and stages and publishes encrypted bytes only.
+The standard age binary can decrypt the archived snapshot in the approved
+isolated recovery directory for `etcdutl snapshot restore`.
+[age](https://github.com/FiloSottile/age/tree/v1.3.2) · [etcd disaster recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)
+
+For one tenant, feed an already completed directory backup, encrypted RBD
+export or authorized data export to `ocean-backup` with its SHA-256 digest.
+The command checks the active subscription and its effective policy before
+reading the input. The digest prevents a truncated or mismatched input from
+being published. A privileged backup operator is responsible for obtaining
+the archive from the authorized workload and retaining the completion receipt.
+
+```sh
+ocean-backup create -config "$HOSTED_REGION_CONFIG" -target archive-a
+ocean-backup create -config "$HOSTED_REGION_CONFIG" -target archive-a -kind directory \
+  -tenant "$OCEAN_CUSTOMER_TENANT" -subscription "$OCEAN_SUBSCRIPTION" \
+  -sha256 "$BACKUP_SHA256" < "$COMPLETED_DIRECTORY_BACKUP"
+ocean-backup prune -config "$HOSTED_REGION_CONFIG" -target archive-a
+```
+
+Schedule `prune` for each target using the operator's job scheduler. It uses
+the expiry stamped at creation and can run without the source cluster. Record
+the last successful prune and configure separate expiry for infrastructure
+replicas or copies kept by the target's operator.
+
 Set `region.auditRetentionSeconds` on every replica to the period approved
 for regional activity records. For example, `2592000` specifies 30 days.
 Omitting the setting leaves audit expiration disabled for regions without
@@ -2411,8 +2461,8 @@ Run `WORKPLACE-42` through `WORKPLACE-44` against a disposable loopback etcd
 instance with the pinned Azure CLI. The probes use synthetic tenant and host
 identities and test the ARM responses, etcd keys, volume key assignment,
 SMB writer generation and signed operator authorization. `WORKPLACE-45`
-starts two disposable mutual TLS etcd clusters from the pinned archive,
-takes and restores a snapshot, and exercises the recovery command.
+and `WORKPLACE-46` start disposable mutual TLS etcd clusters from the
+pinned archive and exercise the backup, retention and recovery commands.
 The harness writes Markdown and TSV reports and logs.
 
 ```sh

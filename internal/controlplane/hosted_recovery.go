@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,7 +22,7 @@ type hostedRecoveryTarget struct {
 func (p *hostedRegionPolicy) validateRecoveryTargets() error {
 	for name, target := range p.RecoveryTargets {
 		if !identifier.MatchString(name) || !p.allowsPool(target.OperatorPool) || len(target.MetadataOrigins) == 0 ||
-			!filepath.IsAbs(target.KeyDirectory) || filepath.Clean(target.KeyDirectory) != target.KeyDirectory || target.KeyDirectory == "/" {
+			!validHostedDirectory(target.KeyDirectory) {
 			return errors.New("hosted recovery targets require an approved operator pool, metadata origins and a private key directory")
 		}
 		slices.Sort(target.MetadataOrigins)
@@ -81,7 +82,15 @@ func (r *Region) verifyRecoveryTarget(ctx context.Context, scope arm.Subscriptio
 }
 
 func (target hostedRecoveryTarget) openKeyDirectory() (*os.Root, error) {
-	root, err := os.OpenRoot(target.KeyDirectory)
+	return openPrivateHostedDirectory(target.KeyDirectory, "recovery")
+}
+
+func validHostedDirectory(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
+}
+
+func openPrivateHostedDirectory(path, purpose string) (*os.Root, error) {
+	root, err := os.OpenRoot(path)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +100,7 @@ func (target hostedRecoveryTarget) openKeyDirectory() (*os.Root, error) {
 		if info.Mode().Perm()&0077 == 0 && owner && status.Uid == uint32(os.Geteuid()) {
 			return root, nil
 		}
-		err = errors.New("the recovery directory must be private and owned by the recovery process")
+		err = fmt.Errorf("the %s directory must be private and owned by the current process", purpose)
 	}
 	return nil, errors.Join(err, root.Close())
 }

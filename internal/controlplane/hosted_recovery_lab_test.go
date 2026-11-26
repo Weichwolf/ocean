@@ -30,7 +30,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	dir, keys, otherKeys := t.TempDir(), t.TempDir(), t.TempDir()
-	base, cert, certKey, etcd, etcdctl := prepareSMBRecoveryEtcd(t, ctx, archive, dir)
+	base, cert, certKey, etcd, _ := prepareSMBRecoveryEtcd(t, ctx, archive, dir)
 	source, sourceID, stopSource := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, filepath.Join(dir, "source"), nil)
 	approvedOrigin := "https://" + disposableEtcdAddress(t)
 	wrapping := filepath.Join(dir, "regional.key")
@@ -50,6 +50,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 		Workloads: &workloadConfig{SecretsKeyFile: wrapping, DefaultPlacement: PlacementPolicy{Pools: []string{"primary", "partner"}, Quota: quota}},
 		Storage:   &storageConfig{KeyFile: wrapping, Workers: []string{"worker-a", "worker-b"}},
 	}
+	backupIdentity := configureHostedBackupLab(t, cfg.HostedWorkplace)
 	region, err := openRegion(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -81,9 +82,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	if _, err := region.client.Do(ctx, putJSON(shareKey, storageShareRecord{Address: share, Account: account, Scope: scope, Volume: volume, Envelope: envelope})); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := filepath.Join(dir, "region.snapshot")
-	etcdLabCommand(t, ctx, nil, etcdctl, "--endpoints="+source.Endpoints[0], "--cacert="+source.CAFile,
-		"--cert="+source.CertificateFile, "--key="+source.KeyFile, "snapshot", "save", snapshot)
+	snapshot := verifyHostedBackup(t, ctx, cfg, region, scope, quota, backupIdentity, dir)
 	stopSource()
 	restoredPath := filepath.Join(dir, "recovery")
 	restored, restoredID, _ := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, restoredPath,

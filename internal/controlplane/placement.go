@@ -280,6 +280,9 @@ func (r *Region) writePlacementPolicy(ctx context.Context, scope arm.Subscriptio
 			}
 		}
 		writes := []clientv3.Op{putJSON(key, policy)}
+		if r.hosted != nil {
+			writes = append(writes, r.advanceBackupPolicy())
+		}
 		if actor != "" {
 			writes = append(writes, r.placementAudit(scope, actor, "write"))
 		}

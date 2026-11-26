@@ -15,9 +15,11 @@ import (
 // services and each operator pool. The operator establishes physical location
 // when approving infrastructure and issuing its enrollment credentials.
 type hostedRegionPolicy struct {
-	Country         string                          `json:"country"`
-	OperatorPools   map[string]string               `json:"operatorPools"`
-	RecoveryTargets map[string]hostedRecoveryTarget `json:"recoveryTargets,omitempty"`
+	Country                string                          `json:"country"`
+	OperatorPools          map[string]string               `json:"operatorPools"`
+	RecoveryTargets        map[string]hostedRecoveryTarget `json:"recoveryTargets,omitempty"`
+	BackupStagingDirectory string                          `json:"backupStagingDirectory,omitempty"`
+	BackupTargets          map[string]hostedBackupTarget   `json:"backupTargets,omitempty"`
 }
 
 func euCountry(country string) bool {
@@ -37,7 +39,10 @@ func (p *hostedRegionPolicy) validate() error {
 			return errors.New("hosted operator pools require valid identifiers and EU countries")
 		}
 	}
-	return p.validateRecoveryTargets()
+	if err := p.validateRecoveryTargets(); err != nil {
+		return err
+	}
+	return p.validateBackupTargets()
 }
 
 func (p *hostedRegionPolicy) allowsPool(pool string) bool {

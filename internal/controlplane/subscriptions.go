@@ -74,9 +74,13 @@ func (r *Region) PublishSubscription(ctx context.Context, reservation identity.T
 	registration, key := r.tenantKeys(reservation.TenantID)
 	lock, _ := json.Marshal(reservation)
 	data, _ := json.Marshal(sub)
+	writes := []clientv3.Op{clientv3.OpPut(key, string(data))}
+	if r.hosted != nil {
+		writes = append(writes, r.advanceBackupPolicy())
+	}
 	result, err := r.client.Txn(ctx).
 		If(clientv3.Compare(clientv3.Value(registration), "=", string(lock)), clientv3.Compare(clientv3.Version(key), "=", 0)).
-		Then(clientv3.OpPut(key, string(data))).Commit()
+		Then(writes...).Commit()
 	if err != nil || result.Succeeded {
 		return err == nil, err
 	}
