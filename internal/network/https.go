@@ -54,11 +54,19 @@ func (ingress HTTPSIngress) validate() error {
 	if !validIngressHostname(ingress.Hostname) {
 		return errors.New("HTTPS ingress requires a canonical DNS hostname")
 	}
-	if !certificatePath.MatchString(ingress.CertificateFile) || filepath.Clean(ingress.CertificateFile) != ingress.CertificateFile {
+	return validateIngressCertificate(ingress.CertificateFile, ingress.Hostname, 0)
+}
+
+func validIngressFilePath(path string) bool {
+	return certificatePath.MatchString(path) && filepath.Clean(path) == path
+}
+
+func validateIngressCertificate(path, hostname string, owner uint32) error {
+	if !validIngressFilePath(path) {
 		return errors.New("the certificate bundle needs a canonical absolute path")
 	}
 	// Refuse files that could be substituted for a private, bounded bundle.
-	file, err := os.OpenFile(ingress.CertificateFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
@@ -68,9 +76,9 @@ func (ingress HTTPSIngress) validate() error {
 		return err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat == nil || !info.Mode().IsRegular() || stat.Uid != 0 ||
+	if !ok || stat == nil || !info.Mode().IsRegular() || stat.Uid != owner ||
 		info.Mode().Perm()&0077 != 0 || info.Size() > maximumIngressBundle {
-		return errors.New("the TLS bundle must be a small root-owned private file")
+		return fmt.Errorf("the TLS bundle must be a small private file owned by UID %d", owner)
 	}
 	bundle, err := io.ReadAll(io.LimitReader(file, maximumIngressBundle+1))
 	if err != nil {
@@ -83,7 +91,7 @@ func (ingress HTTPSIngress) validate() error {
 	if err != nil {
 		return err
 	}
-	if leaf.VerifyHostname(ingress.Hostname) != nil {
+	if leaf.VerifyHostname(hostname) != nil {
 		return errors.New("the ingress certificate must be valid for the configured hostname")
 	}
 	return nil
@@ -123,10 +131,18 @@ defaults
   timeout server 30s
   timeout http-request 5s
   timeout http-keep-alive 5s
-frontend ingress
-  bind %[1]s:443 transparent ssl crt %[2]s ssl-min-ver TLSv1.2 strict-sni alpn h2,http/1.1
+%sbackend workload
+  balance roundrobin
+  option redispatch
+  retries 2
+%s`, httpsFrontend(netip.AddrPortFrom(ingress.PublicIPv4, 443), ingress.CertificateFile, ingress.Hostname, " transparent"), servers.String()), nil
+}
+
+func httpsFrontend(listen netip.AddrPort, certificate, hostname, bindOptions string) string {
+	return fmt.Sprintf(`frontend ingress
+  bind %[1]s%[5]s ssl crt %[2]s ssl-min-ver TLSv1.2 strict-sni alpn h2,http/1.1
   acl valid_sni ssl_fc_sni -i %[3]s
-  acl valid_host hdr(host) -i %[3]s %[3]s:443
+  acl valid_host hdr(host) -i %[3]s %[3]s:%[4]d
   acl single_host hdr_cnt(host) eq 1
   http-request deny deny_status 421 unless valid_sni valid_host single_host
   http-request deny if { method CONNECT }
@@ -136,11 +152,7 @@ frontend ingress
   http-request set-header X-Forwarded-For %%[src]
   http-request set-header X-Forwarded-Proto https
   http-request set-header X-Forwarded-Host %[3]s
-  http-request set-header X-Forwarded-Port 443
+  http-request set-header X-Forwarded-Port %[4]d
   default_backend workload
-backend workload
-  balance roundrobin
-  option redispatch
-  retries 2
-%[4]s`, ingress.PublicIPv4, ingress.CertificateFile, ingress.Hostname, servers.String()), nil
+`, listen, certificate, hostname, listen.Port(), bindOptions)
 }

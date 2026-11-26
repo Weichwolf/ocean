@@ -23,6 +23,7 @@ func resilienceSteps(options labOptions) []harness.Step {
 		restore,
 		farmPairingStep(options.evidence, false),
 		farmPairingStep(options.evidence, true),
+		geoIngressStep(options.evidence),
 	}
 }
 
@@ -37,34 +38,58 @@ func farmPairingStep(evidence string, routing bool) harness.Step {
 		Command:  []string{"unshare", "-Urn", "--", "python3", "-B", "lab/verify_farm_pairing.py", "--output", output},
 		Evidence: []harness.EvidenceSource{{Name: filename, Path: output}},
 	}
-	for _, tool := range []struct{ flag, variable, name string }{
-		{"--etcd", "OCEAN_E2E_ETCD_BINARY", "etcd"}, {"--etcdctl", "OCEAN_E2E_ETCDCTL_BINARY", "etcdctl"},
-		{"--wg", "OCEAN_E2E_WG_BINARY", "wg"}, {"--dnsmasq", "OCEAN_E2E_DNSMASQ_BINARY", "/usr/sbin/dnsmasq"},
-	} {
-		path, err := exec.LookPath(envOr(tool.variable, tool.name))
-		if err != nil && step.BlockedReason == "" {
-			step.BlockedReason = "Install " + tool.name + " or provide " + tool.variable + "."
-		}
-		step.Command = append(step.Command, tool.flag, path)
-	}
-	for _, name := range []string{"unshare", "nsenter", "ip", "openssl", "curl", "ping", "dig"} {
-		if _, err := exec.LookPath(name); err != nil && step.BlockedReason == "" {
-			step.BlockedReason = "Install " + name + " for the WireGuard federation probe."
-		}
-	}
+	addFederationTool(&step, "--etcd", "OCEAN_E2E_ETCD_BINARY", "etcd")
+	addFederationTool(&step, "--etcdctl", "OCEAN_E2E_ETCDCTL_BINARY", "etcdctl")
+	addFederationTool(&step, "", "", "ping")
+	addWireGuardTools(&step)
 	if routing {
-		bird, err := exec.LookPath(envOr("OCEAN_E2E_BIRD_BINARY", "/usr/sbin/bird"))
-		if err != nil && step.BlockedReason == "" {
-			step.BlockedReason = "Install BIRD 2 or provide OCEAN_E2E_BIRD_BINARY."
-		}
-		birdc, err := exec.LookPath(envOr("OCEAN_E2E_BIRDC_BINARY", filepath.Join(filepath.Dir(bird), "birdc")))
-		if err != nil && step.BlockedReason == "" {
-			step.BlockedReason = "Install birdc or provide OCEAN_E2E_BIRDC_BINARY."
-		}
-		if _, err := exec.LookPath("/usr/sbin/sysctl"); err != nil && step.BlockedReason == "" {
-			step.BlockedReason = "Install procps for the forwarding setup."
-		}
-		step.Command = append(step.Command, "--bird", bird, "--birdc", birdc)
+		addBirdTools(&step)
 	}
 	return step
+}
+
+func geoIngressStep(evidence string) harness.Step {
+	const filename = "geo-ingress.json"
+	output := filepath.Join(evidence, filename)
+	step := harness.Step{
+		Name: "geo-https-ingress", Cases: []string{"FED-03"}, Timeout: time.Minute,
+		Command:  []string{"unshare", "-Urn", "--", "python3", "-B", "lab/verify_geo_ingress.py", "--output", output},
+		Evidence: []harness.EvidenceSource{{Name: filename, Path: output}},
+	}
+	addWireGuardTools(&step)
+	addBirdTools(&step)
+	addFederationTool(&step, "--haproxy", "OCEAN_E2E_HAPROXY_BINARY", "/usr/sbin/haproxy")
+	return step
+}
+
+func addWireGuardTools(step *harness.Step) {
+	addFederationTool(step, "--wg", "OCEAN_E2E_WG_BINARY", "wg")
+	addFederationTool(step, "--dnsmasq", "OCEAN_E2E_DNSMASQ_BINARY", "/usr/sbin/dnsmasq")
+	for _, name := range []string{"unshare", "nsenter", "ip", "openssl", "curl", "dig", "python3"} {
+		addFederationTool(step, "", "", name)
+	}
+}
+
+func addBirdTools(step *harness.Step) {
+	bird := addFederationTool(step, "--bird", "OCEAN_E2E_BIRD_BINARY", "/usr/sbin/bird")
+	addFederationTool(step, "--birdc", "OCEAN_E2E_BIRDC_BINARY", filepath.Join(filepath.Dir(bird), "birdc"))
+	addFederationTool(step, "", "", "/usr/sbin/sysctl")
+}
+
+func addFederationTool(step *harness.Step, option, variable, name string) string {
+	command := name
+	if variable != "" {
+		command = envOr(variable, name)
+	}
+	path, err := exec.LookPath(command)
+	if err != nil && step.BlockedReason == "" {
+		step.BlockedReason = "Install " + name + " for the federation probe."
+		if variable != "" {
+			step.BlockedReason = "Install " + name + " or provide " + variable + "."
+		}
+	}
+	if option != "" {
+		step.Command = append(step.Command, option, path)
+	}
+	return path
 }

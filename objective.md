@@ -72,6 +72,8 @@ Publish node names from the provisioning inventory. Use redundant authoritative 
 
 Geo-redundant services need a reachable ingress path through loss of a farm. Use health-checked endpoints and an ingress design that meets the client deadline with both fresh and cached DNS responses. Include connection recovery and configured DNS cache lifetimes in the observed service behavior. Distribute authoritative DNS and ingress across independent failure domains.
 
+The geo HTTPS lab advertises stable addresses for two ingress edges outside the origin farms. Each edge uses HAProxy to verify origin TLS and readiness over the approved WireGuard routes. Both addresses continue to serve after loss of one origin farm.
+
 ### Geo-redundant farms
 
 Connect participating sites through a WireGuard mesh of site gateways. Start with two gateways and independent uplinks per farm. Provide at least two independent tunnel paths between paired farms. Distribute only approved prefixes and monitor path health so routing can withdraw a failed path. BGP with BFD is a candidate for dynamic routing and failure detection.

@@ -47,6 +47,7 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `geo-4x4` | Enroll one additional node per farm, then exercise node, tunnel, and whole-farm loss |
 | `farm-pairing` | Exercise authenticated farm pairs, allowed routes and path loss over native WireGuard with four local quorums |
 | `farm-routing` | Exercise BGP and BFD route failover and application traffic on both native WireGuard paths |
+| `geo-ingress` | Exercise both public HTTPS edges with fresh and cached DNS after one origin farm loses both WireGuard paths |
 | `ipsec-gateway` | Check IKEv2 peer authentication, routed traffic, forwarding expiry, and cleanup in a disposable Debian KVM guest |
 | `ipsec-control` | Check regional VPN reservations, assignment authorization, status freshness, and teardown against real etcd |
 | `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
@@ -95,6 +96,28 @@ successful probe on each expected path. A known peer also advertises an
 unapproved prefix, which the receiving gateway filters. Both links of one farm are
 then disconnected. Its prefixes become unreachable, and a workload
 in another farm still answers.
+
+### Geo HTTPS ingress
+
+Use the routing tools and HAProxy 3.0 on Debian. Set
+`OCEAN_E2E_HAPROXY_BINARY` if HAProxy is installed outside `/usr/sbin`.
+This profile builds the routing topology in Linux namespaces and uses two
+authoritative dnsmasq instances and TLS origin servers with independent keys.
+
+```sh
+OCEAN_E2E_PROFILE=geo-ingress go test -tags=e2e -count=1 -v ./tests/e2e -run '^TestAcceptance$'
+```
+
+`FED-03` first obtains both addresses from each authoritative resolver and
+observes each edge serving both origins. The probe cuts both WAN links to
+one origin farm, stops its server and one authoritative DNS responder, and
+repeats TLS requests to both edges. One client per edge reuses the original
+DNS address and another looks up the unchanged record through the remaining
+authority. `evidence/geo-ingress.json` records the cache lifetime, first
+response from the surviving origin, and failed probes per client. A separate
+check presents an origin certificate with the wrong service name and expects
+HTTP 503. The geo KVM profiles and independent-site gate cover the full
+workload and farm acceptance.
 
 ### Other profile probes
 

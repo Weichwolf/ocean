@@ -177,6 +177,52 @@ on real WireGuard interfaces. It verifies the selected kernel next hop
 and HTTP responses from separate workload namespaces.
 [Routing acceptance protocol](../tests/e2e/protocol.md#farm-routing)
 
+### Public HTTPS across farms
+
+Place public HTTPS edges in two access failure domains, each with a stable
+address and routed access to the service's approved origin farms. Deploy the
+edges independently of the origins. Publish both edge addresses through
+redundant authoritative DNS. Each edge can serve through every configured
+origin, so a cached address remains usable through an origin farm outage.
+
+Create a JSON configuration for each edge. Copy `policy` from the routing
+configuration of its access farm. List one origin address and its trust
+bundle per approved origin farm. The fleet operator controls this map, the
+edge private key, and the origin trust bundles. Each origin serves TLS for
+the same public hostname with a TLS key of its own and returns HTTP 200 from
+its configured readiness path when it can serve the workload.
+
+```sh
+jq '.policy as $policy | {
+  policy: $policy,
+  listen: "192.0.2.13:443",
+  hostname: "app.example.net",
+  certificateFile: "/etc/ocean/tls/app-edge.pem",
+  healthPath: "/readyz",
+  origins: {
+    "farm-1": {address: "10.246.1.100:9443", caFile: "/etc/ocean/tls/farm-1-ca.pem"},
+    "farm-2": {address: "10.246.2.100:9443", caFile: "/etc/ocean/tls/farm-2-ca.pem"}
+  }
+}' /etc/ocean/routing.json > /etc/ocean/geo-ingress.json
+
+bin/ocean-geo-ingress -config /etc/ocean/geo-ingress.json > geo-ingress.cfg
+haproxy -c -f geo-ingress.cfg
+```
+
+Run the validated configuration under an independently supervised HAProxy
+service at each edge. Run the renderer and HAProxy as a dedicated service
+user that owns the private PEM bundle with mode `0600`. Grant HAProxy
+`CAP_NET_BIND_SERVICE` when binding port 443. Match the routed private path
+MTU to the smallest tunnel along the path. The renderer checks origin addresses against the
+approved farm prefixes. HAProxy verifies origin TLS and DNS names, selects
+origins using application health checks, and retries failed connection
+establishment. Applications govern retry semantics after a request is
+delivered. Workloads backing both edges need their own replication and
+writer ownership policy. The `geo-ingress` profile measures a new HTTPS
+connection after origin farm loss for each cached and fresh DNS address.
+Recovery of a cached address after loss of its edge requires address failover
+at the public routing layer. [Acceptance protocol](../tests/e2e/protocol.md#geo-https-ingress) · [HAProxy configuration reference](https://docs.haproxy.org/3.0/configuration.html)
+
 ## Regional management stack
 
 Build the binaries and start a fresh `single-farm-3` lab as shown above. Obtain the [etcd v3.6.17 Linux AMD64 archive](https://github.com/etcd-io/etcd/releases/tag/v3.6.17). The deploy script checks its SHA-256 before installing the binaries. Run the deploy and fault checks locally on the Debian host.
