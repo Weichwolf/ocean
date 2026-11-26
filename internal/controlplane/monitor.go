@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
@@ -50,6 +51,10 @@ func (r *Region) ListActivity(ctx context.Context, scope arm.SubscriptionScope, 
 	}
 	rows := make([]arm.ActivityRecord, 0, limit)
 	access := make(map[string]bool)
+	var expiration time.Time
+	if r.auditRetention != 0 {
+		expiration = time.Now().Add(-r.auditRetention)
+	}
 	boundary := arm.ActivityRecord{ID: filter.BeforeID, AuditEvent: arm.AuditEvent{Time: filter.BeforeTime}}
 	for start < end {
 		entries, err := r.client.Get(ctx, start, clientv3.WithRange(end), clientv3.WithLimit(128), clientv3.WithRev(revision))
@@ -65,7 +70,7 @@ func (r *Region) ListActivity(ctx context.Context, scope arm.SubscriptionScope, 
 				return nil, errors.New("invalid activity audit record")
 			}
 			group := auditGroup(event.Target)
-			if event.Time.Before(filter.Start) || event.Time.After(filter.End) ||
+			if !expiration.IsZero() && !event.Time.After(expiration) || event.Time.Before(filter.Start) || event.Time.After(filter.End) ||
 				filter.Group != "" && !strings.EqualFold(filter.Group, group) ||
 				filter.ResourceID != "" && !strings.EqualFold(filter.ResourceID, event.Target) ||
 				filter.Caller != "" && !strings.EqualFold(filter.Caller, event.Actor) ||

@@ -305,6 +305,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-40" }
 	case "vm-worker-desktop-windows":
 		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-41" }
+	case "hosted-workplace":
+		available = func(c harness.Case) bool { return c.ID == "WORKPLACE-42" }
 	default:
 		t.Fatalf("unknown acceptance profile %q", profile)
 	}
@@ -331,7 +333,7 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 }
 
 func planSteps(options labOptions) []harness.Step {
-	return slices.Concat(provisioningSteps(options), identitySteps(options), workloadSteps(options), networkSteps(options), resilienceSteps(options), domainJoinSteps(options), virtualMachineSteps())
+	return slices.Concat(provisioningSteps(options), identitySteps(options), workloadSteps(options), networkSteps(options), resilienceSteps(options), domainJoinSteps(options), virtualMachineSteps(), hostedWorkplaceSteps())
 }
 
 func localPath(root, path string) string {

@@ -2307,6 +2307,37 @@ worker buffer across a process restart and then compares reported gaps with
 worker loss and resumed usage series. The acceptance evidence records the
 measured delays and the profile's numeric limits.
 
+### Hosted workplace audit retention
+
+Set `region.auditRetentionSeconds` on every replica to the period approved
+for regional activity records. For example, `2592000` specifies 30 days.
+Omitting the setting leaves audit expiration disabled for regions without
+a stored retention policy. On first enablement, configure every replica
+before reopening the API. The region records the policy in etcd and rejects
+replicas with a missing or different value. Use the same configuration on
+restored replicas. [GDPR Article 5](https://eur-lex.europa.eu/eli/reg/2016/679/oj/eng#art_5)
+
+The activity API stops returning an event once its timestamp reaches the
+retention cutoff. Run at least one regional operation controller to sweep
+expired keys. The controller scans bounded pages, including existing audit
+records, and leaves unrelated tenant data intact. Monitor the sweep logs
+and record a complete sweep under the deployment's representative key count.
+Apply the deployment retention schedule separately to etcd MVCC history,
+snapshots, operator logs and backups. The audit setting applies to current
+regional activity records. Telemetry has its own `retentionSeconds` setting.
+
+Run `WORKPLACE-42` against a disposable loopback etcd instance and the pinned
+Azure CLI. The case uses synthetic tenant and principal identifiers and
+verifies both the activity API and the present keys in etcd. The acceptance
+harness writes the local Markdown and TSV outcome together with the probe log.
+
+```sh
+OCEAN_E2E_PROFILE=hosted-workplace \
+OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
+OCEAN_E2E_HOSTED_AZ="$(command -v az)" \
+go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
+```
+
 ### Local placement and autoscaling
 
 The `Ocean.Compute/replicaSets` API version `2026-11-01` manages stateless

@@ -46,6 +46,7 @@ type regionConfig struct {
 	VirtualMachines     *vmConfig                 `json:"virtualMachines,omitempty"`
 	DesktopLaunch       *desktopLaunchConfig      `json:"desktopLaunch,omitempty"`
 	Telemetry           *telemetryConfig          `json:"telemetry"`
+	AuditRetention      int64                     `json:"auditRetentionSeconds,omitempty"`
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
 	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
@@ -128,6 +129,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		}
 		if cfg.Region.OperationController == nil || *cfg.Region.OperationController {
 			hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
+				if region.auditRetention != 0 {
+					go region.reconcileAuditRetention(ctx, logger)
+				}
 				if region.workloads != nil {
 					go region.reconcileReplicaSets(ctx, logger)
 				}
@@ -223,12 +227,17 @@ type Region struct {
 	vms               *vmControl
 	desktopLaunch     *desktopLaunchControl
 	telemetry         *telemetryControl
+	auditRetention    time.Duration
 	cell              string
 }
 
 func openRegion(cfg regionConfig) (*Region, error) {
 	if !identifier.MatchString(cfg.Name) || !identifier.MatchString(cfg.InitialCell) {
 		return nil, errors.New("region name and initialCell must be lowercase identifiers")
+	}
+	auditRetention, err := configuredAuditRetention(cfg.AuditRetention)
+	if err != nil {
+		return nil, err
 	}
 	publicIPv4, err := configuredPublicIPs(cfg.PublicIPv4Addresses)
 	if err != nil {
@@ -286,7 +295,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
-		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers}
+		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers, auditRetention: auditRetention}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
@@ -319,6 +328,9 @@ func (region *Region) bootstrap(ctx context.Context) error {
 		if err := region.verify(result); err != nil {
 			return err
 		}
+	}
+	if err := region.bootstrapAuditRetention(ctx); err != nil {
+		return err
 	}
 	if err := region.bootstrapPublicIPPool(ctx); err != nil {
 		return err

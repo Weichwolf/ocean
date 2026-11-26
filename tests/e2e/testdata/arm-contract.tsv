@@ -108,6 +108,7 @@ FUNCTION-02	function-plan-delete	2.93.0	none	2025-05-01	functionapp plan delete 
 NETWORK-03	function-vnet-add	2.93.0	none	2022-01-01+2022-12-01+2023-12-01+2025-05-01	functionapp vnet-integration add --resource-group {group} --name {app} --vnet {vnet} --subnet {subnet} -o json
 NETWORK-03	function-vnet-list	2.93.0	none	2025-05-01	functionapp vnet-integration list --resource-group {group} --name {app} -o json
 OBS-01	activity-log-list	2.93.0	none	2015-04-01	monitor activity-log list --resource-group {group} --offset 1h --max-events 50 -o json
+WORKPLACE-42	hosted-activity-retention	2.93.0	none	2015-04-01	rest --method get --url {activityLogUrlWithTimeFilter} -o json
 OBS-01	resource-health-show	2.93.0	none	2025-05-01	rest --method get --url {origin}{id}/providers/Microsoft.ResourceHealth/availabilityStatuses/current?api-version=2025-05-01 -o json
 OBS-03	regional-usage-show	2.93.0	none	2025-09-01	rest --method get --url {origin}/subscriptions/{subscription}/providers/Microsoft.ContainerInstance/locations/{location}/usages?api-version=2025-09-01 -o json
 OBS-03	quota-container-create	2.93.0	none	2024-05-01-preview	container create --resource-group {group} --name {name} --location {location} --image {image} --ip-address Public --ports 80 --protocol TCP --os-type Linux --cpu 0.6 --memory 0.25 --restart-policy Always -o json
