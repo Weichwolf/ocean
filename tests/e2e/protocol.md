@@ -50,6 +50,8 @@ Keep workload source and runtime configuration beside each Containerfile. Keep l
 | `ipsec-profile` | Create and remove VPN resources with stock Azure CLI and verify the installed gateway worker against a native strongSwan peer |
 | `functions-zip-foundation` | Invoke versioned packages in the native Functions host and verify sealed storage, assignment authorization, and regional slot activation and rollback |
 | `functions-zip-slots` | Use stock Azure CLI and authenticated SCM against regional workers, then verify keyed responses before and after failed activation and slot promotion |
+| `cost-management-foundation` | Verify a known usage ledger dataset in live mTLS etcd, including midnight splitting, retries, and retained history |
+| `cost-management` | Verify native CLI cost tables and tenant scope against independently calculated totals from two live workloads |
 | `domain-join` | Verify Samba AD domain join and sign-in with Debian, Windows Server 2025 Core, and Windows 11 Pro or Enterprise Evaluation |
 | `managed-directory` | Exercise startup identity authorization, controller health, bidirectional AD replication, SYSVOL policy and ACL replication, outages, and the pinned Azure CLI management contract |
 | `vm-worker` | Exercise stock Azure CLI VM lifecycle, tenant boundaries and quota accounting, then confirm out-of-band fencing and read a persisted Windows checkpoint on the replacement |
@@ -86,6 +88,13 @@ times, and the responses from an independent private workload client. The CLI
 command matrix includes named slot operations and the supported ARM requests
 for staging function discovery and keys.
 [Regional ZIP and slot acceptance](../../lab/README.md#regional-zip-and-slot-acceptance)
+
+Run `COST-01` through `cost-management-foundation` with
+`OCEAN_E2E_ETCD_ENDPOINTS` and `OCEAN_E2E_ETCD_PKI` pointing to a
+disposable store. Run `PROFILE-03` through `cost-management` against the
+prepared regional lab. The latter records the pinned CLI version, measured
+source quantities, rate schedule, typed cost results and isolation outcomes.
+[Cost Management lab guide](../../lab/README.md#cost-management)
 
 Select `WORKPLACE-06` explicitly and set `OCEAN_E2E_DIRECTORY_ETCD` to a
 disposable endpoint to verify regional replica and writer fencing,

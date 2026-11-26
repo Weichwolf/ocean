@@ -69,6 +69,7 @@ that the former writer rejoins as a standby. See the
 | Functions ZIP and slots | The optional profile publishes verified packages through authenticated SCM. Package content is sealed in regional storage and fetched by the assigned worker. Production and the named slot run separate instances of the same pinned Node.js 22 runtime. A swap moves code and ordinary app settings, keeps endpoint bindings and sticky settings, and waits for both workers to index the new releases. | `az functionapp deployment source config-zip`, `az functionapp deployment slot`, selected `az rest` requests. |
 | Networking | Manage IPv4 VNets, subnets, NSGs and firewall rules. Expose private backends through a redundant Application Gateway. Assign Standard static public IPv4 addresses and a stable outbound address through NAT. Connect approved on-premises prefixes over two WireGuard paths. Preview and apply the supported network-only Bicep template. | Selected `az network` and `az deployment group`, plus `az rest` for `Ocean.Network/siteConnections`. |
 | Usage, quotas and Insights | Read resource health, tenant audit events, container CPU and memory, current reservations and quota ceilings. Query supported request, error, latency, dependency and exception data, including reported telemetry gaps. | `az monitor metrics` and selected ARM and Insights endpoints through `az rest`. |
+| Cost Management | Query pre-tax amounts by resource and meter from measured CPU time and sampled memory. Daily usage records retain their tariff and survive raw telemetry expiry and workload deletion. | `Microsoft.CostManagement/query` through `az rest`. |
 | Local placement and scaling | Run stateless private container replicas at a fixed count or scale locally on fresh CPU measurements. Reserve replacement capacity and keep serving through a worker failure on the local tier. | `az rest` for `Ocean.Compute/replicaSets`. |
 
 The [Azure CLI 2.93.0 command matrix](tests/e2e/testdata/arm-contract.tsv)
@@ -251,6 +252,12 @@ measurements and scoped OTLP traces feed bounded persistent worker queues.
 Drops surface through gap records. Provisioning and writer fencing are
 exercised during a full telemetry-store outage. See
 [regional observability](lab/README.md#regional-observability).
+
+The optional Cost Management profile applies fixed meter rates to daily
+usage counters in the telemetry store. Authenticated intervals update
+their resource's counters and deduplication endpoint in one transaction.
+Azure queries read a consistent scoped snapshot and round monetary values
+after grouping. [Cost Management lab](lab/README.md#cost-management)
 
 ## Optional IPsec profile
 

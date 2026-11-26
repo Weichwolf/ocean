@@ -30,7 +30,8 @@ topology, workload paths, and availability profiles.
   site-to-site connection commands. [IPsec profile](lab/README.md#regional-ipsec-reservations)
 - **Operations.** View inventory, health, logs and audit events, measured
   resource usage, enforced quotas, and selected Azure Monitor and Application
-  Insights metrics and queries.
+  Insights metrics and queries. The optional Cost Management profile applies
+  regional tariffs to measured CPU and memory. [Cost Management profile](lab/README.md#cost-management)
 - **Regional resilience.** Enroll Debian hosts with per-host mTLS, place
   fixed-count or locally autoscaled replicas on separate nodes, and fail over the
   management endpoint across redundant gateways backed by three etcd voters.

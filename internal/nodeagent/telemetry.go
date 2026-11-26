@@ -111,8 +111,18 @@ func (j *joinClient) measureWorkloads(ctx context.Context, previous map[telemetr
 		if !exists || current.pid != prior.pid || current.cpuUsec < prior.cpuUsec || elapsed < 100*time.Millisecond {
 			continue
 		}
-		millicores := float64(current.cpuUsec-prior.cpuUsec) / float64(elapsed.Milliseconds())
-		sample := telemetry.Sample{ID: sampleID(), Time: current.at.UTC(), Usage: &telemetry.Usage{CPUMillis: millicores, MemoryBytes: current.memory}}
+		micros := current.cpuUsec - prior.cpuUsec
+		millicores := float64(micros) / float64(elapsed.Milliseconds())
+		end := current.at.UTC().Truncate(time.Millisecond)
+		wallMillis := end.Sub(prior.at.UTC().Truncate(time.Millisecond)).Milliseconds()
+		usage := &telemetry.Usage{CPUMillis: millicores, MemoryBytes: current.memory}
+		interval := telemetry.UsageInterval{Milliseconds: wallMillis, CPUTimeMicros: int64(micros)}
+		// Retain the metrics sample across a collection delay or a wall-clock
+		// adjustment. Only bounded, continuous intervals feed the cost ledger.
+		if millis := elapsed.Milliseconds(); micros <= 320000000 && interval.Valid() && wallMillis >= millis-1 && wallMillis <= millis+1 {
+			usage.Interval = &interval
+		}
+		sample := telemetry.Sample{ID: sampleID(), Time: end, Usage: usage}
 		if sample.Valid(current.at) {
 			results = append(results, telemetry.Observation{Assignment: id, Sample: sample})
 		}

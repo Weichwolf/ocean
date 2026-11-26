@@ -29,8 +29,14 @@ func workloadSteps(options labOptions) []harness.Step {
 		packageStore.BlockedReason = "Provide OCEAN_E2E_ETCD_ENDPOINTS and OCEAN_E2E_ETCD_PKI for the package storage probe."
 		slotSwap.BlockedReason = "Provide OCEAN_E2E_ETCD_ENDPOINTS and OCEAN_E2E_ETCD_PKI for the slot swap probe."
 	}
+	costLedger := harness.Step{Name: "regional-cost-ledger", Cases: []string{"COST-01"}, Timeout: 2 * time.Minute,
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-run", "^TestRegionalCostLedger$", "./internal/controlplane"},
+		Env:     []string{"OCEAN_E2E_COST_LEDGER=1"}}
+	if os.Getenv("OCEAN_E2E_ETCD_ENDPOINTS") == "" || os.Getenv("OCEAN_E2E_ETCD_PKI") == "" {
+		costLedger.BlockedReason = "Provide OCEAN_E2E_ETCD_ENDPOINTS and OCEAN_E2E_ETCD_PKI for the cost ledger probe."
+	}
 	return []harness.Step{
-		nativeZIP, packageStore, slotSwap,
+		nativeZIP, packageStore, slotSwap, costLedger,
 		{Name: "function-runtime-images", Cases: []string{"FUNCTION-01", "FUNCTION-02"}, Timeout: 20 * time.Minute,
 			Command:  []string{"python3", "-B", "lab/verify_function_fixtures.py", "--output", fixtureEvidence},
 			Evidence: []harness.EvidenceSource{{Name: "images.json", Path: fixtureEvidence}}},
@@ -42,6 +48,7 @@ func workloadSteps(options labOptions) []harness.Step {
 		regional(options, "functions", "verify_functions.py", []string{"FUNCTION-01", "FUNCTION-02", "NETWORK-03", "LAB-03", "CONTRACT-03"},
 			[]string{"http-functions.json"}, "--parallel-create"),
 		regional(options, "functions-zip-slots", "verify_functions_zip.py", []string{"PROFILE-02"}, []string{"functions-zip-slots.json"}),
+		regional(options, "cost-management", "verify_cost_management.py", []string{"PROFILE-03"}, []string{"cost-management.json"}),
 		regional(options, "monitor", "verify_monitor_controlplane.py", []string{"OBS-01", "OBS-03"},
 			[]string{"monitor-controlplane.json"}),
 		regional(options, "application-insights", "verify_insights.py", []string{"OBS-02"}, []string{"application-insights.json"}),

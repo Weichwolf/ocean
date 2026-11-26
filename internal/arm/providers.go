@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Weichwolf/ocean/internal/costmanagement"
 	"github.com/Weichwolf/ocean/internal/functions"
 	"github.com/Weichwolf/ocean/internal/network"
 	"github.com/Weichwolf/ocean/internal/smb"
@@ -35,6 +36,13 @@ func (s Server) provider(w http.ResponseWriter, r *http.Request, scope Subscript
 	}
 	var types []providerResourceType
 	switch strings.ToLower(namespace) {
+	case "microsoft.costmanagement":
+		if s.CostManagement == nil {
+			writeError(w, http.StatusNotFound, "InvalidResourceNamespace", "The provider namespace is unsupported.")
+			return
+		}
+		namespace = costmanagement.Namespace
+		types = []providerResourceType{{ResourceType: "query", Locations: []string{}, APIVersions: []string{costmanagement.APIVersion}}}
 	case "microsoft.resources":
 		namespace = "Microsoft.Resources"
 		types = []providerResourceType{

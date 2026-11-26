@@ -45,7 +45,7 @@ def deploy(state, node, public_ips=None):
     publish(state, public_ips)
 
 
-def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None, function_plans=None, function_domain=None, function_registry=None, telemetry=None, function_scm_domain=None):
+def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wireguard=None, workloads=None, workload_key=None, storage=None, storage_key=None, fence_public=None, function_plans=None, function_domain=None, function_registry=None, telemetry=None, function_scm_domain=None, cost_management=None):
     directory = state / "enrollment-pki"
     hosts = [host for path in sorted(directory.glob("*-inventory.json")) for host in json.loads(path.read_text())["hosts"]]
     inventory = json.dumps({"hosts": hosts}).encode()
@@ -74,6 +74,8 @@ def publish(state, public_ips=None, gateway_slots=None, gateway_key=None, wiregu
         if telemetry is not None:
             config["region"]["telemetry"], telemetry_files = telemetry[member]
             extra.update(telemetry_files)
+        if cost_management is not None:
+            config["region"]["costManagement"] = cost_management
         if storage is not None:
             config["region"]["storage"] = {**storage, "keyFile": f"{DEST}/pki/storage-envelope.key"}
             extra["pki/storage-envelope.key"] = storage_key.read_bytes()
