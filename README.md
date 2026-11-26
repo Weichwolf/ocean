@@ -177,8 +177,12 @@ links every command with the release build flags in a temporary directory, and
 runs `go vet` in both the default and `e2e` build configurations. It runs unit
 tests with the race detector and shuffles their order. To reproduce an
 order-dependent failure, pass `-shuffle=<seed>` to `go test -race` with the seed
-printed by the failing package. The gate compiles the tagged E2E suite for
-separate execution in the lab.
+printed by the failing package. The gate compiles the tagged E2E suite and
+validates the acceptance matrix, CLI contract, and required probe mappings
+without starting lab services. Run the selected E2E profile separately against
+its declared lab prerequisites. The runner requires fresh Go test results and
+reports skipped tests, unmatched test filters, and cases without a local probe
+as blocked.
 
 `make lint` runs pinned versions of Staticcheck, errcheck, errorlint, nilness,
 and bodyclose with and without the `e2e` build tag. These tools check errors and

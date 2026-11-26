@@ -52,7 +52,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		delegation.BlockedReason = "Provide OCEAN_E2E_ADCLI_IMAGE with the locally built Debian directory client image ID."
 	}
 	regionalJoin := harness.Step{Name: "regional-directory-join", Cases: []string{"WORKPLACE-09"}, Timeout: 2 * time.Minute,
-		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestRegionalDirectoryJoin$", "./internal/controlplane"},
 		BlockedReason: delegation.BlockedReason}
 	if regionalJoin.BlockedReason == "" {
@@ -66,41 +66,42 @@ func domainJoinSteps(options labOptions) []harness.Step {
 		}
 	}
 	regionalUsers := harness.Step{Name: "regional-directory-users", Cases: []string{"WORKPLACE-10"}, Timeout: 2 * time.Minute,
-		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestRegionalDirectoryUsers$", "./internal/controlplane"},
 		BlockedReason: regionalJoin.BlockedReason}
 	regionalGroups := harness.Step{Name: "regional-directory-groups", Cases: []string{"WORKPLACE-11"}, Timeout: 2 * time.Minute,
-		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestRegionalDirectoryGroups$", "./internal/controlplane"},
 		BlockedReason: regionalJoin.BlockedReason}
 	cli := harness.Step{Name: "managed-directory-az", Cases: []string{"WORKPLACE-05"}, Timeout: 2 * time.Minute,
-		Command: []string{"env", "OCEAN_E2E_DIRECTORY_CLI=1", "go", "test", "-count=1", "-v",
+		Env: []string{"OCEAN_E2E_DIRECTORY_CLI=1"},
+		Command: []string{"go", "test",
 			"-run", "^TestManagedDirectoryHTTP$", "./internal/identity"}}
 	if _, err := exec.LookPath("az"); err != nil {
 		cli.BlockedReason = "Install the pinned Azure CLI 2.93.0 for the managed directory contract probe."
 	}
 	fencing := harness.Step{Name: "managed-directory-fencing", Cases: []string{"WORKPLACE-06"}, Timeout: 2 * time.Minute,
-		Command: []string{"go", "test", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestManagedDirectoryReservation$", "./internal/controlplane"}}
 	if os.Getenv("OCEAN_E2E_DIRECTORY_ETCD") == "" {
 		fencing.BlockedReason = "Provide OCEAN_E2E_DIRECTORY_ETCD with a disposable etcd endpoint."
 	}
 	webRegistration := harness.Step{Name: "regional-web-app-registration", Cases: []string{"WORKPLACE-17"}, Timeout: 4 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestRegionalWebApplicationRegistration$", "./internal/controlplane"},
 		BlockedReason: fencing.BlockedReason}
 	if webRegistration.BlockedReason == "" {
 		webRegistration.BlockedReason = cli.BlockedReason
 	}
 	webClientPreparation := harness.Step{Name: "keycloak-web-client-preparation", Cases: []string{"WORKPLACE-18"}, Timeout: 2 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakWebClientsLab$", "./internal/identity"}}
 	if os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN") == "" || os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT") == "" {
 		webClientPreparation.BlockedReason = "Provide the HTTPS origin and admin client for a disposable Keycloak lab."
 	}
 	webClientPreparation = requireFile(webClientPreparation, os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"), "the private Keycloak admin credential")
 	directoryFederation := harness.Step{Name: "keycloak-samba-federation", Cases: []string{"WORKPLACE-19"}, Timeout: 3 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakDirectoryFederationLab$", "./internal/identity"}, BlockedReason: webClientPreparation.BlockedReason}
 	federationState := os.Getenv("OCEAN_E2E_SAMBA_FEDERATION_STATE")
 	if directoryFederation.BlockedReason == "" && federationState == "" {
@@ -108,7 +109,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	directoryFederation = requireFile(directoryFederation, filepath.Join(federationState, "directory-id"), "the Samba federation fixture state")
 	webAdmission := harness.Step{Name: "managed-web-application-admission", Cases: []string{"WORKPLACE-20"}, Timeout: 3 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakWebAdmissionLab$", "./internal/identity"}, BlockedReason: directoryFederation.BlockedReason}
 	if webAdmission.BlockedReason == "" {
 		webAdmission.BlockedReason = cli.BlockedReason
@@ -121,7 +122,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	webAdmission = requireFile(webAdmission, os.Getenv("SSL_CERT_FILE"), "the Keycloak lab CA in SSL_CERT_FILE")
 	kerberosBrowser := harness.Step{Name: "managed-kerberos-firefox", Cases: []string{"WORKPLACE-21"}, Timeout: 3 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakKerberosBrowserLab$", "./internal/identity"}, BlockedReason: webPolicyPrerequisites}
 	kerberosState := os.Getenv("OCEAN_E2E_KERBEROS_BROWSER_STATE")
 	if kerberosBrowser.BlockedReason == "" && kerberosState == "" {
@@ -135,7 +136,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "service.keytab"), "the disposable HTTP service keytab")
 	kerberosBrowser = requireFile(kerberosBrowser, filepath.Join(kerberosState, "employee.ccache"), "the disposable Samba ticket cache")
 	webCLIRegression := harness.Step{Name: "managed-web-cli-regression", Cases: []string{"WORKPLACE-22"}, Timeout: 5 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakWebCLIRegressionLab$", "./internal/identity"}, BlockedReason: webPolicyPrerequisites}
 	if _, err := exec.LookPath("python3"); err != nil && webCLIRegression.BlockedReason == "" {
 		webCLIRegression.BlockedReason = "Install Python 3 for the fresh Azure CLI sign-in probe."
@@ -143,7 +144,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	webCLIRegression = requireFile(webCLIRegression, os.Getenv("SSL_CERT_FILE"), "the Keycloak lab CA in SSL_CERT_FILE")
 	webCLIRegression = requireFile(webCLIRegression, filepath.Join(kerberosState, "service.keytab"), "the disposable HTTP service keytab")
 	joinedBrowser := harness.Step{Name: "joined-debian-web-kerberos", Cases: []string{"WORKPLACE-23"}, Timeout: 4 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakDebianDomainBrowserLab$", "./internal/identity"}, BlockedReason: webClientPreparation.BlockedReason}
 	joinedState := os.Getenv("OCEAN_E2E_JOINED_WEB_STATE")
 	if joinedBrowser.BlockedReason == "" {
@@ -157,7 +158,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	joinedBrowser = requireFile(joinedBrowser, filepath.Join(options.domain, "known-hosts"), "the verified SSH host keys for the lab")
 	joinedBrowser = requireFile(joinedBrowser, filepath.Join(joinedState, "service.keytab"), "the lab HTTP service keytab")
 	windowsBrowser := harness.Step{Name: "joined-windows-web-kerberos", Cases: []string{"WORKPLACE-24"}, Timeout: 4 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestKeycloakWindowsDomainBrowserLab$", "./internal/identity"}, BlockedReason: joinedBrowser.BlockedReason}
 	if windowsBrowser.BlockedReason == "" && os.Getenv("OCEAN_E2E_JOINED_WEB_WINDOWS") != "1" {
 		windowsBrowser.BlockedReason = "Prepare the disposable Windows domain desktop and set OCEAN_E2E_JOINED_WEB_WINDOWS=1."
@@ -176,7 +177,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	windowsState := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_STATE")
 	windowsArchive := os.Getenv("OCEAN_E2E_WINDOWS_RECOVERY_ARCHIVE")
 	windowsRecovery := harness.Step{Name: "regional-windows-directory-recovery", Cases: []string{"WORKPLACE-14"}, Timeout: 13 * time.Minute,
-		Command:       []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-count=1", "-v", "-run", "^TestRegionalWindowsDirectoryRecovery$", "./internal/controlplane"},
+		Command:       []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-run", "^TestRegionalWindowsDirectoryRecovery$", "./internal/controlplane"},
 		BlockedReason: fencing.BlockedReason,
 		Evidence: []harness.EvidenceSource{{Name: "regional-windows-recovery.json",
 			Path: filepath.Join(windowsState, "evidence", "regional-windows-recovery.json")}}}
@@ -197,14 +198,14 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	windowsRecovery = requireFile(windowsRecovery, filepath.Join(filepath.Dir(windowsArchive), "metadata.json"), "the independent backup manifest")
 	windowsRecovery = requireFile(windowsRecovery, filepath.Join("..", "..", "bin", "ocean-agent"), "the locally built Ocean node agent")
 	windowsGraph := harness.Step{Name: "regional-windows-directory-graph", Cases: []string{"WORKPLACE-15"}, Timeout: 13 * time.Minute,
-		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-count=1", "-v", "-run",
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-run",
 			"^TestRegionalWindowsDirectoryGraph$", "./internal/controlplane"},
 		BlockedReason: windowsRecovery.BlockedReason,
 		Evidence: []harness.EvidenceSource{{Name: "regional-windows-graph.json",
 			Path: filepath.Join(windowsState, "evidence", "regional-windows-graph.json")}}}
 	packagedState := os.Getenv("OCEAN_E2E_PACKAGED_DIRECTORY_STATE")
 	packaged := harness.Step{Name: "packaged-directory-provisioning", Cases: []string{"WORKPLACE-16"}, Timeout: 7 * time.Minute,
-		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=7m", "-count=1", "-v", "-run",
+		Command: []string{"go", "test", "-race", "-tags=e2e", "-timeout=7m", "-run",
 			"^TestPackagedDirectoryProvisioning$", "./internal/controlplane"},
 		BlockedReason: fencing.BlockedReason,
 		Evidence: []harness.EvidenceSource{{Name: "packaged-directory.json",
@@ -235,7 +236,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "smbwriter"), "the disposable SMB writer credential")
 	smbQuota = requireFile(smbQuota, filepath.Join(smbFixture, "rbd-volume-id"), "the encrypted RBD fixture volume ID")
 	smbManaged := harness.Step{Name: "managed-smb-cli", Cases: []string{"WORKPLACE-27"}, Timeout: 6 * time.Minute,
-		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v", "-run", "^TestPackagedSMBWorker$", "./internal/controlplane"},
+		Command:  []string{"go", "test", "-race", "-tags=e2e", "-run", "^TestPackagedSMBWorker$", "./internal/controlplane"},
 		Evidence: []harness.EvidenceSource{{Name: "managed-smb-cli.json", Path: filepath.Join(options.domain, "evidence", "managed-smb-cli.json")}}}
 	if options.domain == "" || smbFixture == "" || os.Getenv("OCEAN_E2E_SMB_ETCD") == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" {
 		smbManaged.BlockedReason = "Provide the prepared SMB member lab, a disposable etcd endpoint and the pinned Azure CLI."
@@ -243,7 +244,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	smbManaged = requireFile(smbManaged, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB member identity and native group grants")
 	smbRevocation := smbManaged
 	smbRevocation.Name, smbRevocation.Cases = "kerberos-smb-live-revocation", []string{"WORKPLACE-31"}
-	smbRevocation.Command = []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v", "-run",
+	smbRevocation.Command = []string{"go", "test", "-race", "-tags=e2e", "-run",
 		"^TestPackagedSMBLiveRevocation$", "./internal/controlplane"}
 	smbRevocation.Evidence = []harness.EvidenceSource{{Name: "kerberos-smb-revocation.json",
 		Path: filepath.Join(options.domain, "evidence", "kerberos-smb-revocation.json")}}
@@ -261,7 +262,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	smbWindows = requireFile(smbWindows, filepath.Join(smbFixture, "member-rbd.json"), "the locally verified SMB domain identity")
 	failoverProfile := os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE")
 	smbFailover := harness.Step{Name: "kerberos-smb-failover", Cases: []string{"WORKPLACE-29"}, Timeout: 7 * time.Minute,
-		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-timeout=7m", "-v", "-run", "^TestPackagedSMBFailover$", "./internal/controlplane"},
+		Command:  []string{"go", "test", "-race", "-tags=e2e", "-timeout=7m", "-run", "^TestPackagedSMBFailover$", "./internal/controlplane"},
 		Evidence: []harness.EvidenceSource{{Name: "kerberos-smb-failover.json", Path: filepath.Join(options.domain, "evidence", "kerberos-smb-failover.json")}}}
 	if options.domain == "" || smbFixture == "" || os.Getenv("OCEAN_E2E_SMB_ETCD") == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" || failoverProfile == "" {
 		smbFailover.BlockedReason = "Provide the prepared two-member SMB lab, its profile, a disposable etcd endpoint and the pinned Azure CLI."
@@ -272,7 +273,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	}
 	archive := os.Getenv("OCEAN_E2E_SMB_ETCD_ARCHIVE")
 	smbRestore := harness.Step{Name: "kerberos-smb-restore", Cases: []string{"WORKPLACE-30"}, Timeout: 14 * time.Minute,
-		Command:  []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-timeout=13m", "-v", "-run", "^TestPackagedSMBBackupRestore$", "./internal/controlplane"},
+		Command:  []string{"go", "test", "-race", "-tags=e2e", "-timeout=13m", "-run", "^TestPackagedSMBBackupRestore$", "./internal/controlplane"},
 		Evidence: []harness.EvidenceSource{{Name: "kerberos-smb-restore.json", Path: filepath.Join(options.domain, "evidence", "kerberos-smb-restore.json")}}}
 	if options.domain == "" || smbFixture == "" || archive == "" || os.Getenv("OCEAN_E2E_SMB_AZ") == "" || os.Getenv("OCEAN_E2E_SMB_RESTORE_WINDOWS_READY") == "" {
 		smbRestore.BlockedReason = "Provide the two-member SMB lab, pinned etcd and Azure CLI, and a Windows fixture handoff path."
@@ -286,7 +287,7 @@ func domainJoinSteps(options labOptions) []harness.Step {
 	desktopKerberos := probe("desktop-kerberos-delegation", options.domain, stateVariable, "verify_desktop_kerberos.py",
 		[]string{"WORKPLACE-32"}, []string{"desktop-kerberos-delegation.json"})
 	desktopAssignments := harness.Step{Name: "regional-desktop-assignments", Cases: []string{"WORKPLACE-33"}, Timeout: 3 * time.Minute,
-		Command: []string{"go", "test", "-mod=readonly", "-race", "-tags=e2e", "-count=1", "-v",
+		Command: []string{"go", "test", "-race", "-tags=e2e",
 			"-run", "^TestRegionalDesktopAssignments$", "./internal/controlplane"},
 		BlockedReason: regionalJoin.BlockedReason}
 	desktopJS, desktopEtcd := os.Getenv("OCEAN_E2E_DESKTOP_JS"), os.Getenv("OCEAN_E2E_DIRECTORY_ETCD")

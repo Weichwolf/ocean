@@ -32,6 +32,29 @@ type labOptions struct {
 	phaseOne    bool
 }
 
+func TestAcceptanceMatrix(t *testing.T) {
+	catalog, _ := readAcceptanceMatrices(t, "../..")
+	covered := checkProbePlan(t, catalog, planSteps(labOptions{phaseOne: true}))
+	for _, c := range catalog {
+		if c.Gate == "required" && !covered[c.ID] {
+			t.Errorf("required acceptance case %s has no local probe", c.ID)
+		}
+	}
+}
+
+func readAcceptanceMatrices(t *testing.T, root string) ([]harness.Case, []harness.CommandContract) {
+	t.Helper()
+	catalog, err := harness.ReadCatalog(filepath.Join(root, "acceptance.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := harness.ReadContract(filepath.Join(root, "tests", "e2e", "testdata", "arm-contract.tsv"), catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog, contract
+}
+
 func TestAcceptance(t *testing.T) {
 	profile := os.Getenv("OCEAN_E2E_PROFILE")
 	if profile == "" {
@@ -41,15 +64,8 @@ func TestAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := harness.ReadCatalog(filepath.Join(root, "acceptance.tsv"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog, contract := readAcceptanceMatrices(t, root)
 	contractFile := filepath.Join(root, "tests", "e2e", "testdata", "arm-contract.tsv")
-	contract, err := harness.ReadContract(contractFile, catalog)
-	if err != nil {
-		t.Fatal(err)
-	}
 	selected := selectCases(t, profile, catalog, os.Getenv("OCEAN_E2E_CASES"))
 	now := time.Now().UTC()
 	id := os.Getenv("OCEAN_E2E_RUN_ID")
@@ -145,6 +161,7 @@ func TestAcceptance(t *testing.T) {
 	})
 
 	steps := planSteps(options)
+	checkProbePlan(t, catalog, steps)
 	keys := make([]string, 0, len(selected))
 	for _, c := range selected {
 		keys = append(keys, c.ID)
@@ -173,12 +190,7 @@ func TestAcceptance(t *testing.T) {
 			}
 		})
 	}
-	seen := make(map[string]bool)
 	for _, step := range steps {
-		if seen[step.Name] {
-			t.Fatalf("duplicate local probe %q", step.Name)
-		}
-		seen[step.Name] = true
 		var applicable []string
 		for _, id := range step.Cases {
 			if selectedID[id] {
@@ -213,6 +225,28 @@ func TestAcceptance(t *testing.T) {
 				Detail: "The Go subtest filter excluded a required probe."})
 		}
 	}
+}
+
+func checkProbePlan(t *testing.T, catalog []harness.Case, steps []harness.Step) map[string]bool {
+	t.Helper()
+	known := make(map[string]bool, len(catalog))
+	for _, c := range catalog {
+		known[c.ID] = true
+	}
+	names, covered := make(map[string]bool), make(map[string]bool)
+	for _, step := range steps {
+		if step.Name == "" || names[step.Name] || len(step.Cases) == 0 {
+			t.Fatalf("invalid or duplicate local probe %q", step.Name)
+		}
+		names[step.Name] = true
+		for i, id := range step.Cases {
+			if !known[id] || slices.Contains(step.Cases[:i], id) {
+				t.Fatalf("local probe %q maps an unknown or repeated case %q", step.Name, id)
+			}
+			covered[id] = true
+		}
+	}
+	return covered
 }
 
 func configureLab(root, profile string) labOptions {
