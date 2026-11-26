@@ -6,10 +6,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,14 +29,16 @@ func TestDesktopKerberosLabService(t *testing.T) {
 		t.Skip("requires a disposable desktop Kerberos service fixture")
 	}
 	settings, err := config.Load(path, struct {
-		Origin    string              `json:"origin"`
-		Listen    string              `json:"listen"`
-		TLS       config.TLS          `json:"tls"`
-		Etcd      string              `json:"etcd"`
-		Launch    desktopLaunchConfig `json:"launch"`
-		SMB       smbBinding          `json:"smb"`
-		DoneFile  string              `json:"doneFile"`
-		Namespace string              `json:"namespace"`
+		Origin    string                     `json:"origin"`
+		Listen    string                     `json:"listen"`
+		TLS       config.TLS                 `json:"tls"`
+		Etcd      string                     `json:"etcd"`
+		Launch    desktopLaunchConfig        `json:"launch"`
+		SMB       smbBinding                 `json:"smb"`
+		DoneFile  string                     `json:"doneFile"`
+		Namespace string                     `json:"namespace"`
+		Cleanup   bool                       `json:"cleanup"`
+		Browser   *desktopBrowserLabSettings `json:"browser,omitempty"`
 	}{})
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +55,9 @@ func TestDesktopKerberosLabService(t *testing.T) {
 	defer func() { _ = etcd.Close() }()
 	r := &Region{client: etcd, root: "/ocean/tests/desktop-broker/" + settings.Namespace}
 	defer func() {
+		if !settings.Cleanup {
+			return
+		}
 		cleanup, stop := context.WithTimeout(context.Background(), 3*time.Second)
 		defer stop()
 		if _, err := etcd.Delete(cleanup, r.root+"/", clientv3.WithPrefix()); err != nil {
@@ -69,8 +77,29 @@ func TestDesktopKerberosLabService(t *testing.T) {
 	if err != nil || !trust.AppendCertsFromPEM(ca) {
 		t.Fatal("load the desktop guest fixture CA")
 	}
-	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, Handler: (arm.Server{Origin: settings.Origin, DesktopCIFS: r}).
-		Handler(http.NotFoundHandler()), TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: trust}}
+	api := arm.Server{Origin: settings.Origin, DesktopCIFS: r}
+	fallback := http.NotFoundHandler()
+	if settings.Browser != nil {
+		fallback = setupDesktopBrowserLab(t, ctx, r, &api, *settings.Browser)
+	}
+	handler := api.Handler(fallback)
+	var liveDenial atomic.Bool
+	if settings.Browser != nil {
+		regional := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if !strings.HasSuffix(req.URL.Path, "/renew") {
+				regional.ServeHTTP(w, req)
+				return
+			}
+			observed := desktopLabHTTPStatus{ResponseWriter: w}
+			regional.ServeHTTP(&observed, req)
+			if observed.code == http.StatusForbidden && w.Header().Get("x-ms-error-code") == "DesktopAccessDenied" {
+				liveDenial.Store(true)
+			}
+		})
+	}
+	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, Handler: handler,
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: trust}}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", settings.Listen)
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +119,13 @@ func TestDesktopKerberosLabService(t *testing.T) {
 			t.Fatal("desktop Kerberos lab probe did not finish")
 		case <-ticker.C:
 			if _, err := os.Stat(settings.DoneFile); err == nil {
+				if settings.Browser != nil {
+					verifyDesktopBrowserAudit(t, ctx, r, *settings.Browser)
+					if !liveDenial.Load() {
+						t.Fatal("the current regional authorization did not explicitly deny an active renewal")
+					}
+					t.Log("the regional API denied a renewal after the live directory change")
+				}
 				if err := server.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -100,4 +136,33 @@ func TestDesktopKerberosLabService(t *testing.T) {
 			}
 		}
 	}
+}
+
+type desktopLabHTTPStatus struct {
+	http.ResponseWriter
+	code int
+}
+
+func (w *desktopLabHTTPStatus) WriteHeader(code int) {
+	w.code = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func verifyDesktopBrowserAudit(t *testing.T, ctx context.Context, r *Region, cfg desktopBrowserLabSettings) {
+	t.Helper()
+	scope := arm.SubscriptionScope{TenantID: cfg.Registration.TenantID, SubscriptionID: cfg.Registration.SubscriptionID}
+	id := (arm.ResourceAddress{Group: "workplace", Path: arm.DesktopType + "/personal"}).ID(scope)
+	entries, err := r.client.Get(ctx, r.armPrefix(scope)+"audit/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries.Kvs {
+		var event arm.AuditEvent
+		if json.Unmarshal(entry.Value, &event) == nil && event.Action == arm.DesktopType+"/launch/action" &&
+			event.Actor == cfg.UserID && event.Target == id && event.Outcome == "Authorized" {
+			t.Log("the regional launch was audited for the live Samba user and its assigned desktop")
+			return
+		}
+	}
+	t.Fatal("the browser probe did not record a regional launch for the live directory identity")
 }

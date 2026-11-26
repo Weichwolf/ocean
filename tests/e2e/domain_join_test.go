@@ -304,8 +304,31 @@ func domainJoinSteps(options labOptions) []harness.Step {
 			desktopBrowserSMB.BlockedReason = "Install " + program + " for the desktop browser and SMB probe."
 		}
 	}
+	desktopLive := desktopBrowserSMB
+	desktopLive.Name, desktopLive.Cases = "desktop-browser-live-keycloak", []string{"WORKPLACE-35"}
+	desktopLive.Evidence = append(append([]harness.EvidenceSource(nil), desktopLive.Evidence...),
+		harness.EvidenceSource{Name: "desktop-smb-broker-a.log", Path: filepath.Join(options.domain, "evidence", "desktop-smb-broker-a.log")})
+	origin, client := os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_ORIGIN"), os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_CLIENT")
+	ca, secret := os.Getenv("SSL_CERT_FILE"), os.Getenv("OCEAN_E2E_KEYCLOAK_ADMIN_SECRET")
+	reader, sid := filepath.Join(joinedState, "reader"), filepath.Join(joinedState, "sid")
+	password := filepath.Join(smbFixture, "smbwriter")
+	if desktopLive.BlockedReason == "" && (origin == "" || client == "" || joinedState == "" || smbFixture == "") {
+		desktopLive.BlockedReason = "Provide the disposable Keycloak admin endpoint, the joined web fixture and the SMB writer fixture."
+	}
+	for _, input := range []struct{ path, name string }{
+		{ca, "SSL_CERT_FILE with the Keycloak lab CA"}, {secret, "OCEAN_E2E_KEYCLOAK_ADMIN_SECRET"},
+		{reader, "the Samba federation reader credential"}, {sid, "the existing Samba domain SID"}, {password, "the disposable SMB writer credential"},
+	} {
+		desktopLive = requireFile(desktopLive, input.path, input.name)
+	}
+	if _, err := exec.LookPath("socat"); err != nil && desktopLive.BlockedReason == "" {
+		desktopLive.BlockedReason = "Install socat for the private lab Keycloak admin connection."
+	}
+	desktopLive.Command = append(append([]string(nil), desktopLive.Command...), "--live-keycloak",
+		"--keycloak-origin", origin, "--keycloak-ca", ca, "--keycloak-client", client, "--keycloak-secret", secret,
+		"--ldap-reader", reader, "--domain-sid", sid, "--browser-password", password)
 	return append(steps, runtime, cli, fencing, recovery, delegation, regionalJoin, regionalUsers, regionalGroups, promotion, pairRecovery,
 		windowsRecovery, windowsGraph, packaged, webRegistration, webClientPreparation, directoryFederation, webAdmission, kerberosBrowser,
 		webCLIRegression, joinedBrowser, windowsBrowser, smb, smbQuota, smbManaged, smbWindows, smbFailover, smbRestore, smbRevocation, desktopKerberos,
-		desktopAssignments, desktopBrowserSMB)
+		desktopAssignments, desktopBrowserSMB, desktopLive)
 }

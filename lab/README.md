@@ -850,6 +850,27 @@ OCEAN_E2E_PROFILE=domain-join OCEAN_E2E_CASES=WORKPLACE-32,WORKPLACE-34 \
   go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 
+Select `WORKPLACE-35` to run the same browser and file-service sequence
+through real Keycloak MFA and regional ARM launch and renewal. The case
+uses the active LDAPS listeners on the two domain controllers from
+`WORKPLACE-23`, the same joined Debian desktop and the SMB writer
+fixture. It starts a local SSH bridge to run the production Samba Graph
+operation on the current writer and seeds the lab VM metadata. It
+creates a disposable Keycloak realm and a separate Samba application
+grant. Removing just that group membership must close the active
+browser tunnel within 15 seconds. The regional audit records the native
+directory object and the desktop resource. The SMB audit records the
+personal account and the checkpoint activity.
+
+Use a disposable Keycloak HTTPS listener on loopback with both LDAPS
+controller certificates trusted. Provide the Keycloak admin client and
+secret through the same environment variables as `WORKPLACE-20`, plus
+`SSL_CERT_FILE` with the Keycloak lab TLS certificate,
+`OCEAN_E2E_JOINED_WEB_STATE` with `reader` and `sid`, and
+`OCEAN_E2E_SMB_MEMBER_FIXTURE` with `smbwriter`. Install `socat` for the
+private fixture admin connection. Run the preceding command with
+`OCEAN_E2E_CASES=WORKPLACE-35`.
+
 ### Small Debian desktop VM
 
 For `VM-03`, prepare a disposable Debian 13 UEFI cloud image on an 8 GiB
@@ -1628,8 +1649,9 @@ until the native client is enabled and confirmed.
 
 Use the returned `issuer`, the Graph `appId`, the exact registered callback,
 and OIDC authorization code with S256 PKCE. The browser client requires the
-`ocean-web` assurance claim, issues no refresh tokens, and uses a 120-second
-access-token lifetime. Validate the issuer, client audience, nonce and
+`ocean-web` assurance claim and uses a 120-second access-token lifetime.
+The dedicated desktop gateway uses a refresh token held in process memory.
+Validate the issuer, client audience, nonce and
 expiry when consuming tokens. The LDAP group filter uses native object
 GUIDs, so a recreated group with the same name requires its own policy grant.
 

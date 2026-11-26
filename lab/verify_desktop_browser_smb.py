@@ -6,7 +6,9 @@ import base64
 import contextlib
 import datetime
 import hashlib
+import hmac
 import http.server
+import io
 import json
 import os
 import secrets
@@ -15,11 +17,13 @@ import socket
 import ssl
 import struct
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
 import urllib.parse as urls
 import urllib.request as urlrequest
+import uuid
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -42,6 +46,7 @@ gateway_host = 'farm-1-node-08'
 user = 'smbwriter@ad.ocean.test'
 machine = '9feab7c2-1302-4622-a932-729678cd61ee'
 tenant = '84b678b0-0a39-47d3-a355-ff4d84de4a83'
+subscription = tenant
 desktop = f'/subscriptions/{tenant}/resourceGroups/workplace/providers/Ocean.Desktop/personalDesktops/personal'
 subnet = f'/subscriptions/{tenant}/resourceGroups/workplace/providers/Microsoft.Network/virtualNetworks/office/subnets/personal'
 nic = f'/subscriptions/{tenant}/resourceGroups/workplace/providers/Microsoft.Network/networkInterfaces/personal'
@@ -198,9 +203,139 @@ def key_pem(key):
 def stop_container(container):
     subprocess.run(['podman', 'stop', '--time', '2', container], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+
+def directory_field(command, field):
+    prefix = field + ': '
+    data = dc(shlex.join(['sudo', 'samba-tool', *command])).decode()
+    return next(line[len(prefix):] for line in data.splitlines() if line.startswith(prefix))
+
+
+def private_fixture_file(path):
+    if not path.is_file() or path.stat().st_mode & 0o077:
+        raise RuntimeError(f'The fixture needs a private regular file at {path}.')
+    return path.read_bytes().strip()
+
+
+def prepare_live_keycloak(work, cleanup, origin, ca, signer, deployment_ca, now):
+    source = urls.urlsplit(live_args.keycloak_origin)
+    if source.scheme != 'https' or source.hostname != '127.0.0.1' or not source.port or source.path:
+        raise RuntimeError('Use a disposable Keycloak HTTPS origin on loopback.')
+    admin_port = port()
+    admin = subprocess.Popen(['socat', f'TCP-LISTEN:{admin_port},bind=127.0.0.1,reuseaddr,fork',
+                              f'TCP:127.0.0.1:{source.port}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+    cleanup.callback(close_process, admin)
+    connector_ports = [port(), port()]
+    for node, address, endpoint in zip((domain_controller, 'farm-1-node-03'), ('10.232.1.11', '10.232.1.13'), connector_ports):
+        connect = forward_port(node, '-L', f'127.0.0.1:{endpoint}:{address}:636')
+        cleanup.callback(close_process, connect)
+
+    group = 'OceanDesktop' + secrets.token_hex(5)
+    dc(shlex.join(['sudo', 'samba-tool', 'group', 'add', group, '--groupou=OU=Ocean Workforce Groups']))
+    cleanup.callback(dc, shlex.join(['sudo', 'samba-tool', 'group', 'delete', group]))
+    dc(shlex.join(['sudo', 'samba-tool', 'group', 'addmembers', group, 'smbwriter']))
+    group_id = directory_field(['group', 'show', group], 'objectGUID')
+    user_id = directory_field(['user', 'show', 'smbwriter'], 'objectGUID')
+    directory_id = str(uuid.uuid4())
+    otp = secrets.token_bytes(20)
+    writer_key = ed25519.Ed25519PrivateKey.generate()
+    writer_cert = pem_leaf(ca, signer, 'desktop-lab-writer', writer_key, now)
+    (work / 'writer.der').write_bytes(writer_cert.public_bytes(serialization.Encoding.DER))
+    (work / 'writer.pem').write_bytes(writer_cert.public_bytes(serialization.Encoding.PEM))
+    (work / 'writer.key').write_bytes(key_pem(writer_key))
+    (work / 'provider.pem').write_bytes(live_args.keycloak_ca.read_bytes())
+    secrets_by_name = {'admin.secret': private_fixture_file(live_args.keycloak_secret),
+                       'ldap.secret': private_fixture_file(live_args.ldap_reader),
+                       'identity.seed': secrets.token_hex(32).encode(),
+                       'workload.key': secrets.token_bytes(32), 'writer.key': key_pem(writer_key)}
+    for name, value in secrets_by_name.items():
+        file = work / name
+        file.write_bytes(value)
+        file.chmod(0o600)
+    sid = live_args.domain_sid.read_text().strip()
+    cfg = {
+        'identity': {'authority': origin, 'provider': live_args.keycloak_origin,
+                     'providerCAFile': '/fixture/provider.pem',
+                     'onboarding': {'operatorTenant': str(uuid.uuid4()), 'operatorClient': str(uuid.uuid4()),
+                                    'adminEndpoints': [f'https://127.0.0.1:{admin_port}'],
+                                    'adminClient': live_args.keycloak_client,
+                                    'adminSecretFile': '/fixture/admin.secret', 'regionalKeyFile': '/fixture/identity.seed',
+                                    'webDirectories': {tenant: {'directoryId': directory_id, 'domainSid': sid,
+                                                                'connectors': [f'ldaps://127.0.0.1:{p}' for p in connector_ports],
+                                                                'readerSecretFile': '/fixture/ldap.secret',
+                                                                'desktopApplicationId': live_args.application}}},
+                     'cloud': {'resourceManager': origin, 'microsoftGraph': 'https://graph.desktop.test'}},
+        'registration': {'tenantId': tenant, 'subscriptionId': subscription, 'administratorId': str(uuid.uuid4()),
+                         'fingerprint': name},
+        'workloadKey': '/fixture/workload.key',
+        'directoryId': directory_id,
+        'domainSid': sid,
+        'machineId': machine,
+        'userId': user_id,
+        'gatewayDer': '/fixture/identity.crt',
+        'writerDer': '/fixture/writer.der',
+        'writerGeneration': str(uuid.uuid4()),
+        'application': {'ApplicationID': live_args.application, 'ClientID': live_args.client_id,
+                        'Callback': gateway + '/oauth/callback', 'GroupID': group_id, 'User': user,
+                        'OTPSecret': base64.b32encode(otp).decode()},
+    }
+    return cfg, (group, otp, deployment_ca)
+
+
+def start_live_graph_worker(work, cleanup, origin, result):
+    _, _, tls_ca = result
+    trust = ssl.create_default_context(cafile=tls_ca)
+    trust.load_cert_chain(work / 'writer.pem', work / 'writer.key')
+    directory = dc('sudo mktemp -d /run/ocean-desktop-graph.XXXXXXXX').decode().strip()
+    cleanup.callback(dc, 'sudo python3 -c ' + shlex.quote(f'import shutil; shutil.rmtree({directory!r})'))
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode='w') as files:
+        for name in ('directory_graph.py', 'directory_groups.py', 'directory_users.py', 'domain_join.py'):
+            files.add(region.ROOT / 'packaging/samba' / name, arcname=name)
+    region.ssh(state, domain_controller, shlex.join(['sudo', 'tar', '-xf', '-', '-C', directory]), archive.getvalue())
+    program = """import json,sys
+sys.path.insert(0, sys.argv[1])
+from directory_graph import run
+from domain_join import open_directory
+from io import StringIO
+raw = sys.stdin.read()
+answer = run(open_directory('/etc/samba/smb.conf'), 'ad.ocean.test', StringIO(raw))
+answer['id'] = json.loads(raw)['id']
+print(json.dumps(answer))
+"""
+    command = shlex.join(['sudo', '/usr/bin/python3', '-c', program, directory])
+    stop = threading.Event()
+
+    def request(path, method, body=None):
+        with urlrequest.urlopen(urlrequest.Request(origin + '/fixture/writer/' + path, method=method, data=body,
+                                  headers={'Content-Type': 'application/json'}), context=trust, timeout=4) as reply:
+            return reply.read() if reply.status == 200 else None
+
+    request('health', 'POST', b'')
+
+    def poll():
+        last_health = time.monotonic()
+        try:
+            while not stop.wait(0.15):
+                if time.monotonic() - last_health >= 10:
+                    request('health', 'POST', b'')
+                    last_health = time.monotonic()
+                task = request('graph', 'GET')
+                if task is not None:
+                    response = region.ssh(state, domain_controller, command, task, timeout=6)
+                    request('graph', 'POST', response)
+        except (RuntimeError, OSError) as error:
+            if not stop.is_set():
+                (report / 'desktop-smb-writer-error.log').write_text(type(error).__name__ + '\n')
+
+    worker = threading.Thread(target=poll, daemon=True)
+    worker.start()
+    cleanup.callback(lambda: (stop.set(), worker.join(10)))
+    return stop
+
 def start_real_broker(work, cleanup, ca, signer, cert_path, key_path, now):
     local_kdc = port()
-    host_port, guest_port = port(), port()
+    host_port = guest_port = port()
     to_kdc = forward_port(domain_controller, '-L', f'127.0.0.1:{local_kdc}:10.232.1.11:88')
     to_guest = forward_port(guest, '-R', f'127.0.0.1:{guest_port}:127.0.0.1:{host_port}')
     cleanup.callback(close_process, to_kdc)
@@ -251,18 +386,26 @@ udp_preference_limit = 1
     broker_cfg = {'origin': guest_origin, 'listen': '127.0.0.1:'+str(host_port),
           'etcd': etcd, 'namespace': name, 'doneFile': '/fixture/broker.done',
           'tls': {'certificateFile': '/fixture/tls.pem', 'keyFile': '/fixture/tls.key', 'clientCAFile': '/fixture/tls.pem'},
-          'smb': {'tenantId': tenant, 'subscriptionId': tenant, 'member': {'dnsDomain': 'ad.ocean.test', 'serverName': 'FILES04'}},
-          'launch': {'signingKeyFile': '/fixture/launch.seed', 'gateways': ['gateway-a','gateway-b'],
-                     'smbBrokers': [{'tenantId': tenant, 'subscriptionId': tenant, 'account': account,
+          'smb': {'tenantId': tenant, 'subscriptionId': subscription, 'member': {'dnsDomain': 'ad.ocean.test', 'serverName': 'FILES04'}},
+          'launch': {'signingKeyFile': '/fixture/launch.seed', 'gateways': ['gateway-fixture','gateway-b'],
+                     'smbBrokers': [{'tenantId': tenant, 'subscriptionId': subscription, 'account': account,
                                      'keytabFile': '/fixture/broker.keytab', 'kerberosConfigFile': '/fixture/krb5.conf',
                                      'guests': [{'machineId': machine, 'certificateSha256': guest_fingerprint}]}]}}
     binary = work / 'desktop-kerberos-lab.test'
     subprocess.run(['go', 'test', '-mod=readonly', '-tags=e2e', '-c', '-o', str(binary), './internal/controlplane'],
                    env={**os.environ, 'CGO_ENABLED': '0'}, check=True, timeout=60)
 
-    def start_replica(replica, address):
+    configured = None
+    if live_args:
+        configured, real = prepare_live_keycloak(work, cleanup, host_origin, ca, signer, cert_path, now)
+
+    def start_replica(replica, address, identity=None):
         config_path = work / f'broker-{replica}.json'
-        config_path.write_text(json.dumps(broker_cfg | {'listen': address}))
+        settings = broker_cfg | {'listen': address, 'cleanup': replica == 'a'}
+        if identity is not None:
+            settings['browser'] = identity
+        config_path.write_text(json.dumps(settings))
+        config_path.chmod(0o600)
         container = f'{name}-broker-{replica}'
         log_path = report / f'desktop-smb-broker-{replica}.log'
         log = cleanup.enter_context(log_path.open('wb'))
@@ -278,11 +421,12 @@ udp_preference_limit = 1
             if server.poll() is not None:
                 raise RuntimeError(f'The desktop broker replica {replica} stopped. See {log_path}.')
             return 'endpoint ready' in log_path.read_text()
-        wait(ready, 12)
+        wait(ready, 45)
         return server
 
     second_port = port()
-    servers = [start_replica('a', f'127.0.0.1:{host_port}'), start_replica('b', f'127.0.0.1:{second_port}')]
+    servers = [start_replica('a', f'127.0.0.1:{host_port}', configured), start_replica('b', f'127.0.0.1:{second_port}')]
+    worker = start_live_graph_worker(work, cleanup, host_origin, real) if configured else None
     # The guest origin is preserved through the test port forward.
     guest_context = ssl.create_default_context(cafile=cert_path)
     guest_context.load_cert_chain(work/'guest.pem',work/'guest.key')
@@ -327,7 +471,7 @@ udp_preference_limit = 1
         'case\tresult\nmissing-certificate\tPASS\nother-certificate\tPASS\nwrong-account\tPASS\n'
         'valid-single-service-cache\tPASS\nregional-replay\tPASS\nreplica-replay\tPASS\nsecond-replica-issuance\tPASS\n')
     return {'region': guest_origin, 'caFile': guest_ca, 'certificateFile': guest_identity,
-            'keyFile': guest_secret, 'service': cifs}, servers
+            'keyFile': guest_secret, 'service': cifs}, servers, host_origin, (real[0], real[1], worker) if configured else None
 
 def prepare_user_probe(cleanup):
     probe_id = checkpoint
@@ -360,19 +504,74 @@ fi
 exec openbox-session
 """.encode())
     return result
+def finish_live_login(command, otp_secret):
+    def evaluate(expression):
+        result = command('Runtime.evaluate', {'expression': expression, 'returnByValue': True})
+        return result.get('result', {}).get('value')
+
+    def submit(selector, fields):
+        found = evaluate(f"""(() => {{
+            if (location.origin !== {json.dumps(live_args.keycloak_origin)} ||
+                !location.href.startsWith({json.dumps(issuer + '/')})) return false;
+            const form = document.querySelector({json.dumps(selector)});
+            if (!form || new URL(form.action).origin !== location.origin) return false;
+            for (const [name, value] of Object.entries({json.dumps(fields)})) {{
+                const field = form.elements.namedItem(name);
+                if (!field) return false;
+                field.value = value;
+            }}
+            form.requestSubmit();
+            return true;
+        }})()""")
+        return found is True
+
+    password = private_fixture_file(live_args.browser_password).decode()
+    wait(lambda: submit('#kc-form-login', {'username': user, 'password': password}), 15)
+
+    def submit_otp():
+        now = int(time.time())
+        if now % 30 > 27:
+            return False
+        digest = hmac.digest(otp_secret, struct.pack('>Q', now // 30), 'sha1')
+        number = int.from_bytes(digest[digest[-1] & 15:][:4], 'big') & 0x7fffffff
+        return submit('#kc-otp-login-form', {'otp': f'{number % 1000000:06d}'})
+
+    wait(submit_otp, 15)
+
+
 def main():
     global state, report, script, broker_image, etcd, host_cert, issuer, gateway
+    global live_args, tenant, subscription, desktop, subnet, nic
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True, type=Path)
     parser.add_argument('--guacamole-js', required=True, type=Path)
     parser.add_argument('--samba-image', required=True)
     parser.add_argument('--etcd', required=True)
+    parser.add_argument('--live-keycloak', action='store_true')
+    parser.add_argument('--keycloak-origin')
+    parser.add_argument('--keycloak-ca', type=Path)
+    parser.add_argument('--keycloak-client')
+    parser.add_argument('--keycloak-secret', type=Path)
+    parser.add_argument('--ldap-reader', type=Path)
+    parser.add_argument('--domain-sid', type=Path)
+    parser.add_argument('--browser-password', type=Path)
     args = parser.parse_args()
     endpoint = urls.urlsplit(args.etcd)
     if (endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1' or not endpoint.port or
             endpoint.username is not None or endpoint.path or endpoint.query or endpoint.fragment):
         parser.error('Provide a disposable loopback etcd endpoint.')
     state, script, broker_image, etcd = args.state.resolve(), args.guacamole_js.resolve(), args.samba_image, args.etcd
+    live_args = args if args.live_keycloak else None
+    if live_args:
+        if not all((args.keycloak_origin, args.keycloak_ca, args.keycloak_client, args.keycloak_secret,
+                    args.ldap_reader, args.domain_sid, args.browser_password)):
+            parser.error('The live probe requires the disposable Keycloak, Samba reader and browser account files.')
+        args.application, args.client_id = str(uuid.uuid4()), str(uuid.uuid4())
+        tenant, subscription = str(uuid.uuid4()), str(uuid.uuid4())
+        scope = f'/subscriptions/{subscription}/resourceGroups/workplace/providers/'
+        desktop = scope + 'Ocean.Desktop/personalDesktops/personal'
+        subnet = scope + 'Microsoft.Network/virtualNetworks/office/subnets/personal'
+        nic = scope + 'Microsoft.Network/networkInterfaces/personal'
     if hashlib.sha256(script.read_bytes()).hexdigest() != 'cc89f710ecc544477dbe6bfea453fab752dafa1b1ab9770f523676e7b744b44a':
         parser.error('Use guacamole-common-js/all.min.js from the verified Apache Guacamole 1.6.0 WAR.')
     os.chdir(region.ROOT)
@@ -407,21 +606,28 @@ def main():
             (work / 'identity.key').write_bytes(key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
             for file in ['identity.crt', 'identity.key']:
                 (work / file).chmod(0o600)
-            identity_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            identity_context.load_cert_chain(cert_path, key_path)
-            region_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            region_context.load_cert_chain(cert_path, key_path)
-            region_context.load_verify_locations(cert_path)
-            region_context.verify_mode = ssl.CERT_REQUIRED
-            identity_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
-            arm_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
-            issuer = serve(identity_server, identity_context)
-            regional = serve(arm_server, region_context)
-            cleanup.callback(identity_server.shutdown)
-            cleanup.callback(arm_server.shutdown)
+            if live_args:
+                issuer = live_args.keycloak_origin + '/realms/' + tenant
+                web_client, identity_ca = live_args.client_id, live_args.keycloak_ca
+            else:
+                identity_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                identity_context.load_cert_chain(cert_path, key_path)
+                region_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                region_context.load_cert_chain(cert_path, key_path)
+                region_context.load_verify_locations(cert_path)
+                region_context.verify_mode = ssl.CERT_REQUIRED
+                identity_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
+                arm_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
+                issuer = serve(identity_server, identity_context)
+                regional = serve(arm_server, region_context)
+                cleanup.callback(identity_server.shutdown)
+                cleanup.callback(arm_server.shutdown)
+                web_client, identity_ca = tenant, cert_path
             gateway_port = port()
             gateway = 'https://127.0.0.1:' + str(gateway_port)
-            broker, broker_processes = start_real_broker(work, cleanup, ca, ca_key, cert_path, key_path, now)
+            broker, broker_processes, real_origin, real = start_real_broker(work, cleanup, ca, ca_key, cert_path, key_path, now)
+            if real:
+                regional = real_origin
             session_script = '/etc/X11/Xsession.d/60-ocean-desktop-cifs'
             g('test ! -e '+session_script+' && test ! -e /run/ocean-desktop-cifs')
             cleanup.callback(g, 'sudo unlink '+session_script)
@@ -448,7 +654,7 @@ def main():
                                                              'stateDirectory': str(work), 'caFile': str(cert_path), 'tokenFile': str(work / 'unused')}}))
             config = work / 'gateway.json'
             config.write_text(json.dumps({'listenAddress': f'127.0.0.1:{gateway_port}', 'tls': {'certificateFile': str(cert_path), 'keyFile': str(key_path)},
-                                          'publicOrigin': gateway, 'hostConfigFile': str(host_cfg), 'identity': {'issuer': issuer, 'caFile': str(cert_path), 'clientId': tenant},
+                                          'publicOrigin': gateway, 'hostConfigFile': str(host_cfg), 'identity': {'issuer': issuer, 'caFile': str(identity_ca), 'clientId': web_client},
                                           'guacamoleScriptFile': str(script), 'guacamoleScriptSha256': hashlib.sha256(script.read_bytes()).hexdigest(),
                                           'desktops': {'personal': {'desktopId': desktop, 'subnetId': subnet, 'fingerprint': pin, 'guacd': f'127.0.0.1:{mapped}'}}}))
             gateway_log = cleanup.enter_context((report / 'desktop-smb-gateway.log').open('wb'))
@@ -464,6 +670,10 @@ def main():
             wait(healthy, 15)
             pub = ca.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
             spki = base64.b64encode(hashlib.sha256(pub).digest()).decode()
+            if real:
+                public_identity = x509.load_pem_x509_certificate(identity_ca.read_bytes()).public_key().public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+                spki += ',' + base64.b64encode(hashlib.sha256(public_identity).digest()).decode()
             profile = work / 'chromium'
             chrome_log = cleanup.enter_context((report / 'desktop-smb-chromium.log').open('wb'))
             chrome = subprocess.Popen(['chromium', '--headless', '--disable-dev-shm-usage', '--no-first-run', '--remote-debugging-port=0',
@@ -490,6 +700,8 @@ def main():
                 return command('Runtime.evaluate', {'expression': expression, 'returnByValue': True}).get('result', {}).get('value', {})
             before = int(g('sudo wc -l /var/log/xrdp-sesman.log').split()[0])
             command('Page.navigate', {'url': gateway + '/d/personal'})
+            if real:
+                finish_live_login(command, real[1])
             def drawn():
                 result = browser_state()
                 (report / 'desktop-smb-browser-state.json').write_text(json.dumps(result))
@@ -498,7 +710,7 @@ def main():
             def authenticated_guest():
                 guest_log = g(f'sudo tail -n +{before + 1} /var/log/xrdp-sesman.log').decode()
                 (report / 'desktop-smb-xrdp.log').write_text(guest_log)
-                return 'Access permitted' in guest_log and renew.is_set()
+                return 'Access permitted' in guest_log and (real is not None or renew.is_set())
             wait(authenticated_guest, 10)
             def read_smb_result():
                 raw = g('sudo cat '+shlex.quote(probe_result+'/result')+' 2>/dev/null || true').decode().strip()
@@ -519,15 +731,24 @@ def main():
             if permissions != f'600 {uid}':
                 raise RuntimeError('the CIFS cache was not private to the desktop account')
             g(shlex.join(['sudo', '-u', 'smbreader@ad.ocean.test', 'test', '!', '-r', cache_path]))
+            if browser_state().get('status') != 'Desktop connected':
+                raise RuntimeError('The browser tunnel was not active before revocation.')
             started_at = time.monotonic()
-            deny.set()
+            if real:
+                dc(shlex.join(['sudo', 'samba-tool', 'group', 'removemembers', real[0], 'smbwriter']))
+            else:
+                deny.set()
             def revoked():
                 return browser_state().get('status') == 'Desktop disconnected'
             wait(revoked, 15)
             ms = round((time.monotonic() - started_at)*1000)
+            if ms > 15_000:
+                raise RuntimeError(f'The opened tunnel exceeded the 15-second withdrawal bound. Measured {ms} ms.')
             (report / 'desktop-smb-browser.tsv').write_text('case\tresult\tduration_ms\nchromium-oidc-to-real-xrdp\tPASS\t\nchromium-open-tunnel-revocation\tPASS\t' + str(ms) + '\n')
             (report/'desktop-smb-results.tsv').write_text('case\tresult\nkerberos-broker-and-guest\tPASS\napplication-session-to-encrypted-share\tPASS\npersonal-samba-audit\tPASS\ncache-uid-isolation\tPASS\n')
             (work/'broker.done').write_text('done')
+            if real:
+                real[2].set()
             if any(process.wait(10) != 0 for process in broker_processes):
                 raise RuntimeError('the regional broker fixture did not shut down cleanly')
             print('Chromium opened the Debian desktop and its personal encrypted SMB share, then disconnected after revocation in', ms, 'ms')
