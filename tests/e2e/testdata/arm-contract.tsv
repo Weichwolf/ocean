@@ -220,3 +220,6 @@ WORKPLACE-33	desktop-assignment-get	2.93.0	none	2026-11-01	rest --method get --u
 WORKPLACE-33	desktop-assignment-delete	2.93.0	none	2026-11-01	rest --method delete --url {arm}{desktopId}?api-version=2026-11-01
 WORKPLACE-33	desktop-vm-stop	2.93.0	none	2024-03-01	rest --method post --url {arm}{vmId}/powerOff?api-version=2024-03-01
 WORKPLACE-33	desktop-vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {arm}{vmId}?api-version=2024-03-01
+WORKPLACE-43	hosted-account-put	2.93.0	none	2026-09-01	rest --method put --url {arm}{accountId}?api-version=2026-09-01 --body @{hosted_or_offsite_account_request} -o json
+WORKPLACE-43	hosted-share-get	2.93.0	none	2024-01-01	rest --method get --url {arm}{shareId}?api-version=2024-01-01 -o json
+WORKPLACE-43	hosted-share-denied	2.93.0	none	2024-01-01	rest --method put --url {arm}{shareId}?api-version=2024-01-01 --body @{share_request} -o json

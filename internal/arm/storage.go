@@ -259,6 +259,8 @@ func storageError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "StorageResourceConfigurationChanged", ErrStorageChanged.Error())
 	case errors.Is(err, ErrStorageAccess):
 		writeError(w, http.StatusForbidden, "StorageAuthorizationFailed", ErrStorageAccess.Error())
+	case errors.Is(err, ErrContainerCapacity):
+		writeError(w, http.StatusServiceUnavailable, "InsufficientCapacity", "No eligible storage worker is available.")
 	default:
 		inventoryError(w, err)
 	}

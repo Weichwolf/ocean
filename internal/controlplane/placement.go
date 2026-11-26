@@ -118,7 +118,8 @@ func (r *Region) HostAssignments(ctx context.Context, id string, certificate []b
 		return enrollment.AssignmentPage{}, enrollment.ErrHostDenied
 	}
 	var host enrollment.Host
-	if json.Unmarshal(hosts[0].Value, &host) != nil || host.HostID != id || host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) {
+	if json.Unmarshal(hosts[0].Value, &host) != nil || host.HostID != id || host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) ||
+		!r.hosted.allowsPool(host.Pool) {
 		return enrollment.AssignmentPage{}, enrollment.ErrHostDenied
 	}
 	items := snapshot.Responses[2].GetResponseRange().Kvs
@@ -133,6 +134,14 @@ func (r *Region) HostAssignments(ctx context.Context, id string, certificate []b
 		if !validScope(scope) || !identifier.MatchString(assignment.ID) || !identifier.MatchString(assignment.Generation) ||
 			string(item.Key) != r.hostReservationKey(scope, id, assignment.ID) {
 			return enrollment.AssignmentPage{}, errors.New("host assignment does not match its key")
+		}
+		if r.hosted != nil {
+			if _, err := r.hostedPoolGuard(ctx, scope, host.Pool, snapshot.Header.Revision); err != nil {
+				if errors.Is(err, ErrPlacementPolicy) {
+					continue
+				}
+				return enrollment.AssignmentPage{}, err
+			}
 		}
 		if directory := assignment.Directory; directory != nil {
 			index, ips := directory.ControllerIndex, directory.ControllerIPv4
@@ -164,7 +173,7 @@ func validScope(scope arm.SubscriptionScope) bool {
 // SetPlacementPolicy is called by the trusted provisioning plane. Workload
 // requests inherit this policy from their subscription.
 func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionScope, policy PlacementPolicy) error {
-	if !validScope(scope) || len(policy.Pools) == 0 || !validCapacity(policy.Quota) {
+	if !validScope(scope) || len(policy.Pools) == 0 || !validCapacity(policy.Quota) || !r.hosted.allowsPlacement(policy.Pools) {
 		return ErrPlacementPolicy
 	}
 	for _, name := range policy.Pools {
@@ -201,19 +210,19 @@ func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionS
 // accounting. A lost response can be retried with the same placement request.
 type placementMutation func(context.Context, Reservation) ([]clientv3.Cmp, []clientv3.Op, error)
 
-func (r *Region) placementPolicy(ctx context.Context, key string, managed bool) (PlacementPolicy, int64, error) {
-	value, err := r.client.Get(ctx, key)
+func (r *Region) placementPolicy(ctx context.Context, key string, managed bool, options ...clientv3.OpOption) (PlacementPolicy, int64, error) {
+	value, err := r.client.Get(ctx, key, options...)
 	if err != nil {
 		return PlacementPolicy{}, 0, err
 	}
 	if len(value.Kvs) == 1 {
 		var policy PlacementPolicy
-		if json.Unmarshal(value.Kvs[0].Value, &policy) != nil {
+		if json.Unmarshal(value.Kvs[0].Value, &policy) != nil || !r.hosted.allowsPlacement(policy.Pools) {
 			return PlacementPolicy{}, 0, ErrPlacementPolicy
 		}
 		return policy, value.Kvs[0].ModRevision, nil
 	}
-	if managed && r.workloads != nil {
+	if managed && r.workloads != nil && r.hosted.allowsPlacement(r.workloads.defaultPlacement.Pools) {
 		return r.workloads.defaultPlacement, 0, nil
 	}
 	return PlacementPolicy{}, 0, ErrPlacementPolicy
@@ -362,7 +371,7 @@ func (r *Region) chooseHosts(ctx context.Context, scope arm.SubscriptionScope, w
 		if json.Unmarshal(item.Value, &host) != nil || !identifier.MatchString(host.HostID) || string(item.Key) != r.hostKey("live", host.HostID) || item.Lease == 0 {
 			return nil, errors.New("invalid available host record")
 		}
-		if slices.Contains(excluded, host.HostID) || host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) ||
+		if slices.Contains(excluded, host.HostID) || host.Cell != wanted.Cell || !slices.Contains(host.Roles, wanted.Role) || !slices.Contains(pools, host.Pool) || !r.hosted.allowsPool(host.Pool) ||
 			wanted.NeedsContainerNetwork && !host.ContainerNetwork || wanted.NeedsDirectoryRuntime && !host.DirectoryRuntime ||
 			wanted.NeedsVMRuntime && !host.VMRuntime ||
 			wanted.NeedsStorage && (r.storage == nil || !slices.Contains(r.storage.workers, host.HostID)) {

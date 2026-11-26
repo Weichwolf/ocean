@@ -15,12 +15,13 @@ import (
 )
 
 type smbWorkerState struct {
-	binding       smbBinding
-	owner         smbOwner
-	ownerRevision int64
-	read          *clientv3.TxnResponse
-	directory     smb.DirectoryWriter
-	placementRev  int64
+	binding         smbBinding
+	owner           smbOwner
+	ownerRevision   int64
+	read            *clientv3.TxnResponse
+	directory       smb.DirectoryWriter
+	placementRev    int64
+	placementGuards []clientv3.Cmp
 }
 
 func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate []byte) (smbWorkerState, error) {
@@ -47,7 +48,14 @@ func (r *Region) smbWorkerSnapshot(ctx context.Context, host string, certificate
 	if owner.HostID != host || !smbDirectoryMatches(binding, read.Responses[3].GetResponseRange().Kvs) {
 		return smbWorkerState{}, enrollment.ErrHostDenied
 	}
-	worker := smbWorkerState{binding: binding, owner: owner, ownerRevision: revision, read: read}
+	guards, err := r.hostedHostGuards(ctx, binding.scope(), host, read.Header.Revision)
+	if errors.Is(err, ErrPlacementPolicy) {
+		return smbWorkerState{}, enrollment.ErrHostDenied
+	}
+	if err != nil {
+		return smbWorkerState{}, err
+	}
+	worker := smbWorkerState{binding: binding, owner: owner, ownerRevision: revision, read: read, placementGuards: guards}
 	record := read.Responses[3].GetResponseRange().Kvs[0]
 	placements := read.Responses[5].GetResponseRange().Kvs
 	var native identity.ManagedDirectory
@@ -124,14 +132,14 @@ func (r *Region) CompleteSMBPlan(ctx context.Context, host string, certificate [
 		return enrollment.ErrSMBPlanChanged
 	}
 	memberKey := r.smbMemberKey(binding)
-	checks := []clientv3.Cmp{
+	checks := append(worker.placementGuards,
 		clientv3.Compare(clientv3.ModRevision(memberKey), "=", receipt.Revision),
 		clientv3.Compare(clientv3.ModRevision(r.smbOwnerKey(binding)), "=", worker.ownerRevision),
 		clientv3.Compare(clientv3.ModRevision(r.hostKey("registered", host)), "=", read.Responses[0].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.hostKey("live", host)), "=", read.Responses[1].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.managedDirectoryKey(binding.TenantID)), "=", read.Responses[3].GetResponseRange().Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(r.managedDirectoryPlacementKey(binding.TenantID)), "=", worker.placementRev),
-	}
+	)
 	now := time.Now().UTC()
 	scope := binding.scope()
 	remaining := make([]smbShareRecord, 0, len(records))

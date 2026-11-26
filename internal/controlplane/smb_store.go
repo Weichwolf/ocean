@@ -219,18 +219,26 @@ func (r *Region) PutSMBShare(ctx context.Context, scope arm.SubscriptionScope, a
 			!slices.Contains(available.Roles, "compute") {
 			return empty, nil, false, arm.ErrSMBUnavailable
 		}
+		target, err := r.hostedHostGuards(ctx, scope, owner.HostID, read.Header.Revision)
+		if errors.Is(err, ErrPlacementPolicy) || errors.Is(err, enrollment.ErrHostDenied) {
+			return empty, nil, false, arm.ErrSMBUnavailable
+		}
+		if err != nil {
+			return empty, nil, false, err
+		}
 		op := arm.Operation{ID: operationID(), Kind: putSMBShare, Group: group.Name, Actor: actor, Status: arm.OperationInProgress, StartedAt: now}
 		record.Initialized = record.Initialized || record.Ready
 		record.Policy, record.Operation, record.Ready = policy, op.ID, false
 		records[index] = record
 		view := smbProjection(binding, record, r.name, arm.OperationInProgress, now)
 		opKey := r.operationKey(scope, op.ID)
-		applied, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(memberKey), "=", revision),
+		checks := append(target, clientv3.Compare(clientv3.ModRevision(memberKey), "=", revision),
 			clientv3.Compare(clientv3.ModRevision(ownerKey), "=", ownerRevision),
 			clientv3.Compare(clientv3.ModRevision(groupKey), "=", groups[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(directoryKey), "=", directory[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(liveKey), "=", live[0].ModRevision),
-			clientv3.Compare(clientv3.Version(opKey), "=", 0)).
+			clientv3.Compare(clientv3.Version(opKey), "=", 0))
+		applied, err := r.client.Txn(ctx).If(checks...).
 			Then(putJSON(memberKey, records), putJSON(opKey, op), putJSON(inventoryKey, view),
 				clientv3.OpPut(marker, record.Volume.ID), r.smbAudit(binding, record, op, "write", now)).Commit()
 		if err != nil || applied.Succeeded {

@@ -36,6 +36,12 @@ func (r *Region) HostShareJobs(ctx context.Context, host string, certificate []b
 		if err != nil {
 			return nil, err
 		}
+		if _, err := r.hostedHostGuards(ctx, record.Scope, host, snapshot.Header.Revision); err != nil {
+			if errors.Is(err, ErrPlacementPolicy) {
+				continue
+			}
+			return nil, err
+		}
 		job := storage.Job{ID: id, Volume: record.Volume, Delete: record.Deleting}
 		if !record.Deleting {
 			job.VolumeKey, err = r.shareEncryptionKey(record)
@@ -97,6 +103,13 @@ func (r *Region) CompleteShareJob(ctx context.Context, host string, certificate 
 		if err != nil {
 			return err
 		}
+		guards, err := r.hostedHostGuards(ctx, record.Scope, host, snapshot.Header.Revision)
+		if errors.Is(err, ErrPlacementPolicy) {
+			return enrollment.ErrHostDenied
+		}
+		if err != nil {
+			return err
+		}
 		op, err := r.operationAt(ctx, record.Scope, id, snapshot.Header.Revision)
 		if err != nil || op.Status != arm.OperationInProgress {
 			return err
@@ -111,9 +124,9 @@ func (r *Region) CompleteShareJob(ctx context.Context, host string, certificate 
 		}
 		now := time.Now().UTC()
 		op.Status, op.FinishedAt = arm.OperationSucceeded, &now
-		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(hostKey), "=", snapshot.Responses[0].GetResponseRange().Kvs[0].ModRevision),
+		checks := append(guards, clientv3.Compare(clientv3.ModRevision(hostKey), "=", snapshot.Responses[0].GetResponseRange().Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Version(liveKey), ">", 0), clientv3.Compare(clientv3.ModRevision(taskKey), "=", tasks[0].ModRevision),
-			clientv3.Compare(clientv3.ModRevision(key), "=", revision), clientv3.Compare(clientv3.ModRevision(publicKey), "=", public.Kvs[0].ModRevision)}
+			clientv3.Compare(clientv3.ModRevision(key), "=", revision), clientv3.Compare(clientv3.ModRevision(publicKey), "=", public.Kvs[0].ModRevision))
 		writes := []clientv3.Op{clientv3.OpDelete(taskKey), putJSON(r.operationKey(record.Scope, id), op), r.storageAudit(record, *op, "reconcile", now)}
 		if record.Deleting {
 			checks = append(checks, clientv3.Compare(clientv3.Version(r.writerKey(record.Scope, record.Volume.ID)), "=", 0))

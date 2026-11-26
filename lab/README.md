@@ -2307,7 +2307,42 @@ worker buffer across a process restart and then compares reported gaps with
 worker loss and resumed usage series. The acceptance evidence records the
 measured delays and the profile's numeric limits.
 
-### Hosted workplace audit retention
+### Hosted workplace placement and audit retention
+
+Set `region.hostedWorkplace` when creating an EU-hosted region. Use the
+physical country of the management services for `country` and the verified
+physical country of each approved pool in `operatorPools`. Set the same
+values on every replica. Ocean records this policy in the regional metadata
+and rejects mismatching replicas. Moving an existing region into the
+profile requires a separately verified migration to new regional metadata.
+The profile accepts EU member countries. [EU member states](https://eur-lex.europa.eu/EN/legal-content/glossary/member-states.html)
+
+The following is the `hostedWorkplace` value within the region configuration.
+
+```json
+{
+  "country": "DE",
+  "operatorPools": {
+    "primary": "DE",
+    "partner": "NL"
+  }
+}
+```
+
+Use approved pools in the default workload policy and the host enrollment
+inventory. Include the configured storage workers and both SMB members in
+that inventory with the compute role. The scoped placement policy can further
+restrict a subscription to a subset of those pools. Ocean checks the pool
+on new workload reservations and on VM and directory replacement placement.
+Azure Files jobs and their volume keys require an eligible registered worker.
+An SMB standby can become the writer only if its certified registration and
+the subscription policy still permit that placement. A pool change affects
+subsequent assignments and grants. Account for running guests and mounted
+volumes before changing a subscription's pool policy.
+
+Verify the physical sites, network ACLs, Ceph clients, service endpoints,
+repositories and administrative access paths as part of the hosted deployment
+review. [Hosted workplace deployment review](HOSTED-WORKPLACE.md)
 
 Set `region.auditRetentionSeconds` on every replica to the period approved
 for regional activity records. For example, `2592000` specifies 30 days.
@@ -2326,10 +2361,10 @@ Apply the deployment retention schedule separately to etcd MVCC history,
 snapshots, operator logs and backups. The audit setting applies to current
 regional activity records. Telemetry has its own `retentionSeconds` setting.
 
-Run `WORKPLACE-42` against a disposable loopback etcd instance and the pinned
-Azure CLI. The case uses synthetic tenant and principal identifiers and
-verifies both the activity API and the present keys in etcd. The acceptance
-harness writes the local Markdown and TSV outcome together with the probe log.
+Run `WORKPLACE-42` and `WORKPLACE-43` against a disposable loopback etcd
+instance with the pinned Azure CLI. The probes use synthetic tenant and host
+identities and test the ARM responses, etcd keys, volume key assignment and
+SMB writer generation. The harness writes Markdown and TSV reports and logs.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \

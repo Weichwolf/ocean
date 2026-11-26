@@ -14,6 +14,9 @@ import (
 func (r *Region) hostKey(kind, id string) string { return r.root + "/hosts/" + kind + "/" + id }
 
 func (r *Region) seedHostInventory(ctx context.Context, inventory []enrollment.Approval) error {
+	if err := r.validateHostedInventory(inventory); err != nil {
+		return err
+	}
 	for _, approved := range inventory {
 		key := r.hostKey("inventory", approved.HostID)
 		mac := r.hostKey("mac", approved.MAC)
@@ -59,6 +62,9 @@ func (r *Region) Enrollment(ctx context.Context, id string) (*enrollment.Approva
 	if err := json.Unmarshal(inventory[0].Value, &approved); err != nil || !approved.Valid() || approved.HostID != id {
 		return nil, nil, 0, errors.New("invalid regional host approval")
 	}
+	if !r.hosted.allowsPool(approved.Pool) {
+		return nil, nil, 0, enrollment.ErrHostDenied
+	}
 	registered := result.Responses[1].GetResponseRange().Kvs
 	if len(registered) == 0 {
 		return &approved, nil, inventory[0].ModRevision, nil
@@ -71,6 +77,9 @@ func (r *Region) Enrollment(ctx context.Context, id string) (*enrollment.Approva
 }
 
 func (r *Region) RedeemEnrollment(ctx context.Context, host enrollment.Host, revision int64) (bool, error) {
+	if !r.hosted.allowsPool(host.Pool) {
+		return false, enrollment.ErrHostDenied
+	}
 	identity := r.hostKey("registered", host.HostID)
 	redeemed := r.hostKey("redeemed", host.HostID)
 	data, _ := json.Marshal(host)

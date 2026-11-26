@@ -22,7 +22,8 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-func TestHostedAuditRetention(t *testing.T) {
+func hostedLabEtcd(t *testing.T) (*clientv3.Client, string) {
+	t.Helper()
 	endpoint, cliPath := os.Getenv("OCEAN_E2E_HOSTED_ETCD"), os.Getenv("OCEAN_E2E_HOSTED_AZ")
 	if endpoint == "" || cliPath == "" {
 		t.Skip("requires isolated lab etcd and stock Azure CLI")
@@ -36,20 +37,33 @@ func TestHostedAuditRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := "/test/hosted-audit/" + operationID()
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return client, cliPath
+}
+
+func hostedLabRoot(t *testing.T, client *clientv3.Client, name string) string {
+	t.Helper()
+	root := "/test/" + name + "/" + operationID()
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
 		if _, err := client.Delete(cleanup, root+"/", clientv3.WithPrefix()); err != nil {
 			t.Error(err)
 		}
-		if err := client.Close(); err != nil {
-			t.Error(err)
-		}
 	})
+	return root
+}
+
+func TestHostedAuditRetention(t *testing.T) {
+	client, cliPath := hostedLabEtcd(t)
+	root := hostedLabRoot(t, client, "hosted-audit")
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	keys, values := initialRecords(root, "hosted-lab", "cell-1")
+	keys, values := initialRecords(root, "hosted-lab", "cell-1", nil)
 	r := &Region{client: client, name: "hosted-lab", root: root, cell: "cell-1", keys: keys, values: values, auditRetention: time.Minute}
 	if err := r.bootstrap(ctx); err != nil {
 		t.Fatal(err)

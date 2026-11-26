@@ -17,5 +17,9 @@ func hostedWorkplaceSteps() []harness.Step {
 		step.BlockedReason = "Provide the disposable loopback etcd endpoint in OCEAN_E2E_HOSTED_ETCD."
 	}
 	step = requireFile(step, os.Getenv("OCEAN_E2E_HOSTED_AZ"), "the pinned Azure CLI executable in OCEAN_E2E_HOSTED_AZ")
-	return []harness.Step{step}
+	placement := step
+	placement.Name = "hosted-placement-policy"
+	placement.Cases = []string{"WORKPLACE-43"}
+	placement.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedPlacement$", "./internal/controlplane"}
+	return []harness.Step{step, placement}
 }

@@ -30,7 +30,7 @@ func (r *Region) PublishHostCapacity(ctx context.Context, id string, certificate
 			host.HostID != id || policy.HostID != id || host.Cell != policy.Cell || host.Pool != policy.Pool {
 			return errors.New("invalid host availability policy")
 		}
-		if host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) {
+		if host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) || !r.hosted.allowsPool(host.Pool) {
 			return enrollment.ErrHostDenied
 		}
 		guards := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(registered), "=", hosts[0].ModRevision),

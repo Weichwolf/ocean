@@ -27,7 +27,7 @@ func TestApplicationGatewayReservations(t *testing.T) {
 	r := openLabRegion(t)
 	name := "appgw-test-" + operationID()
 	r.root = "/ocean/v1/regions/" + name
-	r.keys, r.values = initialRecords(r.root, name, "cell-1")
+	r.keys, r.values = initialRecords(r.root, name, "cell-1", nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()

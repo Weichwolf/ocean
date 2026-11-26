@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/storage"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -42,18 +43,25 @@ func (r *Region) storageJobKey(host, id string) string {
 	return r.hostKey("share-jobs", host) + "/" + id
 }
 
-func (r *Region) availableStorageWorker(ctx context.Context) (string, clientv3.Cmp, error) {
+func (r *Region) availableStorageWorker(ctx context.Context, scope arm.SubscriptionScope) (string, []clientv3.Cmp, error) {
 	for _, host := range r.storage.workers {
 		key := r.hostKey("live", host)
 		live, err := r.client.Get(ctx, key)
 		if err != nil {
-			return "", clientv3.Cmp{}, err
+			return "", nil, err
 		}
 		if len(live.Kvs) == 1 && live.Kvs[0].Lease != 0 {
-			return host, clientv3.Compare(clientv3.ModRevision(key), "=", live.Kvs[0].ModRevision), nil
+			guards, err := r.hostedHostGuards(ctx, scope, host, live.Header.Revision)
+			if errors.Is(err, ErrPlacementPolicy) || errors.Is(err, enrollment.ErrHostDenied) {
+				continue
+			}
+			if err != nil {
+				return "", nil, err
+			}
+			return host, append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", live.Kvs[0].ModRevision)), nil
 		}
 	}
-	return "", clientv3.Cmp{}, arm.ErrContainerCapacity
+	return "", nil, arm.ErrContainerCapacity
 }
 
 func ownedShare(address, account arm.ResourceAddress) bool {
@@ -107,7 +115,7 @@ func (r *Region) PutFileShare(ctx context.Context, scope arm.SubscriptionScope, 
 		if len(public) != 0 {
 			return arm.InventoryResource{}, nil, false, errors.New("storage share already has inconsistent inventory")
 		}
-		host, live, err := r.availableStorageWorker(ctx)
+		host, guards, err := r.availableStorageWorker(ctx, scope)
 		if err != nil {
 			return arm.InventoryResource{}, nil, false, err
 		}
@@ -125,9 +133,10 @@ func (r *Region) PutFileShare(ctx context.Context, scope arm.SubscriptionScope, 
 			CreatedAt: now, ChangedAt: now, ProvisioningState: arm.OperationInProgress, References: []arm.ResourceAddress{account}}
 		view.Properties = shareProjection(record, arm.OperationInProgress)
 		opKey, taskKey := r.operationKey(scope, op.ID), r.storageJobKey(host, op.ID)
-		result, err := r.client.Txn(ctx).If(live, clientv3.Compare(clientv3.ModRevision(accountKey), "=", accounts[0].ModRevision),
+		guards = append(guards, clientv3.Compare(clientv3.ModRevision(accountKey), "=", accounts[0].ModRevision),
 			clientv3.Compare(clientv3.Version(key), "=", 0), clientv3.Compare(clientv3.Version(publicKey), "=", 0),
-			clientv3.Compare(clientv3.Version(opKey), "=", 0), clientv3.Compare(clientv3.Version(taskKey), "=", 0)).
+			clientv3.Compare(clientv3.Version(opKey), "=", 0), clientv3.Compare(clientv3.Version(taskKey), "=", 0))
+		result, err := r.client.Txn(ctx).If(guards...).
 			Then(putJSON(key, record), putJSON(publicKey, view), putJSON(opKey, op), clientv3.OpPut(taskKey, key), r.storageAudit(record, op, "write", now)).Commit()
 		if err != nil || result.Succeeded {
 			return view, &op, result != nil && result.Succeeded, err
@@ -174,7 +183,7 @@ func (r *Region) DeleteFileShare(ctx context.Context, scope arm.SubscriptionScop
 		if writers.Count != 0 {
 			return nil, arm.ErrStorageBusy
 		}
-		host, live, err := r.availableStorageWorker(ctx)
+		host, guards, err := r.availableStorageWorker(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -182,9 +191,10 @@ func (r *Region) DeleteFileShare(ctx context.Context, scope arm.SubscriptionScop
 		op := arm.Operation{ID: operationID(), Kind: deleteFileShare, Group: record.Address.Group, Actor: actor, StartedAt: now, Status: arm.OperationInProgress}
 		record.Operation, record.Host, record.Deleting = op.ID, host, true
 		opKey, taskKey := r.operationKey(scope, op.ID), r.storageJobKey(host, op.ID)
-		result, err := r.client.Txn(ctx).If(live, clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision),
+		guards = append(guards, clientv3.Compare(clientv3.ModRevision(key), "=", item.ModRevision),
 			clientv3.Compare(clientv3.Version(writerKey), "=", 0), clientv3.Compare(clientv3.Version(opKey), "=", 0),
-			clientv3.Compare(clientv3.Version(taskKey), "=", 0)).Then(putJSON(key, record), putJSON(opKey, op),
+			clientv3.Compare(clientv3.Version(taskKey), "=", 0))
+		result, err := r.client.Txn(ctx).If(guards...).Then(putJSON(key, record), putJSON(opKey, op),
 			clientv3.OpPut(taskKey, key), r.storageAudit(record, op, "delete", now)).Commit()
 		if err != nil || result.Succeeded {
 			return &op, err

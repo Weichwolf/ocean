@@ -24,7 +24,7 @@ func (r *Region) authorizeHostRole(id string, certificate []byte, role string, s
 		host.HostID != id || live.HostID != id || host.Cell != live.Cell || host.Pool != live.Pool {
 		return errors.New("invalid host registration or availability")
 	}
-	if host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) ||
+	if host.RevokedAt != nil || !bytes.Equal(host.Certificate, certificate) || !r.hosted.allowsPool(host.Pool) ||
 		!slices.Contains(host.Roles, role) || !slices.Contains(live.Roles, role) {
 		return enrollment.ErrHostDenied
 	}

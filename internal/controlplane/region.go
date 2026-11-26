@@ -46,6 +46,7 @@ type regionConfig struct {
 	VirtualMachines     *vmConfig                 `json:"virtualMachines,omitempty"`
 	DesktopLaunch       *desktopLaunchConfig      `json:"desktopLaunch,omitempty"`
 	Telemetry           *telemetryConfig          `json:"telemetry"`
+	HostedWorkplace     *hostedRegionPolicy       `json:"hostedWorkplace,omitempty"`
 	AuditRetention      int64                     `json:"auditRetentionSeconds,omitempty"`
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
@@ -116,6 +117,10 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		if cfg.HostEnrollment != nil {
 			authority, inventory, err := enrollment.Open(*cfg.HostEnrollment, region)
 			if err != nil {
+				_ = region.close()
+				return config.Server{}, service.Hooks{}, err
+			}
+			if err := region.validateHostedInventory(inventory); err != nil {
 				_ = region.close()
 				return config.Server{}, service.Hooks{}, err
 			}
@@ -227,6 +232,7 @@ type Region struct {
 	vms               *vmControl
 	desktopLaunch     *desktopLaunchControl
 	telemetry         *telemetryControl
+	hosted            *hostedRegionPolicy
 	auditRetention    time.Duration
 	cell              string
 }
@@ -234,6 +240,12 @@ type Region struct {
 func openRegion(cfg regionConfig) (*Region, error) {
 	if !identifier.MatchString(cfg.Name) || !identifier.MatchString(cfg.InitialCell) {
 		return nil, errors.New("region name and initialCell must be lowercase identifiers")
+	}
+	if err := cfg.HostedWorkplace.validate(); err != nil {
+		return nil, err
+	}
+	if cfg.HostedWorkplace != nil && (cfg.Workloads == nil || !cfg.HostedWorkplace.allowsPlacement(cfg.Workloads.DefaultPlacement.Pools)) {
+		return nil, errors.New("the hosted region requires default placement in its approved operator pools")
 	}
 	auditRetention, err := configuredAuditRetention(cfg.AuditRetention)
 	if err != nil {
@@ -283,7 +295,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		return nil, err
 	}
 	root := "/ocean/v1/regions/" + cfg.Name
-	keys, values := initialRecords(root, cfg.Name, cfg.InitialCell)
+	keys, values := initialRecords(root, cfg.Name, cfg.InitialCell, cfg.HostedWorkplace)
 	client, err := clientv3.New(connection)
 	if err != nil {
 		return nil, fmt.Errorf("open regional etcd client: %w", err)
@@ -295,18 +307,19 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	}
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
-		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers, auditRetention: auditRetention}
+		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers, auditRetention: auditRetention, hosted: cfg.HostedWorkplace}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
 	return region, nil
 }
 
-func initialRecords(root, name, cell string) ([2]string, [2]string) {
+func initialRecords(root, name, cell string, hosted *hostedRegionPolicy) ([2]string, [2]string) {
 	region := struct {
-		Name        string `json:"name"`
-		InitialCell string `json:"initialCell"`
-	}{Name: name, InitialCell: cell}
+		Name            string              `json:"name"`
+		InitialCell     string              `json:"initialCell"`
+		HostedWorkplace *hostedRegionPolicy `json:"hostedWorkplace,omitempty"`
+	}{Name: name, InitialCell: cell, HostedWorkplace: hosted}
 	cellRecord := struct {
 		Name   string `json:"name"`
 		Region string `json:"region"`

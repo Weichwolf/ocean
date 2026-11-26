@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/smb"
 	"github.com/Weichwolf/ocean/internal/storage"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -85,11 +86,18 @@ func (r *Region) ApplySMBFence(ctx context.Context, signed storage.SignedFence) 
 		if owner.HostID == replacement {
 			replacement = binding.HostID
 		}
+		target, err := r.hostedHostGuards(ctx, scope, replacement, read.Header.Revision)
+		if errors.Is(err, ErrPlacementPolicy) || errors.Is(err, enrollment.ErrHostDenied) {
+			return arm.ErrStorageAccess
+		}
+		if err != nil {
+			return err
+		}
 		next := smbOwner{HostID: replacement, Generation: operationID()}
 		now := time.Now().UTC()
-		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(ownerKey), "=", ownerRevision),
+		checks := append(target, clientv3.Compare(clientv3.ModRevision(ownerKey), "=", ownerRevision),
 			clientv3.Compare(clientv3.ModRevision(memberKey), "=", revision),
-			clientv3.Compare(clientv3.Version(liveKey), "=", 0), clientv3.Compare(clientv3.Version(fenceKey), "=", 0)}
+			clientv3.Compare(clientv3.Version(liveKey), "=", 0), clientv3.Compare(clientv3.Version(fenceKey), "=", 0))
 		writes := []clientv3.Op{clientv3.OpPut(fenceKey, string(signed.Attestation)), putJSON(ownerKey, next)}
 		for index, record := range records {
 			if !record.Ready {

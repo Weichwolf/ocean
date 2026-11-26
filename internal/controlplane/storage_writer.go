@@ -156,6 +156,12 @@ func (r *Region) HostVolumeMounts(ctx context.Context, host string, certificate 
 		mount := storage.MountTask{VolumeID: record.Volume.ID, TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID,
 			PlacementID: grant.PlacementID, Generation: grant.Generation, Revision: record.Operation, Remove: record.Desired == workload.Removed}
 		if !mount.Remove {
+			if _, err := r.hostedHostGuards(ctx, scope, host, snapshot.Header.Revision); err != nil {
+				if errors.Is(err, ErrPlacementPolicy) {
+					continue
+				}
+				return nil, err
+			}
 			read, err := r.client.Txn(ctx).Then(clientv3.OpGet(r.writerKey(scope, record.Volume.ID), clientv3.WithRev(snapshot.Header.Revision)),
 				clientv3.OpGet(r.shareKey(scope, record.Volume.Share), clientv3.WithRev(snapshot.Header.Revision))).Commit()
 			if err != nil {
