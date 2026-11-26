@@ -22,6 +22,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/functions"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/nodeagent"
 	"github.com/Weichwolf/ocean/internal/storage"
 	"github.com/Weichwolf/ocean/internal/workload"
@@ -42,6 +43,25 @@ func TestHostedContainerOffboarding(t *testing.T) {
 	if err := nodeagent.CheckRuntime(ctx); err != nil {
 		t.Fatal(err)
 	}
+	r, cfg := openHostedOffboardingLab(t, ctx, archive, "hosted-container")
+	tenant, neighbor := seedHostedRestoreTenant(t, ctx, r), seedHostedRestoreTenant(t, ctx, r)
+	if tenant.TenantID > neighbor.TenantID {
+		tenant, neighbor = neighbor, tenant
+	}
+	operatorRealm, operatorClient, operator := operationID(), operationID(), operationID()
+	issuer, sign := hostedOperatorIssuer(t, operatorRealm, tenant.TenantID, neighbor.TenantID)
+	origin, _, az, identityFor := startHostedRestoreAPI(t, ctx, cfg, cli, operatorRealm, operatorClient, issuer.URL, issuer.Certificate())
+	agentConfig, hostCert := identityFor(hostedSuspensionHost)
+	host := registerHostedOffboardingWorker(t, ctx, r, hostCert)
+
+	verifyHostedContainerOffboarding(t, ctx, r, image, tenant, neighbor, agentConfig, host, func() {
+		path := "/ocean/tenants/" + tenant.TenantID + "/offboarding?api-version=2026-11-01"
+		az("put", path, fmt.Sprintf(`{"subscriptionId":%q}`, tenant.SubscriptionID), sign(operatorRealm, operatorClient, operator, origin), "")
+	})
+}
+
+func openHostedOffboardingLab(t *testing.T, ctx context.Context, archive, name string) (*Region, regionConfig) {
+	t.Helper()
 	dir := t.TempDir()
 	base, cert, certKey, etcd, _ := prepareSMBRecoveryEtcd(t, ctx, archive, dir)
 	regional, _, _ := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, filepath.Join(dir, "region"), nil)
@@ -53,7 +73,7 @@ func TestHostedContainerOffboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	clear(key)
-	cfg := regionConfig{Name: "hosted-container", InitialCell: "cell-1", Etcd: regional, DeletionLedgerEtcd: &ledger,
+	cfg := regionConfig{Name: name, InitialCell: "cell-1", Etcd: regional, DeletionLedgerEtcd: &ledger,
 		HostedWorkplace: &hostedRegionPolicy{Country: "DE", OperatorPools: map[string]string{"primary": "DE"},
 			DeletionLedger: &hostedLedgerPolicy{OperatorPool: "primary", ClusterID: fmt.Sprintf("%x", id), Endpoints: ledger.Endpoints}},
 		Workloads: &workloadConfig{SecretsKeyFile: wrapping, DefaultPlacement: PlacementPolicy{Pools: []string{"primary"},
@@ -63,26 +83,28 @@ func TestHostedContainerOffboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = r.close() }()
+	t.Cleanup(func() { _ = r.close() })
 	if err := r.bootstrap(ctx); err != nil {
 		t.Fatal(err)
 	}
-	tenant, neighbor := seedHostedRestoreTenant(t, ctx, r), seedHostedRestoreTenant(t, ctx, r)
-	if tenant.TenantID > neighbor.TenantID {
-		tenant, neighbor = neighbor, tenant
-	}
-	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
-	neighborScope := arm.SubscriptionScope{TenantID: neighbor.TenantID, SubscriptionID: neighbor.SubscriptionID}
-	operatorRealm, operatorClient, operator := operationID(), operationID(), operationID()
-	issuer, sign := hostedOperatorIssuer(t, operatorRealm, tenant.TenantID, neighbor.TenantID)
-	origin, _, az, identityFor := startHostedRestoreAPI(t, ctx, cfg, cli, operatorRealm, operatorClient, issuer.URL, issuer.Certificate())
-	agentConfig, hostCert := identityFor(hostedSuspensionHost)
+	return r, cfg
+}
+
+func registerHostedOffboardingWorker(t *testing.T, ctx context.Context, r *Region, hostCert []byte) enrollment.Host {
+	t.Helper()
 	host := seedHostedPlacementWorker(t, ctx, r, hostedSuspensionHost, "primary")
 	host.Certificate = hostCert
 	if _, err := r.client.Do(ctx, putJSON(r.hostKey("registered", host.HostID), host)); err != nil {
 		t.Fatal(err)
 	}
+	return host
+}
 
+func verifyHostedContainerOffboarding(t *testing.T, ctx context.Context, r *Region, image string, tenant, neighbor identity.TenantReservation,
+	agentConfig string, host enrollment.Host, suspend func()) {
+	t.Helper()
+	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
+	neighborScope := arm.SubscriptionScope{TenantID: neighbor.TenantID, SubscriptionID: neighbor.SubscriptionID}
 	var names []string
 	var records []containerRecord
 	for i := range 17 {
@@ -135,9 +157,8 @@ func TestHostedContainerOffboarding(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	path := "/ocean/tenants/" + tenant.TenantID + "/offboarding?api-version=2026-11-01"
 	started := time.Now().UTC()
-	az("put", path, fmt.Sprintf(`{"subscriptionId":%q}`, tenant.SubscriptionID), sign(operatorRealm, operatorClient, operator, origin), "")
+	suspend()
 	mounts, err = r.HostVolumeMounts(ctx, host.HostID, host.Certificate)
 	if err != nil || len(mounts) != 1 || mounts[0].VolumeID != volume || !mounts[0].Suspend || !mounts[0].Remove || len(mounts[0].VolumeKey) != 0 {
 		t.Fatalf("suspension did not withdraw the volume mount without a key: %v", err)
@@ -159,6 +180,21 @@ func TestHostedContainerOffboarding(t *testing.T) {
 	stale.State = workload.Running
 	if err := r.ReportContainerTask(ctx, host.HostID, host.Certificate, stale); !errors.Is(err, enrollment.ErrWorkloadChanged) {
 		t.Fatalf("a suspended tenant accepted a late running report: %v", err)
+	}
+	if err := r.ReportContainerTask(ctx, host.HostID, host.Certificate, report); !errors.Is(err, enrollment.ErrWorkloadChanged) {
+		t.Fatalf("suspension was acknowledged without a storage receipt: %v", err)
+	}
+	// This case verifies the receipt contract with a metadata-only volume. The
+	// mounted-volume probe supplies its receipt from the actual storage worker.
+	unmount := storage.UnmountReceipt{VolumeID: volume, TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID,
+		PlacementID: report.ID, Generation: report.Generation, Revision: report.Revision, Suspend: true}
+	wrong := unmount
+	wrong.Generation = operationID()
+	if err := r.ReportVolumeUnmount(ctx, host.HostID, host.Certificate, wrong); !errors.Is(err, enrollment.ErrWorkloadChanged) {
+		t.Fatalf("suspension accepted a storage receipt for another generation: %v", err)
+	}
+	if err := r.ReportVolumeUnmount(ctx, host.HostID, host.Certificate, unmount); err != nil {
+		t.Fatal(err)
 	}
 	count := func() int {
 		rows, err := r.ListActivity(ctx, scope, "", arm.ActivityFilter{Start: started, End: time.Now().UTC()}, 64)

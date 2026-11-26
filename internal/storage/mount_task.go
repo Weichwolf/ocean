@@ -13,7 +13,8 @@ type MountTask struct {
 	Suspend        bool   `json:"suspend,omitempty"`
 }
 
-// UnmountReceipt identifies the removed mount and lifecycle revision.
+// UnmountReceipt identifies the detached mount and lifecycle revision.
+// A suspension receipt leaves the regional writer grant in place.
 type UnmountReceipt struct {
 	VolumeID       string `json:"volumeId"`
 	TenantID       string `json:"tenantId"`
@@ -21,4 +22,5 @@ type UnmountReceipt struct {
 	PlacementID    string `json:"placementId"`
 	Generation     string `json:"generation"`
 	Revision       string `json:"revision"`
+	Suspend        bool   `json:"suspend,omitempty"`
 }

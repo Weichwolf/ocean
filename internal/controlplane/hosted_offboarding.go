@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
+	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/identity"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -181,6 +182,19 @@ func (r *Region) SuspendHostedTenant(ctx context.Context, tenant, subscription, 
 }
 
 func (r *Region) offboardingMarker(tenant string) string { return r.root + "/offboarding/" + tenant }
+
+func (r *Region) recordHostedWorkerReceipt(ctx context.Context, host, key string, audit clientv3.Op, checks []clientv3.Cmp) error {
+	checks = append(checks, clientv3.Compare(clientv3.Version(key), "=", 0))
+	result, err := r.client.Txn(ctx).If(checks...).Then(clientv3.OpPut(key, host), audit).Else(clientv3.OpGet(key)).Commit()
+	if err != nil || result.Succeeded {
+		return err
+	}
+	rows := result.Responses[0].GetResponseRange().Kvs
+	if len(rows) != 1 || string(rows[0].Value) != host {
+		return enrollment.ErrWorkloadChanged
+	}
+	return nil
+}
 
 func (r *Region) applyHostedOffboarding(ctx context.Context, decision identity.HostedOffboarding) error {
 	key := r.offboardingMarker(decision.TenantID)

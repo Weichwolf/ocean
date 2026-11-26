@@ -232,16 +232,11 @@ func (r *Region) recordContainerSuspension(ctx context.Context, scope arm.Subscr
 	receipt := r.armPrefix(scope) + "hosted-suspensions/containers/" + record.Reservation.ID + "/" + record.Reservation.Generation
 	audit := r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: host, Action: "Ocean.Hosted/offboarding/stopContainer",
 		Target: record.Address.ID(scope), Outcome: workload.Suspended})
-	checks = append(checks, clientv3.Compare(clientv3.Version(receipt), "=", 0))
-	result, err := r.client.Txn(ctx).If(checks...).Then(clientv3.OpPut(receipt, host), audit).Else(clientv3.OpGet(receipt)).Commit()
-	if err != nil || result.Succeeded {
-		return err
+	if record.Volume != nil {
+		unmount := r.suspendedVolumeReceiptKey(scope, record.Volume.ID, record.Reservation.Generation, record.Operation)
+		checks = append(checks, clientv3.Compare(clientv3.Value(unmount), "=", host))
 	}
-	rows := result.Responses[0].GetResponseRange().Kvs
-	if len(rows) != 1 || string(rows[0].Value) != host {
-		return enrollment.ErrWorkloadChanged
-	}
-	return nil
+	return r.recordHostedWorkerReceipt(ctx, host, receipt, audit, checks)
 }
 
 func (r *Region) finishContainerDeletion(ctx context.Context, scope arm.SubscriptionScope, record containerRecord, op arm.Operation,

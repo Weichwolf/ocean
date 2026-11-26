@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -186,7 +187,7 @@ func startHostedRestoreAPI(t *testing.T, ctx context.Context, region regionConfi
 		return pemFile(name, "PRIVATE KEY", raw)
 	}
 	ca, signer, _, _ := directoryJoinClientCertificates(t)
-	server := directoryLabServerTLS(t, ca, signer).Certificates[0]
+	server := directoryLabServerTLS(t, ca, signer, net.IPv4(10, 0, 2, 2)).Certificates[0]
 	caFile := pemFile("api-ca.pem", "CERTIFICATE", ca.Raw)
 	tlsSettings := &config.TLS{CertificateFile: pemFile("api.pem", "CERTIFICATE", server.Certificate[0]), KeyFile: keyFile("api.key", server.PrivateKey),
 		ClientCAFile: caFile, OptionalClientCA: true}

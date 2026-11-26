@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
@@ -201,6 +202,10 @@ func (r *Region) unmountReceiptKey(scope arm.SubscriptionScope, volume, generati
 	return r.armPrefix(scope) + "storage/unmounted/" + volume + "/" + generation + "/" + revision
 }
 
+func (r *Region) suspendedVolumeReceiptKey(scope arm.SubscriptionScope, volume, generation, revision string) string {
+	return r.armPrefix(scope) + "hosted-suspensions/volumes/" + volume + "/" + generation + "/" + revision
+}
+
 func (r *Region) ReportVolumeUnmount(ctx context.Context, host string, certificate []byte, receipt storage.UnmountReceipt) error {
 	if r.storage == nil || !slices.Contains(r.storage.workers, host) {
 		return enrollment.ErrHostDenied
@@ -230,15 +235,33 @@ func (r *Region) ReportVolumeUnmount(ctx context.Context, host string, certifica
 		if err != nil {
 			return err
 		}
-		if op == nil || record.Desired != workload.Removed || record.Volume == nil || record.Volume.ID != receipt.VolumeID ||
+		if op == nil || record.Volume == nil || record.Volume.ID != receipt.VolumeID ||
 			record.Reservation.HostID != host || record.Reservation.ID != receipt.PlacementID ||
 			record.Reservation.Generation != receipt.Generation || record.Operation != receipt.Revision {
 			return enrollment.ErrWorkloadChanged
 		}
-		receiptKey := r.unmountReceiptKey(scope, receipt.VolumeID, receipt.Generation, receipt.Revision)
-		result, err := r.client.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(hostKey), "=", snapshot.Responses[0].GetResponseRange().Kvs[0].ModRevision),
+		suspension, err := r.HostedOffboarding(ctx, scope.TenantID)
+		if err != nil {
+			return err
+		}
+		checks := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(hostKey), "=", snapshot.Responses[0].GetResponseRange().Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Version(liveKey), ">", 0), clientv3.Compare(clientv3.ModRevision(assignmentKey), "=", items[0].ModRevision),
-			clientv3.Compare(clientv3.ModRevision(key), "=", revision)).Then(clientv3.OpPut(receiptKey, host)).Commit()
+			clientv3.Compare(clientv3.ModRevision(key), "=", revision)}
+		if receipt.Suspend {
+			if suspension == nil || suspension.SubscriptionID != scope.SubscriptionID {
+				return enrollment.ErrWorkloadChanged
+			}
+			receiptKey := r.suspendedVolumeReceiptKey(scope, receipt.VolumeID, receipt.Generation, receipt.Revision)
+			audit := r.auditOp(scope, arm.AuditEvent{Time: time.Now().UTC(), Actor: host, Action: "Ocean.Hosted/offboarding/unmountVolume",
+				Target: record.Volume.Share.ID(scope), Outcome: workload.Suspended})
+			return r.recordHostedWorkerReceipt(ctx, host, receiptKey, audit, checks)
+		}
+		if suspension != nil || record.Desired != workload.Removed {
+			return enrollment.ErrWorkloadChanged
+		}
+		checks = append(checks, clientv3.Compare(clientv3.Version(r.offboardingMarker(scope.TenantID)), "=", 0))
+		receiptKey := r.unmountReceiptKey(scope, receipt.VolumeID, receipt.Generation, receipt.Revision)
+		result, err := r.client.Txn(ctx).If(checks...).Then(clientv3.OpPut(receiptKey, host)).Commit()
 		if err != nil || result.Succeeded {
 			return err
 		}

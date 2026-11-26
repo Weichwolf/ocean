@@ -35,5 +35,12 @@ func hostedWorkplaceSteps() []harness.Step {
 	if suspension.BlockedReason == "" && os.Getenv("OCEAN_E2E_HOSTED_PODMAN_IMAGE") == "" {
 		suspension.BlockedReason = "Provide a local Debian container image in OCEAN_E2E_HOSTED_PODMAN_IMAGE."
 	}
-	return []harness.Step{step, placement, operator, recovery, suspension}
+	volume := suspension
+	volume.Name, volume.Cases = "hosted-mounted-volume-suspension", []string{"WORKPLACE-50"}
+	volume.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedMountedVolumeOffboarding$", "./internal/controlplane"}
+	volume.Timeout = 4 * time.Minute
+	if volume.BlockedReason == "" && os.Getenv("OCEAN_E2E_HOSTED_CEPH_STATE") == "" {
+		volume.BlockedReason = "Provide the running Ceph lab directory in OCEAN_E2E_HOSTED_CEPH_STATE."
+	}
+	return []harness.Step{step, placement, operator, recovery, suspension, volume}
 }

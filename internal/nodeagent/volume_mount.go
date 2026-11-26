@@ -101,14 +101,19 @@ func (j *joinClient) applyVolumeMount(ctx context.Context, backend storage.Backe
 		if err != nil || exists && status.Running {
 			return err
 		}
+		if task.Suspend {
+			for _, suffix := range []string{"-storage", "-telemetry"} {
+				status, exists, err := inspectContainer(ctx, name+suffix, podman)
+				if err != nil || exists && status.Running {
+					return err
+				}
+			}
+		}
 		if err := backend.Unmount(ctx, task.VolumeID); err != nil {
 			return err
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
-		}
-		if task.Suspend {
-			return nil
 		}
 		return j.sendUnmountReceipt(ctx, task)
 	}
@@ -158,7 +163,7 @@ func (j *joinClient) volumeMountAssignments(ctx context.Context) ([]storage.Moun
 
 func (j *joinClient) sendUnmountReceipt(ctx context.Context, task storage.MountTask) error {
 	receipt := storage.UnmountReceipt{VolumeID: task.VolumeID, TenantID: task.TenantID, SubscriptionID: task.SubscriptionID,
-		PlacementID: task.PlacementID, Generation: task.Generation, Revision: task.Revision}
+		PlacementID: task.PlacementID, Generation: task.Generation, Revision: task.Revision, Suspend: task.Suspend}
 	body, _ := json.Marshal(receipt)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, j.url()+"/volume-unmounts", bytes.NewReader(body))
 	if err != nil {

@@ -2397,9 +2397,14 @@ bound to the current placement generation. It stops the Podman workload and
 any Function storage or telemetry companions. The network worker drops the
 assignment and the volume worker receives an unmount request without a key.
 The container worker reports completion after stopping the processes and
-observing that the local network and mount markers are gone. Ocean records
-one scoped `Ocean.Hosted/offboarding/stopContainer` event per acknowledged
-generation. The API's `Suspended` decision precedes host acknowledgements.
+observing that the local network and mount markers are gone. When the
+workload has a volume, the control plane also requires the certified storage
+worker's unmount receipt for the same volume, placement generation and
+revision. That receipt follows filesystem unmount, closure of the LUKS
+mapping and detachment of the RBD device. The activity log records
+`Ocean.Hosted/offboarding/unmountVolume` and
+`Ocean.Hosted/offboarding/stopContainer`. The API's `Suspended` decision
+precedes host acknowledgements.
 Check those acknowledgements or arrange independent fencing for unreachable
 workers before relying on runtime shutdown. Suspension preserves container
 layers, encrypted volumes and their regional writer grants for the tenant's
@@ -2541,7 +2546,14 @@ and the tenant export.
 agent reconciliation and rootless Podman. Use a locally available Debian
 image containing `/bin/sh` and `sleep`. The lab starts disposable container
 processes and representative Function companions. It verifies the encrypted
-volume authorization transition through the regional API. The harness writes
+volume authorization transition through the regional API. `WORKPLACE-50`
+also needs the Ceph KVM lab with kernel RBD and cryptsetup on
+`farm-1-node-08`, and Ceph admin access from `farm-1-node-05`. Use a
+disposable lab state configured with the `ocean` pool and the Ceph
+configuration at `/etc/ocean-smb/rbd/ceph.conf` on the worker. The test creates
+an isolated worker identity and one volume in the lab pool. It checks the
+detached mapping and reads a flushed checkpoint from the image in read-only
+mode using the fixture key held before suspension. The harness writes
 Markdown and TSV reports and logs.
 
 ```sh
@@ -2550,6 +2562,7 @@ OCEAN_E2E_HOSTED_ETCD="$DISPOSABLE_LOOPBACK_ETCD" \
 OCEAN_E2E_HOSTED_AZ="$(command -v az)" \
 OCEAN_E2E_HOSTED_ETCD_ARCHIVE="$HOME/.cache/ocean/tools/etcd-v3.6.17-linux-amd64.tar.gz" \
 OCEAN_E2E_HOSTED_PODMAN_IMAGE="$(podman image inspect --format '{{.ID}}' docker.io/library/debian:trixie-slim)" \
+OCEAN_E2E_HOSTED_CEPH_STATE="$DISPOSABLE_CEPH_LAB_STATE" \
 go test -mod=readonly -tags=e2e -count=1 -v -run '^TestAcceptance$' ./tests/e2e
 ```
 
