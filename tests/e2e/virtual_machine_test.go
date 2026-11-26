@@ -55,5 +55,14 @@ func virtualMachineSteps() []harness.Step {
 			{Name: "desktop-pair.tsv", Path: filepath.Join(linuxState, "evidence", "desktop-pair.tsv")},
 			{Name: "desktop-pair-rdp.tsv", Path: filepath.Join(linuxState, "evidence", "desktop-pair-rdp.tsv")},
 		}}
-	return []harness.Step{step, linux, desktopFence, pair}
+	windowsState := os.Getenv("OCEAN_E2E_VM_RDP_WINDOWS_STATE")
+	windowsPair := pair
+	windowsPair.Name = "packaged-assigned-desktop-pair-windows"
+	windowsPair.Cases = []string{"WORKPLACE-41"}
+	windowsPair.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-timeout=22m", "-v", "-run",
+		"^TestPackagedAssignedDesktopPairWindows$", "./internal/controlplane"}
+	windowsPair = requireFile(windowsPair, filepath.Join(windowsState, "rdp-root.cer"), "the Windows RDP fixture's disposable root certificate")
+	windowsPair = requireFile(windowsPair, filepath.Join(windowsState, "rdp-root.key"), "the Windows RDP fixture's private signing key")
+	windowsPair = requireFile(windowsPair, filepath.Join(windowsState, "windows-11", "guest-serial.log"), "the Windows 11 fixture's serial capture")
+	return []harness.Step{step, linux, desktopFence, pair, windowsPair}
 }

@@ -1031,6 +1031,53 @@ account admission. The test removes the ARM resources and verifies quota
 recovery. It records provisioning and admission timings in
 `desktop-pair.tsv` and `desktop-pair-rdp.tsv`.
 
+Run `WORKPLACE-41` with `OCEAN_E2E_PROFILE=vm-worker-desktop-windows` and the
+same packaged VM prerequisites. Set `OCEAN_E2E_VM_RDP_WINDOWS_STATE` to the
+absolute private state directory of the Windows 11 workstation fixture.
+Connect that fixture to the same workload switch, set its IPv4 address to
+`10.232.1.28/28` without a default gateway, and leave the desktop unlocked.
+The fixture needs its QMP socket, probe drive and serial capture. The host
+needs Python 3 and `genisoimage`.
+The case checks that the native Windows session responds before provisioning
+any virtual machines.
+Resolve `desk-one.ad.pair.ocean.test` and `desk-two.ad.pair.ocean.test`
+on the Windows client to `10.232.1.20` and `10.232.1.21` respectively, using
+the lab's private DNS or the disposable Windows hosts file. The case checks
+each name against the address allocated by ARM.
+
+Generate a separate short-lived RSA test root. Keep `rdp-root.key` on the
+host with mode `0600`. Copy only `rdp-root.cer` to Windows and import it
+into the disposable workstation's local machine root store. Verify the
+SHA-256 of the copied file before importing it.
+
+```sh
+umask 077
+openssl req -x509 -newkey rsa:2048 -noenc -days 2 -outform DER \
+  -subj '/CN=Ocean desktop pair lab root' \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -keyout "$OCEAN_E2E_VM_RDP_WINDOWS_STATE/rdp-root.key" \
+  -out "$OCEAN_E2E_VM_RDP_WINDOWS_STATE/rdp-root.cer"
+sha256sum "$OCEAN_E2E_VM_RDP_WINDOWS_STATE/rdp-root.cer"
+```
+
+```powershell
+Get-FileHash -Algorithm SHA256 -LiteralPath .\rdp-root.cer
+Import-Certificate -FilePath .\rdp-root.cer -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+The case gives each XRDP server a separate certificate for its private
+DNS name and assigned IPv4 address. The observer serves the signed lab
+revocation list at `10.232.1.17:18711`. Windows verifies the chain and
+revocation status before the installed Microsoft RDP control authenticates
+the server. The probe passes disposable passwords through a temporary private
+optical image in the guest and restores the original probe medium.
+It verifies the matching PAM log and Openbox process on the actual Linux
+host for each attempt. The TSV includes the Windows edition, build and
+`mstscax.dll` version. Remove the fixture root from the Windows trust store
+before reusing the workstation for other work.
+[Microsoft RDP control](https://learn.microsoft.com/en-us/windows/win32/termserv/remote-desktop-activex-control-classes)
+
 For the browser identity path, configure `desktopApplicationId` with the
 published Graph application object ID in
 `identity.onboarding.webDirectories[tenantId]`. The configured application

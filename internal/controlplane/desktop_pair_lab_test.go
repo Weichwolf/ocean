@@ -72,7 +72,7 @@ type desktopPairAccount struct {
 }
 
 func testAssignedDesktopPair(t *testing.T, ctx context.Context, r *Region, worker directoryKVMHosts, guests []lab.GuestStatus,
-	scope arm.SubscriptionScope, vnet, subnet arm.ResourceAddress, catalog vmCatalogImage, access desktopPairAPI) {
+	scope arm.SubscriptionScope, vnet, subnet arm.ResourceAddress, catalog vmCatalogImage, access desktopPairAPI, windowsClientState string) {
 	t.Helper()
 	evidence := filepath.Join(worker.state, "evidence")
 	if err := os.MkdirAll(evidence, 0700); err != nil {
@@ -120,23 +120,29 @@ func testAssignedDesktopPair(t *testing.T, ctx context.Context, r *Region, worke
 	}
 	image := address(arm.VMImageType, "debian-desktop")
 	imageURL := url(image, arm.VMImageAPIVersion)
+	machines := make([]desktopPairMachine, 2)
+	for i, name := range []string{"desk-one", "desk-two"} {
+		machines[i] = desktopPairMachine{name: name, vm: address(arm.VirtualMachineType, name),
+			nic: address(arm.VMNetworkInterfaceType, name), desktop: address(arm.DesktopType, name), account: accounts[i]}
+	}
+	defer func() {
+		if t.Failed() {
+			removeFailedDesktopPair(t, r, scope, image, machines)
+		}
+	}()
 	access.az("put", imageURL, fmt.Sprintf(`{"location":"local","properties":{"hyperVGeneration":"V2","storageProfile":{
         "osDisk":{"osType":"Linux","osState":"Specialized","blobUri":%q}}}}`, catalog.URI))
-	machines := make([]desktopPairMachine, 0, 2)
-	for i, name := range []string{"desk-one", "desk-two"} {
-		vm := address(arm.VirtualMachineType, name)
-		nic := address(arm.VMNetworkInterfaceType, name)
-		dst := address(arm.DesktopType, name)
-		access.az("put", url(nic, arm.VMNetworkAPIVersion),
+	for i := range machines {
+		machine := &machines[i]
+		access.az("put", url(machine.nic, arm.VMNetworkAPIVersion),
 			fmt.Sprintf(`{"location":"local","properties":{"ipConfigurations":[{"name":"private","properties":{
                 "subnet":{"id":%q},"privateIPAllocationMethod":"Dynamic"}}]}}`, subnet.ID(scope)))
-		created := time.Now()
+		machine.started = time.Now()
 		request := fmt.Sprintf(`{"location":"local","properties":{"hardwareProfile":{"vmSize":"Standard_B1s"},"storageProfile":{
             "imageReference":{"id":%q},"osDisk":{"name":%q,"createOption":"FromImage","deleteOption":"Delete",
             "managedDisk":{"storageAccountType":"Standard_LRS"}}},"networkProfile":{"networkInterfaces":[{"id":%q}]}}}`,
-			image.ID(scope), name+"-disk", nic.ID(scope))
-		access.az("put", url(vm, arm.VirtualMachineAPIVersion), request)
-		machines = append(machines, desktopPairMachine{name: name, vm: vm, nic: nic, desktop: dst, account: accounts[i], started: created})
+			image.ID(scope), machine.name+"-disk", machine.nic.ID(scope))
+		access.az("put", url(machine.vm, arm.VirtualMachineAPIVersion), request)
 	}
 	assertPackagedVMQuota(t, ctx, r, scope, enrollment.Capacity{CPUMillis: 2000, MemoryMiB: 2048}, "16")
 	for i := range machines {
@@ -196,7 +202,7 @@ func testAssignedDesktopPair(t *testing.T, ctx context.Context, r *Region, worke
 		t.Fatal("the two personal desktops must be independent running virtual machines")
 	}
 	verifyPairAdmission(t, ctx, r, worker, guests, scope, access, machines, accounts[2].user.UPN)
-	verifyDesktopPairRDP(t, ctx, worker, access, machines, accounts[2])
+	verifyDesktopPairRDP(t, ctx, worker, access, machines, accounts[2], windowsClientState)
 	for _, machine := range machines {
 		access.az("delete", url(machine.desktop, arm.DesktopAPIVersion), "")
 		access.az("delete", url(machine.vm, arm.VirtualMachineAPIVersion), "")
@@ -215,6 +221,33 @@ func testAssignedDesktopPair(t *testing.T, ctx context.Context, r *Region, worke
 		second.name, second.id, second.ip, second.boot, second.provision.Milliseconds())
 	if err := os.WriteFile(filepath.Join(evidence, "desktop-pair.tsv"), []byte(result), 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func removeFailedDesktopPair(t *testing.T, r *Region, scope arm.SubscriptionScope, image arm.ResourceAddress, machines []desktopPairMachine) {
+	t.Helper()
+	// Keep the worker and its ARM endpoint live while it releases the failed run's volumes.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	for _, machine := range machines {
+		if err := r.DeletePersonalDesktop(ctx, scope, "operator", machine.desktop); err != nil {
+			t.Errorf("release failed desktop assignment %s: %v", machine.name, err)
+		}
+		if _, err := r.MutateVirtualMachine(ctx, scope, "operator", machine.vm, arm.VMAction{Name: "delete"}); err != nil {
+			t.Errorf("release failed desktop VM %s: %v", machine.name, err)
+		}
+	}
+	for _, machine := range machines {
+		pollVMWorker(t, ctx, 90*time.Second, machine.name+" to release its failed run's disk", func() bool {
+			_, _, op, _, _, err := r.readVM(ctx, scope, machine.vm)
+			return err == nil && op == nil
+		})
+		if err := r.DeleteVMDependency(ctx, scope, "operator", machine.nic); err != nil {
+			t.Errorf("release failed desktop NIC %s: %v", machine.name, err)
+		}
+	}
+	if err := r.DeleteVMDependency(ctx, scope, "operator", image); err != nil {
+		t.Errorf("release failed desktop image: %v", err)
 	}
 }
 
@@ -431,36 +464,42 @@ except urllib.error.HTTPError as error:
 }
 
 func verifyDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKVMHosts, access desktopPairAPI,
-	machines []desktopPairMachine, unassigned desktopPairAccount) {
+	machines []desktopPairMachine, unassigned desktopPairAccount, windowsState string) {
 	t.Helper()
-	worker.run(ctx, desktopRDPObserver, "command -v xfreerdp3 && command -v xvfb-run && command -v xauth", nil)
+	var windows *desktopPairWindowsClient
+	if windowsState == "" {
+		worker.run(ctx, desktopRDPObserver, "command -v xfreerdp3 && command -v xvfb-run && command -v xauth", nil)
+	} else {
+		windows = newDesktopPairWindowsClient(t, ctx, worker, windowsState)
+	}
 	admin, err := worker.ssh(ctx, pairDirectoryHost, "sudo cat /var/lib/ocean-desktop-pair-directory/administrator", nil)
 	if err != nil || len(bytes.TrimSpace(admin)) == 0 {
 		t.Fatalf("read disposable Samba join credentials: %v", err)
 	}
 	defer clear(admin)
 	var report strings.Builder
-	report.WriteString("client\tdesktop\taccount_role\toutcome\tduration_ms\n")
+	report.WriteString("client\tdesktop\taccount_role\toutcome\tduration_ms\tclient_version\tclient_os\n")
 	for i, machine := range machines {
-		pin := prepareDesktopPairRDP(t, ctx, worker, access, machine, admin)
+		pin := prepareDesktopPairRDP(t, ctx, worker, access, machine, admin, windows)
 		for _, test := range []struct {
 			account desktopPairAccount
 			role    string
 		}{
 			{machines[1-i].account, "crossed"}, {unassigned, "unassigned"}, {machine.account, "assigned"},
 		} {
-			elapsed, outcome := probeDesktopPairRDP(t, ctx, worker, machine, test.account, pin, test.role == "assigned")
-			fmt.Fprintf(&report, "debian-freerdp\t%s\t%s\t%s\t%d\n", machine.name, test.role, outcome, elapsed.Milliseconds())
+			result := probeDesktopPairRDP(t, ctx, worker, machine, test.account, pin, test.role == "assigned", windows)
+			fmt.Fprintf(&report, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", result.client, machine.name, test.role, result.admission,
+				result.elapsed.Milliseconds(), result.version, result.os)
 		}
 	}
 	if err := os.WriteFile(filepath.Join(worker.state, "evidence", "desktop-pair-rdp.tsv"), []byte(report.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Debian FreeRDP opened both assigned Openbox sessions and XRDP denied valid crossed and unassigned Samba credentials")
+	t.Log("the native client opened both assigned Openbox sessions and XRDP denied valid crossed and unassigned Samba credentials")
 }
 
 func prepareDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKVMHosts, access desktopPairAPI,
-	machine desktopPairMachine, admin []byte) string {
+	machine desktopPairMachine, admin []byte, windows *desktopPairWindowsClient) string {
 	t.Helper()
 	stage := func(path, mode string, data []byte) {
 		t.Helper()
@@ -514,7 +553,20 @@ func prepareDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKV
 	pam = bytes.Replace(pam, []byte("@include common-auth"), append(read("packaging/debian/ocean-desktop-pam"), []byte("@include common-auth")...), 1)
 	pam = bytes.Replace(pam, []byte("@include common-session\n"), append([]byte("@include common-session\n"), read("packaging/debian/ocean-desktop-pam-session")...), 1)
 	stage("/etc/pam.d/xrdp-sesman", "0644", pam)
-	command := "sudo adcli testjoin && sudo systemctl restart xrdp-sesman xrdp && sudo openssl x509 -in /etc/xrdp/cert.pem -noout -fingerprint -sha256"
+	certificate := "/etc/xrdp/cert.pem"
+	if windows != nil {
+		certificate = "/etc/xrdp/ocean-pair.pem"
+		cert, key := windows.serverCertificate(t, machine)
+		stage(certificate, "0644", cert)
+		stage("/etc/xrdp/ocean-pair.key", "0640", key)
+		clear(key)
+		command := "sudo chgrp ssl-cert /etc/xrdp/ocean-pair.key && sudo sed -i " + quotePairArgument(
+			"s|^certificate=.*|certificate="+certificate+"|; s|^key_file=.*|key_file=/etc/xrdp/ocean-pair.key|") + " /etc/xrdp/xrdp.ini"
+		if out, err := machine.probe.run(ctx, command, nil); err != nil {
+			t.Fatalf("install the isolated RDP TLS certificate: %v: %s", err, out)
+		}
+	}
+	command := "sudo adcli testjoin && sudo systemctl restart xrdp-sesman xrdp && sudo openssl x509 -in " + certificate + " -noout -fingerprint -sha256"
 	out, err := machine.probe.run(ctx, command, nil)
 	_, pin, found := strings.Cut(strings.TrimSpace(string(out)), "Fingerprint=")
 	pin = strings.ToLower(strings.ReplaceAll(pin, ":", ""))
@@ -525,8 +577,14 @@ func prepareDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKV
 	return pin
 }
 
+type desktopPairRDPResult struct {
+	client, version, os string
+	admission           string
+	elapsed             time.Duration
+}
+
 func probeDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKVMHosts, machine desktopPairMachine,
-	account desktopPairAccount, pin string, allowed bool) (time.Duration, string) {
+	account desktopPairAccount, pin string, allowed bool, windows *desktopPairWindowsClient) desktopPairRDPResult {
 	t.Helper()
 	upn := quotePairArgument(account.user.UPN)
 	credential := strings.NewReader(account.password + "\n")
@@ -553,7 +611,7 @@ func probeDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKVMH
 	command := "timeout -k 2s 14s xvfb-run -a xfreerdp3 /v:" + machine.ip + ":3389 /u:" + upn +
 		" /from-stdin:force /sec:tls /cert:fingerprint:sha256:" + pin +
 		` /size:800x600 /log-level:WARN; status=$?; test "$status" -eq 0 || test "$status" -eq 124`
-	call, cancel := context.WithTimeout(ctx, 22*time.Second)
+	call, cancel := context.WithTimeout(ctx, 65*time.Second)
 	defer cancel()
 	type outcome struct {
 		output []byte
@@ -562,43 +620,64 @@ func probeDesktopPairRDP(t *testing.T, ctx context.Context, worker directoryKVMH
 	client := make(chan outcome, 1)
 	started := time.Now()
 	go func() {
-		out, err := worker.ssh(call, desktopRDPObserver, command, strings.NewReader(account.password+"\n"))
+		var out []byte
+		var err error
+		if windows == nil {
+			out, err = worker.ssh(call, desktopRDPObserver, command, strings.NewReader(account.password+"\n"))
+		} else {
+			out, err = windows.connect(call, machine, account)
+		}
 		client <- outcome{out, err}
 	}()
 	probe := `uid=$(id -u ` + upn + `) || exit 2; if pgrep -u "$uid" -x openbox >/dev/null; then printf open; fi`
+	var opened time.Duration
 	for call.Err() == nil {
 		out, err := machine.probe.run(call, probe, nil)
 		if err != nil {
 			t.Fatalf("inspect the live Openbox process on %s: %v: %s", machine.name, err, out)
 		}
-		if string(out) == "open" {
+		if string(out) == "open" && opened == 0 {
 			if !allowed {
 				t.Fatalf("XRDP opened a desktop without its assignment on %s", machine.name)
 			}
 			select {
 			case result := <-client:
-				t.Fatalf("the permitted FreeRDP connection ended before the desktop opened: %v: %s", result.err, result.output)
+				t.Fatalf("the permitted RDP connection ended before the desktop opened: %v: %s", result.err, result.output)
 			default:
-				return time.Since(started), "opened"
+				opened = time.Since(started)
 			}
 		}
 		select {
 		case result := <-client:
-			if allowed {
-				t.Fatalf("the permitted FreeRDP client exited during login to %s: %v: %s", machine.name, result.err, result.output)
+			if result.err != nil || (allowed && opened == 0) {
+				t.Fatalf("the RDP client failed to complete the expected connection to %s: %v: %s", machine.name, result.err, result.output)
 			}
 			log, logErr := machine.probe.run(call, "sudo journalctl --no-pager -o cat --since="+
 				quotePairArgument(fmt.Sprintf("@%.6f", guestTime))+" -u xrdp-sesman.service", nil)
-			if logErr != nil || !strings.Contains(string(log), account.user.UPN) || !strings.Contains(string(log), "pam_acct_mgmt failed") {
-				t.Fatalf("no XRDP account denial was observed on %s: %v: %s; client: %v: %s", machine.name, logErr, log, result.err, result.output)
+			source := pairObserverIP
+			report := desktopPairRDPResult{client: "debian-freerdp", admission: "denied", elapsed: time.Since(started)}
+			if windows != nil {
+				source = pairWindowsIP
+				report.client = "windows-mstscax"
+				report.version, report.os = readDesktopPairWindowsReport(t, result.output, allowed)
 			}
-			return time.Since(started), "denied"
+			login := "Received system login request from xrdp for user: " + account.user.UPN + " IP: "
+			authenticated := strings.Contains(string(log), "pam_sss(xrdp-sesman:auth): authentication success")
+			requested := strings.Contains(string(log), login+source) || strings.Contains(string(log), login+"::ffff:"+source)
+			denied := strings.Contains(string(log), "pam_acct_mgmt failed")
+			if logErr != nil || !requested || !authenticated || denied == allowed {
+				t.Fatalf("XRDP did not record the expected admission on %s for %s: %v: %s; client: %s", machine.name, source, logErr, log, result.output)
+			}
+			if allowed {
+				report.admission, report.elapsed = "opened", opened
+			}
+			return report
 		case <-call.Done():
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
 	t.Fatalf("XRDP did not finish the admission attempt for %s: %v", machine.name, call.Err())
-	return 0, ""
+	return desktopPairRDPResult{}
 }
 
 func relayDesktopPairRegion(t *testing.T, ctx context.Context, access desktopPairAPI, worker directoryKVMHosts, guests []lab.GuestStatus) {

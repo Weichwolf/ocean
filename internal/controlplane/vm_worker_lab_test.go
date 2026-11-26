@@ -39,8 +39,9 @@ import (
 const vmLabPrimary = "farm-1-node-05"
 
 type packagedVMScenario struct {
-	fenced      bool
-	desktopPair bool
+	fenced             bool
+	desktopPair        bool
+	windowsClientState string
 }
 
 func TestPackagedVMWorker(t *testing.T) {
@@ -60,6 +61,25 @@ func TestPackagedDesktopVMFence(t *testing.T) {
 
 func TestPackagedAssignedDesktopPair(t *testing.T) {
 	testPackagedLinuxVMWorker(t, packagedVMScenario{desktopPair: true})
+}
+
+func TestPackagedAssignedDesktopPairWindows(t *testing.T) {
+	state := os.Getenv("OCEAN_E2E_VM_RDP_WINDOWS_STATE")
+	if state == "" {
+		t.Skip("requires the isolated Windows 11 RDP client fixture")
+	}
+	info, err := os.Stat(filepath.Join(state, "windows-11", "qmp"))
+	if !filepath.IsAbs(state) || err != nil || info.Mode()&os.ModeSocket == 0 {
+		t.Fatal("provide an absolute fixture path with a running Windows 11 guest")
+	}
+	ready, cancel := context.WithTimeout(t.Context(), 38*time.Second)
+	defer cancel()
+	command := desktopPairWindowsCommand(ready, state, "--check")
+	command.Stdin = strings.NewReader(fmt.Sprintf(`{"source":%q}`, pairWindowsIP))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("prepare an unlocked Windows 11 observer before provisioning: %v: %s", err, output)
+	}
+	testPackagedLinuxVMWorker(t, packagedVMScenario{desktopPair: true, windowsClientState: state})
 }
 
 func testPackagedLinuxVMWorker(t *testing.T, scenario packagedVMScenario) {
@@ -198,7 +218,7 @@ func testPackagedVMWorker(t *testing.T, state string, catalog vmCatalogImage, ha
 	az := func(method, path, body string) []byte { return cli(method, path, body, "vm-worker-lab", "") }
 	if scenario.desktopPair {
 		testAssignedDesktopPair(t, ctx, r, worker, guests, scope, vnet, subnet, catalog, desktopPairAPI{az: az, cli: cli,
-			api: api, privateOrigin: pairOrigin, ca: ca, key: caKey, caPEM: caPEM})
+			api: api, privateOrigin: pairOrigin, ca: ca, key: caKey, caPEM: caPEM}, scenario.windowsClientState)
 		return
 	}
 	image, nic, vm := address(arm.VMImageType, guest), address(arm.VMNetworkInterfaceType, "primary"), address(arm.VirtualMachineType, guest)

@@ -170,6 +170,16 @@ WORKPLACE-40	desktop-assignment-delete	2.93.0	none	2026-11-01	rest --method dele
 WORKPLACE-40	desktop-vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {vmId}?api-version=2024-03-01 -o json
 WORKPLACE-40	desktop-nic-delete	2.93.0	none	2024-05-01	rest --method delete --url {nicId}?api-version=2024-05-01 -o json
 WORKPLACE-40	desktop-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId}?api-version=2024-07-01 -o json
+WORKPLACE-41	desktop-image-put	2.93.0	none	2024-07-01	rest --method put --url {imageId}?api-version=2024-07-01 --body @{linuxImageBody} -o json
+WORKPLACE-41	desktop-nic-put	2.93.0	none	2024-05-01	rest --method put --url {nicId}?api-version=2024-05-01 --body @{nicBody} -o json
+WORKPLACE-41	desktop-nic-get	2.93.0	none	2024-05-01	rest --method get --url {nicId}?api-version=2024-05-01 -o json
+WORKPLACE-41	desktop-vm-put	2.93.0	none	2024-03-01	rest --method put --url {vmId}?api-version=2024-03-01 --body @{smallDebianVmBody} -o json
+WORKPLACE-41	desktop-assignment-put	2.93.0	none	2026-11-01	rest --method put --url {desktopId}?api-version=2026-11-01 --body @{desktopAssignmentBody} -o json
+WORKPLACE-41	desktop-foreign-get	2.93.0	none	2026-11-01	rest --method get --url {desktopId}?api-version=2026-11-01 -o json
+WORKPLACE-41	desktop-assignment-delete	2.93.0	none	2026-11-01	rest --method delete --url {desktopId}?api-version=2026-11-01 -o json
+WORKPLACE-41	desktop-vm-delete	2.93.0	none	2024-03-01	rest --method delete --url {vmId}?api-version=2024-03-01 -o json
+WORKPLACE-41	desktop-nic-delete	2.93.0	none	2024-05-01	rest --method delete --url {nicId}?api-version=2024-05-01 -o json
+WORKPLACE-41	desktop-image-delete	2.93.0	none	2024-07-01	rest --method delete --url {imageId}?api-version=2024-07-01 -o json
 WORKPLACE-17	web-app-register	2.93.0	none	v1.0	ad app create --display-name {name} --sign-in-audience AzureADMyOrg --web-redirect-uris {callback} -o json
 WORKPLACE-17	web-app-show	2.93.0	none	v1.0	ad app show --id {appId} -o json
 WORKPLACE-20	web-admin-login	2.93.0	none	v2.0+2022-12-01	login --tenant {tenant} --use-device-code -o none
