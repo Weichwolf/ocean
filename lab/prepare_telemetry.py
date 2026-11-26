@@ -19,9 +19,10 @@ SERVICE = "ocean-telemetry-etcd.service"
 CLIENT_PORT = 2391
 PEER_PORT = 2392
 DATA_DIRECTORY = DEST + "/telemetry-data"
+COST_RATES = {"currency": "CHF", "cpuPerVCPUHour": "36.000000", "memoryPerGiBHour": "0.360000"}
 
 
-def deploy_store(state):
+def deploy_store(state, cost_management=None):
     directory = state / "telemetry-pki"
     directory.mkdir(mode=0o700, exist_ok=True)
     client_ca = ca(directory, "telemetry-client")
@@ -63,7 +64,7 @@ def deploy_store(state):
             f"--cacert={DEST}/pki/telemetry-client-ca.pem", f"--cert={DEST}/pki/{name}-telemetry-client.pem",
             f"--key={DEST}/pki/{name}-telemetry-client.key", "endpoint", "health",
         ])))
-    publish(state, telemetry=config)
+    publish(state, telemetry=config, cost_management=cost_management)
 
 
 def live_compute_hosts(state):
@@ -90,11 +91,12 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--buffer-bytes", type=int, default=64 << 10)
+    parser.add_argument("--cost-management", action="store_true", help="enable Cost Management with the disposable lab rate schedule")
     args = parser.parse_args()
     if not 4096 <= args.buffer_bytes <= 4 << 20:
         parser.error("--buffer-bytes must be between 4096 and 4194304")
     state, package = args.state.resolve(), args.package.read_bytes()
-    deploy_store(state)
+    deploy_store(state, COST_RATES if args.cost_management else None)
     hosts = live_compute_hosts(state)
     if not hosts:
         raise RuntimeError("there are no live compute hosts to configure")

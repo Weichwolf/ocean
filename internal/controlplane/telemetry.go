@@ -67,6 +67,12 @@ func (r *Region) telemetryPrefix(scope arm.SubscriptionScope, address arm.Resour
 
 func telemetryTime(t time.Time) string { return fmt.Sprintf("%020d", t.UnixNano()) }
 
+type telemetryBinding struct {
+	scope   arm.SubscriptionScope
+	address arm.ResourceAddress
+	prefix  string
+}
+
 func (r *Region) ReportTelemetry(ctx context.Context, host string, certificate []byte, batch telemetry.Batch) error {
 	if r.telemetry == nil {
 		return telemetry.ErrDisabled
@@ -79,28 +85,38 @@ func (r *Region) ReportTelemetry(ctx context.Context, host string, certificate [
 	if err := r.authorizeHostRole(host, certificate, "compute", snapshot); err != nil {
 		return err
 	}
-	assignments := make(map[telemetry.Assignment]string)
+	assignments := make(map[telemetry.Assignment]telemetryBinding)
 	samples := make(map[string]telemetry.Sample)
+	var costs map[telemetryBinding][]costMeasurement
+	if r.cost != nil {
+		costs = make(map[telemetryBinding][]costMeasurement)
+	}
 	for _, entry := range batch.Observations {
 		id := entry.Assignment
-		prefix, found := assignments[id]
+		binding, found := assignments[id]
 		if !found {
 			scope := arm.SubscriptionScope{TenantID: id.TenantID, SubscriptionID: id.SubscriptionID}
-			prefix, err = r.telemetryAssignment(ctx, scope, host, id, snapshot.Header.Revision)
+			binding, err = r.telemetryAssignment(ctx, scope, host, id, snapshot.Header.Revision)
 			if err != nil {
 				return err
 			}
-			assignments[id] = prefix
+			assignments[id] = binding
 		}
 		// A previously assigned workload may have been retired while its
 		// samples were queued. Discard stale samples without blocking the batch.
-		if prefix != "" {
-			key := prefix + telemetryTime(entry.Sample.Time) + "/" + entry.Sample.ID
+		if binding.prefix != "" {
+			key := binding.prefix + telemetryTime(entry.Sample.Time) + "/" + entry.Sample.ID
 			samples[key] = entry.Sample
+			if costs != nil && entry.Sample.Usage != nil && entry.Sample.Usage.Interval != nil {
+				costs[binding] = append(costs[binding], measureCost(entry.Sample))
+			}
 		}
 	}
 	if len(samples) == 0 {
 		return nil
+	}
+	if err := r.recordCostMeasurements(ctx, costs); err != nil {
+		return err
 	}
 	lease, err := r.telemetry.currentLease(ctx)
 	if err != nil {
@@ -119,31 +135,32 @@ func (r *Region) ReportTelemetry(ctx context.Context, host string, certificate [
 }
 
 func (r *Region) telemetryAssignment(ctx context.Context, scope arm.SubscriptionScope, host string,
-	id telemetry.Assignment, revision int64) (string, error) {
+	id telemetry.Assignment, revision int64) (telemetryBinding, error) {
 	if !validScope(scope) || !identifier.MatchString(id.ID) || !identifier.MatchString(id.Generation) {
-		return "", enrollment.ErrHostDenied
+		return telemetryBinding{}, enrollment.ErrHostDenied
 	}
 	index, err := r.client.Get(ctx, r.hostContainerKey(scope, host, id.ID), clientv3.WithRev(revision))
 	if err != nil || len(index.Kvs) == 0 {
-		return "", err
+		return telemetryBinding{}, err
 	}
 	key := string(index.Kvs[0].Value)
 	if !strings.HasPrefix(key, r.armPrefix(scope)+"containers/") {
-		return "", errors.New("telemetry assignment does not match its subscription")
+		return telemetryBinding{}, errors.New("telemetry assignment does not match its subscription")
 	}
 	items, err := r.client.Get(ctx, key, clientv3.WithRev(revision))
 	if err != nil || len(items.Kvs) == 0 {
-		return "", err
+		return telemetryBinding{}, err
 	}
 	var workload containerRecord
 	if json.Unmarshal(items.Kvs[0].Value, &workload) != nil || !workload.Address.Valid() ||
 		r.containerKey(scope, workload.Address) != key || workload.Reservation.ID != id.ID {
-		return "", errors.New("invalid assigned workload")
+		return telemetryBinding{}, errors.New("invalid assigned workload")
 	}
 	if workload.Reservation.HostID != host || workload.Reservation.Generation != id.Generation {
-		return "", nil
+		return telemetryBinding{}, nil
 	}
-	return r.telemetryPrefix(scope, workload.Address, items.Kvs[0].CreateRevision), nil
+	prefix := r.telemetryPrefix(scope, workload.Address, items.Kvs[0].CreateRevision)
+	return telemetryBinding{scope: scope, address: workload.Address, prefix: prefix}, nil
 }
 
 func (r *Region) TelemetrySamples(ctx context.Context, scope arm.SubscriptionScope, reader string, address arm.ResourceAddress,

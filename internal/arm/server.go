@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Weichwolf/ocean/internal/costmanagement"
 	"github.com/Weichwolf/ocean/internal/desktop"
 	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/smb"
@@ -29,6 +30,7 @@ type Server struct {
 	Roles               RoleStore
 	Operations          OperationStore
 	Monitor             MonitorStore
+	CostManagement      CostManagementStore
 	Inventory           InventoryStore
 	Networks            NetworkStore
 	Deployments         NetworkDeploymentStore
@@ -75,6 +77,9 @@ func parseRoute(segments []string) armRoute {
 		return armRoute{collection: "inventory"}
 	}
 	if len(segments) == 5 && strings.EqualFold(segments[2], "providers") {
+		if strings.EqualFold(strings.Join(segments[3:], "/"), costmanagement.Type) {
+			return armRoute{collection: "costQuery"}
+		}
 		if route, ok := storageRoute("", segments[3:]); ok {
 			return route
 		}
@@ -111,6 +116,9 @@ func parseRoute(segments []string) armRoute {
 			return armRoute{collection: "inventory", group: group}
 		}
 		if len(segments) >= 7 && strings.EqualFold(segments[4], "providers") {
+			if len(segments) == 7 && strings.EqualFold(strings.Join(segments[5:], "/"), costmanagement.Type) {
+				return armRoute{collection: "costQuery", group: group}
+			}
 			if len(segments) == 9 && strings.EqualFold(segments[5]+"/"+segments[6], DesktopType) {
 				switch strings.ToLower(segments[8]) {
 				case "authorize":
@@ -306,6 +314,8 @@ func (s Server) Handler(fallback http.Handler) http.Handler {
 			s.resourceLogs(ctx, w, r, scope, reader, ResourceAddress{Group: route.group, Path: route.name})
 		case "activityLog", "regionUsage", "resourceHealth", "workloadMetrics":
 			s.monitor(ctx, w, r, scope, reader, route)
+		case "costQuery":
+			s.costQuery(ctx, w, r, scope, route.group, reader)
 		case "functionSite":
 			s.functionSite(ctx, w, r, scope, principal.Subject, reader, route.group, route.name)
 		case "functionPlan":
@@ -351,6 +361,9 @@ func (s Server) authorizeReader(ctx context.Context, w http.ResponseWriter, r *h
 	}
 	if route.collection == "resourceLogs" && r.Method == http.MethodPost {
 		return true // Log queries apply the group grant in the same store read.
+	}
+	if route.collection == "costQuery" && route.group != "" && r.Method == http.MethodPost {
+		return true // The handler checks the explicit resource group grant.
 	}
 	if read && (route.collection == "replicaSet" || route.collection == "workloadMetrics" || route.collection == "resourceHealth" || route.collection == "activityLog" ||
 		route.collection == "groups" || route.collection == "inventory" || route.collection == "resource" || route.collection == "deployment" || networkResource || route.collection == "containerGroup" || route.collection == "virtualMachine" || route.collection == "storageAccount" || route.collection == "functionPlan" || functionRead ||

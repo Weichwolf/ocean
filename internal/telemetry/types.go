@@ -26,8 +26,20 @@ var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,94}$`)
 var sampleID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type Usage struct {
-	CPUMillis   float64 `json:"cpuMillis"`
-	MemoryBytes int64   `json:"memoryBytes"`
+	CPUMillis   float64        `json:"cpuMillis"`
+	MemoryBytes int64          `json:"memoryBytes"`
+	Interval    *UsageInterval `json:"interval,omitempty"`
+}
+
+// UsageInterval describes the measured period ending at the sample timestamp.
+type UsageInterval struct {
+	Milliseconds  int64 `json:"milliseconds"`
+	CPUTimeMicros int64 `json:"cpuTimeMicros"`
+}
+
+func (period UsageInterval) Valid() bool {
+	return period.Milliseconds >= 100 && period.Milliseconds <= 5000 &&
+		period.CPUTimeMicros >= 0 && period.CPUTimeMicros <= 64000*period.Milliseconds
 }
 
 type Span struct {
@@ -76,7 +88,8 @@ func (sample Sample) Valid(now time.Time) bool {
 	}
 	switch {
 	case sample.Usage != nil && sample.Span == nil && sample.Gap == nil:
-		return finiteBetween(sample.Usage.CPUMillis, 0, 64000) && sample.Usage.MemoryBytes >= 0 && sample.Usage.MemoryBytes <= 64<<30
+		return finiteBetween(sample.Usage.CPUMillis, 0, 64000) && sample.Usage.MemoryBytes >= 0 && sample.Usage.MemoryBytes <= 64<<30 &&
+			(sample.Usage.Interval == nil || sample.Usage.Interval.Valid())
 	case sample.Span != nil && sample.Usage == nil && sample.Gap == nil:
 		s := sample.Span
 		if !safeName.MatchString(s.Name) || !finiteBetween(s.DurationMS, 0, 10*60*1000) ||

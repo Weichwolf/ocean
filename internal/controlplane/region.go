@@ -18,6 +18,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/config"
+	"github.com/Weichwolf/ocean/internal/costmanagement"
 	"github.com/Weichwolf/ocean/internal/enrollment"
 	"github.com/Weichwolf/ocean/internal/functions"
 	"github.com/Weichwolf/ocean/internal/identity"
@@ -34,27 +35,28 @@ type settings struct {
 }
 
 type regionConfig struct {
-	Name                string                    `json:"name"`
-	InitialCell         string                    `json:"initialCell"`
-	OperationController *bool                     `json:"operationController"`
-	Etcd                etcdConfig                `json:"etcd"`
-	PublicIPv4Addresses []netip.Addr              `json:"publicIPv4Addresses"`
-	ApplicationGateways *applicationGatewayConfig `json:"applicationGateways"`
-	WireGuard           *wireGuardConfig          `json:"wireGuard"`
-	IPsec               *ipsecConfig              `json:"ipsec,omitempty"`
-	Workloads           *workloadConfig           `json:"workloads"`
-	Storage             *storageConfig            `json:"storage"`
-	SMBMembers          []smbBinding              `json:"smbMembers,omitempty"`
-	VirtualMachines     *vmConfig                 `json:"virtualMachines,omitempty"`
-	DesktopLaunch       *desktopLaunchConfig      `json:"desktopLaunch,omitempty"`
-	Telemetry           *telemetryConfig          `json:"telemetry"`
-	FunctionPlans       bool                      `json:"functionPlans"`
-	FunctionDomain      string                    `json:"functionDomain,omitempty"`
-	FunctionRegistry    string                    `json:"functionRegistry,omitempty"`
-	FunctionSCMDomain   string                    `json:"functionScmDomain,omitempty"`
-	FunctionSlots       bool                      `json:"functionSlots,omitempty"`
-	ManagedDirectories  *enrollment.Capacity      `json:"managedDirectories,omitempty"`
-	DirectoryFenceKey   string                    `json:"directoryFencePublicKeyFile,omitempty"`
+	Name                string                     `json:"name"`
+	InitialCell         string                     `json:"initialCell"`
+	OperationController *bool                      `json:"operationController"`
+	Etcd                etcdConfig                 `json:"etcd"`
+	PublicIPv4Addresses []netip.Addr               `json:"publicIPv4Addresses"`
+	ApplicationGateways *applicationGatewayConfig  `json:"applicationGateways"`
+	WireGuard           *wireGuardConfig           `json:"wireGuard"`
+	IPsec               *ipsecConfig               `json:"ipsec,omitempty"`
+	Workloads           *workloadConfig            `json:"workloads"`
+	Storage             *storageConfig             `json:"storage"`
+	SMBMembers          []smbBinding               `json:"smbMembers,omitempty"`
+	VirtualMachines     *vmConfig                  `json:"virtualMachines,omitempty"`
+	DesktopLaunch       *desktopLaunchConfig       `json:"desktopLaunch,omitempty"`
+	Telemetry           *telemetryConfig           `json:"telemetry"`
+	CostManagement      *costmanagement.RateConfig `json:"costManagement,omitempty"`
+	FunctionPlans       bool                       `json:"functionPlans"`
+	FunctionDomain      string                     `json:"functionDomain,omitempty"`
+	FunctionRegistry    string                     `json:"functionRegistry,omitempty"`
+	FunctionSCMDomain   string                     `json:"functionScmDomain,omitempty"`
+	FunctionSlots       bool                       `json:"functionSlots,omitempty"`
+	ManagedDirectories  *enrollment.Capacity       `json:"managedDirectories,omitempty"`
+	DirectoryFenceKey   string                     `json:"directoryFencePublicKeyFile,omitempty"`
 }
 
 type etcdConfig struct {
@@ -179,6 +181,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 				resources := arm.Server{Origin: cfg.Identity.Cloud.ResourceManager, Location: cfg.Region.Name, StorageSuffix: cfg.Identity.Cloud.StorageEndpoint,
 					Authenticate: compatibility.AuthenticateARM, Groups: region, Roles: region, Operations: region, Monitor: region, Inventory: region, Networks: region, Deployments: region,
 					GatewayDeployments: region, SiteConnections: region, FunctionPlans: cfg.Region.FunctionPlans, PrincipalExists: compatibility.RolePrincipalExists}
+				if region.cost != nil {
+					resources.CostManagement = region
+				}
 				if region.ipsec != nil {
 					resources.VPN = region
 				}
@@ -255,12 +260,20 @@ type Region struct {
 	vms               *vmControl
 	desktopLaunch     *desktopLaunchControl
 	telemetry         *telemetryControl
+	cost              *costManagementControl
 	cell              string
 }
 
 func openRegion(cfg regionConfig) (*Region, error) {
 	if !identifier.MatchString(cfg.Name) || !identifier.MatchString(cfg.InitialCell) {
 		return nil, errors.New("region name and initialCell must be lowercase identifiers")
+	}
+	if cfg.CostManagement != nil && (cfg.Telemetry == nil || cfg.Workloads == nil) {
+		return nil, errors.New("cost management requires workload execution and the independent telemetry store")
+	}
+	cost, err := openCostManagement(cfg.CostManagement)
+	if err != nil {
+		return nil, err
 	}
 	publicIPv4, err := configuredPublicIPs(cfg.PublicIPv4Addresses)
 	if err != nil {
@@ -320,7 +333,7 @@ func openRegion(cfg regionConfig) (*Region, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("open telemetry backend: %w", err)
 	}
-	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
+	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, cost: cost, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, ipsec: ipsec, workloads: workloads, storage: storage, cell: cfg.InitialCell,
 		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers}
 	if cfg.ManagedDirectories != nil {

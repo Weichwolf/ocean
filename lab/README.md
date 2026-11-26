@@ -2565,6 +2565,97 @@ worker buffer across a process restart and then compares reported gaps with
 worker loss and resumed usage series. The acceptance evidence records the
 measured delays and the profile's numeric limits.
 
+### Cost Management
+
+Enable the optional profile on the regional API replicas with the independent
+telemetry store and the container workload provider. Set
+`region.costManagement` to the same configuration on each replica.
+
+```json
+{
+  "currency": "CHF",
+  "cpuPerVCPUHour": "36.000000",
+  "memoryPerGiBHour": "0.360000"
+}
+```
+
+The example uses the lab tariff so short-lived workloads produce visible
+amounts. Currency is CHF, EUR or USD. Rates are decimal strings with at most
+six fractional places and are fixed for the life of the ledger. A replica with
+different rates cannot write or report priced usage for that ledger.
+
+The `cpu-vcpu-hour` meter uses the measured change in Linux
+`cpu.stat` CPU time. The `memory-gib-hour` meter uses the closing
+`memory.current` sample multiplied by the measured interval. Each admitted
+interval spans 100 ms through 5 seconds. UTC midnight divides the interval
+between daily buckets. The CPU split conserves the counter total and assigns
+any fractional microsecond remainder to the later day. Queued samples are
+applied in order per resource and the committed endpoint prevents duplicate
+or overlapping charges. Old samples without the interval fields still
+feed monitoring. Only measured intervals accepted by the ledger contribute
+to costs. Monitor telemetry gaps for missing measurements.
+
+Daily counters have their own leases in the telemetry store. Azure queries
+cover the latest 90 UTC calendar days, including the current day. The
+daily charge can continue to change until delayed samples arrive. The
+counters remain readable after the raw observations expire and after a
+container group or Function is deleted. Upgrade regional API replicas
+before enabling the new interval fields on upgraded workers.
+
+Use Azure CLI 2.93.0 with the regional ARM audience and
+`Microsoft.CostManagement/query` API version `2025-03-01`. The endpoint
+accepts subscription and resource group scopes. Subscription members
+can query the whole subscription. A scoped Reader can query an explicitly
+granted resource group. Use `Usage` or `ActualCost`, a single
+`PreTaxCost` sum, and `None` or `Daily` granularity. Group by
+`ResourceId`, `MeterId` or both. `Custom` takes inclusive UTC calendar
+dates at midnight and supports up to 31 days. `MonthToDate` and
+`TheLastMonth` select UTC month windows. Empty windows return HTTP 204.
+The service returns typed columns and numeric amounts, rounding each
+aggregate once to six decimal places using half-up rounding. A query
+can inspect up to 4,096 source records and return up to 4,096 rows.
+[Azure Cost Management Query API](https://learn.microsoft.com/en-us/rest/api/cost-management/query/usage?view=rest-cost-management-2025-03-01)
+
+```sh
+cat > cost-query.json <<'JSON'
+{
+  "type": "Usage",
+  "timeframe": "MonthToDate",
+  "dataset": {
+    "granularity": "None",
+    "aggregation": {"totalCost": {"name": "PreTaxCost", "function": "Sum"}},
+    "grouping": [
+      {"type": "Dimension", "name": "ResourceId"},
+      {"type": "Dimension", "name": "MeterId"}
+    ]
+  }
+}
+JSON
+az rest --method post --body @cost-query.json \
+  --url "$OCEAN_ARM_ENDPOINT/subscriptions/$OCEAN_SUBSCRIPTION_ID/providers/Microsoft.CostManagement/query?api-version=2025-03-01"
+```
+
+Run acceptance on the regional identity lab with at least one live
+enrolled compute worker and the private workload network.
+
+```sh
+make deb-agent
+python3 lab/prepare_telemetry.py --state "$LAB_STATE" \
+  --package bin/ocean-agent_0.1.0~dev12_amd64.deb --cost-management
+OCEAN_E2E_PROFILE=cost-management OCEAN_E2E_STATE="$LAB_STATE" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The live run starts two metered private containers. It compares the CLI
+queries with reference calculations from the raw cgroup measurements,
+checks that a group Reader cannot query wider scopes or retain access
+after revocation, and verifies historical results after deletion. The runner
+collects `evidence/cost-management.json`. The separate
+`cost-management-foundation` profile uses disposable mTLS etcd to
+check a known dataset around midnight, concurrent delivery, retained
+totals and mismatched tariff protection.
+[End-to-end protocol](../tests/e2e/protocol.md#lab-profiles)
+
 ### Local placement and autoscaling
 
 The `Ocean.Compute/replicaSets` API version `2026-11-01` manages stateless

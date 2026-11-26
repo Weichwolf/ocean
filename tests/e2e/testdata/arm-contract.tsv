@@ -16,6 +16,8 @@ PROFILE-02	functions-production-settings	2.93.0	none	2023-12-01+2025-05-01	funct
 PROFILE-02	functions-slot-settings	2.93.0	none	2023-12-01+2025-05-01	functionapp config appsettings set --resource-group {group} --name {app} --slot {slot} --settings OCEAN_SETTING={setting} --slot-settings OCEAN_STICKY={sticky} -o none
 PROFILE-02	functions-slot-discovery	2.93.0	none	2025-05-01	rest --method get --url {slot_url}/functions?api-version={api_version} -o json
 PROFILE-02	functions-slot-key-set	2.93.0	none	2025-05-01	rest --method put --url {slot_url}/functions/hello/keys/e2e?api-version={api_version} --body @{key_file} -o none
+PROFILE-03	cost-query-subscription	2.93.0	none	2025-03-01	rest --method post --url {origin}/subscriptions/{subscription}/providers/Microsoft.CostManagement/query?api-version=2025-03-01 --body @{body} -o json
+PROFILE-03	cost-query-group	2.93.0	none	2025-03-01	rest --method post --url {origin}/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.CostManagement/query?api-version=2025-03-01 --body @{body} -o json
 CONTRACT-02	provider-show	2.93.0	none	2024-11-01	provider show --namespace Microsoft.Resources -o json
 CONTRACT-02	group-create	2.93.0	none	2024-11-01	group create --name {group} --location {location} --tags ocean-fixture={tag} -o json
 CONTRACT-02	group-show	2.93.0	none	2024-11-01	group show --name {group} -o json
