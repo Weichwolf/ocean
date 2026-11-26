@@ -53,6 +53,9 @@ func (c *Compatibility) token(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if !c.admitHostedOAuth(w, r, tenant) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxOIDCBody)
 	if err := r.ParseForm(); err != nil || r.URL.RawQuery != "" {
 		oauthError(w, http.StatusBadRequest, "invalid_request")

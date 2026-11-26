@@ -225,3 +225,6 @@ WORKPLACE-43	hosted-share-get	2.93.0	none	2024-01-01	rest --method get --url {ar
 WORKPLACE-43	hosted-share-denied	2.93.0	none	2024-01-01	rest --method put --url {arm}{shareId}?api-version=2024-01-01 --body @{share_request} -o json
 WORKPLACE-44	hosted-placement-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/placementPolicy?api-version=2026-11-01 -o json
 WORKPLACE-44	hosted-placement-put	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/placementPolicy?api-version=2026-11-01 --body @{placement_policy} -o json
+WORKPLACE-47	hosted-suspension-put	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
+WORKPLACE-47	hosted-suspension-get	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 -o json
+WORKPLACE-47	hosted-suspension-arm	2.93.0	none	2024-11-01	rest --method get --url {arm}/subscriptions/{subscription}/resourcegroups?api-version=2024-11-01 -o json

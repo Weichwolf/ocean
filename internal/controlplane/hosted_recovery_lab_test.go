@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,14 +18,14 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
-	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/storage"
 )
 
 func TestHostedRecoveryTarget(t *testing.T) {
 	archive := os.Getenv("OCEAN_E2E_HOSTED_ETCD_ARCHIVE")
-	if archive == "" {
-		t.Skip("requires the pinned etcd archive for isolated mutual TLS storage and snapshot restore")
+	cli := os.Getenv("OCEAN_E2E_HOSTED_AZ")
+	if archive == "" || cli == "" {
+		t.Skip("requires the pinned etcd archive and stock Azure CLI for isolated backup and recovery")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 80*time.Second)
 	defer cancel()
@@ -32,6 +33,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	dir, keys, otherKeys := t.TempDir(), t.TempDir(), t.TempDir()
 	base, cert, certKey, etcd, _ := prepareSMBRecoveryEtcd(t, ctx, archive, dir)
 	source, sourceID, stopSource := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, filepath.Join(dir, "source"), nil)
+	ledger, ledgerID, stopLedger := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, filepath.Join(dir, "ledger"), nil)
 	approvedOrigin := "https://" + disposableEtcdAddress(t)
 	wrapping := filepath.Join(dir, "regional.key")
 	wrappingKey := make([]byte, storage.KeySize)
@@ -42,7 +44,9 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	clear(wrappingKey)
 	quota := enrollment.Capacity{CPUMillis: 800, MemoryMiB: 512}
 	cfg := regionConfig{Name: "hosted-recovery", InitialCell: "cell-1", Etcd: source,
+		DeletionLedgerEtcd: &ledger,
 		HostedWorkplace: &hostedRegionPolicy{Country: "DE", OperatorPools: map[string]string{"primary": "DE", "partner": "NL"},
+			DeletionLedger: &hostedLedgerPolicy{OperatorPool: "primary", ClusterID: fmt.Sprintf("%x", ledgerID), Endpoints: ledger.Endpoints},
 			RecoveryTargets: map[string]hostedRecoveryTarget{
 				"recovery-a": {OperatorPool: "primary", KeyDirectory: keys, MetadataOrigins: []string{approvedOrigin}},
 				"recovery-b": {OperatorPool: "partner", KeyDirectory: otherKeys, MetadataOrigins: []string{approvedOrigin}},
@@ -59,18 +63,13 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	if err := region.bootstrap(ctx); err != nil {
 		t.Fatal(err)
 	}
-	tenant := identity.TenantReservation{TenantID: operationID(), SubscriptionID: operationID(), Administrator: operationID(), Fingerprint: operationID()}
+	tenant := seedHostedRestoreTenant(t, ctx, region)
+	neighbor := seedHostedRestoreTenant(t, ctx, region)
 	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
-	if _, err := region.ReserveTenant(ctx, tenant); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := region.PublishSubscription(ctx, tenant, identity.Subscription{TenantID: tenant.TenantID,
-		SubscriptionID: tenant.SubscriptionID, DisplayName: "Hosted restore fixture", Members: []string{tenant.Administrator}}); err != nil {
-		t.Fatal(err)
-	}
 	if err := region.SetPlacementPolicy(ctx, scope, PlacementPolicy{Pools: []string{"primary"}, Quota: quota}); err != nil {
 		t.Fatal(err)
 	}
+	seedHostedRestoreAssignments(t, ctx, region, tenant, neighbor, quota)
 	account := arm.ResourceAddress{Group: "lab", Path: storage.AccountType + "/fixture"}
 	share := arm.ResourceAddress{Group: account.Group, Path: account.Path + "/fileServices/default/shares/fixture"}
 	volume := storage.Volume{ID: "vol-" + operationID(), SizeMiB: 1024}
@@ -83,14 +82,13 @@ func TestHostedRecoveryTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := verifyHostedBackup(t, ctx, cfg, region, scope, quota, backupIdentity, dir)
-	stopSource()
 	restoredPath := filepath.Join(dir, "recovery")
 	restored, restoredID, _ := startSMBRecoveryEtcd(t, ctx, base, cert, certKey, etcd, restoredPath,
 		func(peer, cluster, token string) {
 			etcdLabCommand(t, ctx, nil, filepath.Join(dir, "etcdutl"), "snapshot", "restore", snapshot, "--name=smb-recovery",
 				"--initial-cluster="+cluster, "--initial-advertise-peer-urls="+peer, "--initial-cluster-token="+token, "--data-dir="+restoredPath)
 		}, approvedOrigin)
-	if restoredID == sourceID {
+	if restoredID == sourceID || restoredID == ledgerID || sourceID == ledgerID {
 		t.Fatal("the key recovery test requires an independent restored cluster")
 	}
 	cfg.Etcd = restored
@@ -129,7 +127,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 	mismatched.Etcd.Endpoints = source.Endpoints
 	run(mismatched, "recovery-a", keyPath, "do not match an approved recovery target")
 	downgraded := cfg
-	downgraded.HostedWorkplace = nil
+	downgraded.HostedWorkplace, downgraded.DeletionLedgerEtcd = nil, nil
 	run(downgraded, "", keyPath, "requires its original policy")
 	if err := os.Chmod(keys, 0750); err != nil {
 		t.Fatal(err)
@@ -149,4 +147,8 @@ func TestHostedRecoveryTarget(t *testing.T) {
 		t.Fatal("the recovery key file is not owner-only")
 	}
 	t.Logf("Pinned etcd restored an independent cluster. ocean-recover rejected four target or policy mismatches, an outside path, and a shared directory before recovering the sealed key. Verification took %d ms.", time.Since(started).Milliseconds())
+	verifyHostedSuspension(t, ctx, cfg, region, tenant, neighbor, cli, stopLedger, func() {
+		run(cfg, "recovery-a", filepath.Join(keys, "after-suspension.key"), "hosted tenant subscription is unavailable")
+	})
+	stopSource()
 }

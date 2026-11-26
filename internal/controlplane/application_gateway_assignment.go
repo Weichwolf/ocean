@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -67,6 +68,12 @@ func (r *Region) gatewayAssignments(ctx context.Context, id string, certificate 
 			r.gatewayRecordKey(record.Scope, record.Resource) != recordKey || record.Slot != slot ||
 			record.OperationID == "" || len(record.Hosts) != 2 || !slices.Contains(record.Hosts, id) {
 			return nil, errors.New("invalid gateway desired state")
+		}
+		if err := r.requireActiveHostedTenant(ctx, record.Scope.TenantID); err != nil {
+			if errors.Is(err, identity.ErrTenantSuspended) {
+				continue
+			}
+			return nil, err
 		}
 		result = append(result, record)
 	}

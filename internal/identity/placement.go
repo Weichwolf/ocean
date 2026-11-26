@@ -13,7 +13,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/enrollment"
 )
 
-const placementPolicyVersion = "2026-11-01"
+const hostedOperatorVersion = "2026-11-01"
 
 var (
 	ErrPlacementPolicy      = errors.New("placement pools or quota are outside the hosted policy")
@@ -42,30 +42,10 @@ func (c *Compatibility) EnablePlacementPolicies(store PlacementPolicyStore) erro
 }
 
 func (c *Compatibility) tenantPlacementPolicy(w http.ResponseWriter, req *http.Request) {
-	if !strings.EqualFold(req.Host, strings.TrimPrefix(c.cloud.ResourceManager, "https://")) {
-		http.NotFound(w, req)
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
 	ctx, cancel := context.WithTimeout(req.Context(), 8*time.Second)
 	defer cancel()
-	actor, err := c.authenticateOperator(ctx, req)
-	if err != nil {
-		if errors.Is(err, errOperatorDenied) {
-			armError(w, http.StatusForbidden, "AuthorizationFailed", "Hosted placement requires an ocean operator.")
-		} else {
-			invalidARMToken(w)
-		}
-		return
-	}
-	query, err := url.ParseQuery(req.URL.RawQuery)
-	if err != nil || len(query) != 1 || len(query["api-version"]) != 1 || query.Get("api-version") != placementPolicyVersion {
-		armError(w, http.StatusBadRequest, "InvalidApiVersionParameter", "Hosted placement requires api-version="+placementPolicyVersion+".")
-		return
-	}
-	tenant := req.PathValue("tenant")
-	if !tenantID.MatchString(tenant) || tenant == c.onboarding.config.OperatorTenant {
-		armError(w, http.StatusBadRequest, "InvalidTenant", "Use a customer tenant UUID.")
+	tenant, actor, ok := c.hostedOperator(ctx, w, req)
+	if !ok {
 		return
 	}
 	subscription, err := c.subscriptions.lookup(ctx, tenant)
@@ -94,6 +74,34 @@ func (c *Compatibility) tenantPlacementPolicy(w http.ResponseWriter, req *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, policy)
+}
+
+func (c *Compatibility) hostedOperator(ctx context.Context, w http.ResponseWriter, req *http.Request) (tenant, actor string, ok bool) {
+	if !strings.EqualFold(req.Host, strings.TrimPrefix(c.cloud.ResourceManager, "https://")) {
+		http.NotFound(w, req)
+		return "", "", false
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	actor, err := c.authenticateOperator(ctx, req)
+	if err != nil {
+		if errors.Is(err, errOperatorDenied) {
+			armError(w, http.StatusForbidden, "AuthorizationFailed", "This hosted operation requires an ocean operator.")
+		} else {
+			invalidARMToken(w)
+		}
+		return "", "", false
+	}
+	query, err := url.ParseQuery(req.URL.RawQuery)
+	if err != nil || len(query) != 1 || len(query["api-version"]) != 1 || query.Get("api-version") != hostedOperatorVersion {
+		armError(w, http.StatusBadRequest, "InvalidApiVersionParameter", "Hosted operations require api-version="+hostedOperatorVersion+".")
+		return "", "", false
+	}
+	tenant = req.PathValue("tenant")
+	if !tenantID.MatchString(tenant) || tenant == c.onboarding.config.OperatorTenant {
+		armError(w, http.StatusBadRequest, "InvalidTenant", "Use a customer tenant UUID.")
+		return "", "", false
+	}
+	return tenant, actor, true
 }
 
 func placementPolicyError(w http.ResponseWriter, err error) {

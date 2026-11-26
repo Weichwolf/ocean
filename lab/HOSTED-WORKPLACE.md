@@ -28,7 +28,7 @@ applicable transfer mechanism and location restrictions before enabling a path.
 | Samba controllers and SYSVOL, compute and SMB members | Hosted profile, approved inventory and site proof, subscription policy, authorized and rejected assignments and fenced failover |
 | Ceph and key services | OSD and replica placement, storage client ACLs, tested use of the encrypted data path, key custody and recovery permissions |
 | Telemetry, activity and support logs | Endpoint locations, least-privilege readers, retention and expiration evidence, redacted test sample |
-| Backups and restores | Independent target and key custodian, site and replica proof, archive expiry, restore isolation and deletion replay result |
+| Backups and restores | Independent target and key custodian, site and replica proof, archive expiry, restore isolation and replay of independent offboarding records |
 | Remote support | Approved access origins, short-lived scoped identities, MFA where supported, approval and revocation evidence, privileged session audit |
 
 ## Operating procedures to exercise
@@ -40,10 +40,10 @@ applicable transfer mechanism and location restrictions before enabling a path.
    withdraw workload assignments, and track deletion of live data and the
    latest expiry of copies in each backup system. Retain only the evidence
    necessary to prove the actions and comply with applicable obligations.
-3. Keep the authoritative deletion decisions independent of the backups they
-   govern. Restore into an isolated environment with access disabled. Reapply
-   subsequent deletion decisions to the restored data, verify the denied
-   identities and removed records, and record approval before reopening it.
+3. Keep the authoritative deletion ledger independent of the backups it governs.
+   Restore into an isolated environment. Verify that regional startup replays
+   subsequent suspensions before accepting requests. Verify denied identities,
+   service shutdown, deletion of recovered data and the approval to reopen.
 4. Exercise the incident route. Record discovery time, affected scope, initial
    containment, tenant notice and follow-up. The processor notifies the
    controller without undue delay after awareness of a personal data breach.

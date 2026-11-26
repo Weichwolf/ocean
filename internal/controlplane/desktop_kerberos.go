@@ -44,6 +44,7 @@ type desktopBrokerManifest struct {
 type desktopBrokerGuest struct {
 	broker    desktop.CIFSBroker
 	machineID string
+	tenant    string
 }
 
 var desktopBrokerAccount = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
@@ -86,7 +87,7 @@ func configureDesktopBrokers(settings []desktopBrokerConfig, smb *smbControl) (m
 			}
 			machines[guest.MachineID] = true
 			guests[i].Certificate = hex.EncodeToString(digest)
-			brokers[fingerprint] = desktopBrokerGuest{broker: broker, machineID: guest.MachineID}
+			brokers[fingerprint] = desktopBrokerGuest{broker: broker, machineID: guest.MachineID, tenant: scope.TenantID}
 		}
 		manifest = append(manifest, desktopBrokerManifest{Scope: scope, Principal: broker.Principal, Service: broker.Service, Guests: guests})
 	}
@@ -112,6 +113,9 @@ func (r *Region) DesktopCIFSCache(ctx context.Context, certificate []byte, input
 	}
 	guest, ok := r.desktopLaunch.brokers[sha256.Sum256(certificate)]
 	if !ok || !strings.HasSuffix(input.User, "@"+guest.broker.DNSDomain) {
+		return nil, desktop.ErrLaunchDenied
+	}
+	if err := r.requireActiveHostedTenant(ctx, guest.tenant); err != nil {
 		return nil, desktop.ErrLaunchDenied
 	}
 	public := ed25519.PublicKey(r.desktopLaunch.signer[ed25519.SeedSize:])

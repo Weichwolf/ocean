@@ -57,6 +57,9 @@ func (cfg regionConfig) authorizeRecoveryTarget(name, destination string) (hoste
 
 func (r *Region) verifyRecoveryTarget(ctx context.Context, scope arm.SubscriptionScope, target hostedRecoveryTarget) error {
 	if r.hosted != nil {
+		if r.deletionLedger == nil {
+			return errors.New("hosted key recovery requires the independent deletion ledger")
+		}
 		if err := r.ready(ctx); err != nil {
 			return err
 		}

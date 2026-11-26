@@ -47,40 +47,8 @@ func TestHostedOperatorPlacement(t *testing.T) {
 	seedHostedPlacementWorker(t, ctx, r, "b-primary", "primary")
 	operatorRealm, operatorClient, operator := operationID(), operationID(), operationID()
 	issuer, sign := hostedOperatorIssuer(t, operatorRealm, tenant.TenantID)
-	api := httptest.NewUnstartedServer(nil)
-	t.Cleanup(api.Close)
-	armOrigin := "https://" + api.Listener.Addr().String()
-	credentials := t.TempDir()
-	writePrivate := func(name string, contents []byte) string {
-		t.Helper()
-		path := filepath.Join(credentials, name)
-		if err := os.WriteFile(path, contents, 0600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	secret := make([]byte, 32)
-	rand.Read(secret)
-	private := writePrivate("onboarding.key", secret)
-	clear(secret)
-	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
-		ProviderCAFile: writePrivate("issuer.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),
-		Cloud:          &identity.CloudEndpoints{ResourceManager: armOrigin, MicrosoftGraph: "https://graph.ocean.test"}}).OpenCompatibility()
-	if err != nil {
-		t.Fatal(err)
-	}
-	compat.EnableSubscriptions(r.name, r.lookupSubscription)
-	if err := compat.EnableOnboarding(identity.OnboardingConfig{OperatorTenant: operatorRealm, OperatorClient: operatorClient,
-		AdminEndpoints: []string{"https://admin.ocean.test"}, AdminClient: "fixture", AdminSecretFile: private, RegionalKeyFile: private}, r); err != nil {
-		t.Fatal(err)
-	}
-	if err := compat.EnablePlacementPolicies(r); err != nil {
-		t.Fatal(err)
-	}
-	api.Config.Handler = (arm.Server{Origin: armOrigin}).Handler(compat.Handler())
-	api.StartTLS()
-	apiCA := writePrivate("api.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: api.Certificate().Raw}))
-	az := regionalWorkerCLI(t, ctx, armOrigin, apiCA, cli)
+	api, az := hostedOperatorLabAPI(t, ctx, r, cli, operatorRealm, operatorClient, issuer)
+	armOrigin := api.URL
 	started := time.Now()
 	operatorToken := sign(operatorRealm, operatorClient, operator, armOrigin)
 	path := "/ocean/tenants/" + tenant.TenantID + "/placementPolicy?api-version=2026-11-01"
@@ -149,6 +117,47 @@ func TestHostedOperatorPlacement(t *testing.T) {
 		t.Fatalf("unexpected policy audit actions: %v", actions)
 	}
 	t.Logf("Azure CLI 2.93.0 applied the pool, validated operator signature, client and audience, and preserved four scoped audit outcomes and one idempotent policy revision. Verification took %d ms.", time.Since(started).Milliseconds())
+}
+
+func hostedOperatorLabAPI(t *testing.T, ctx context.Context, r *Region, cli, operatorRealm, operatorClient string,
+	issuer *httptest.Server) (*httptest.Server, func(string, string, string, string, string) []byte) {
+	t.Helper()
+	api := httptest.NewUnstartedServer(nil)
+	t.Cleanup(api.Close)
+	armOrigin := "https://" + api.Listener.Addr().String()
+	credentials := t.TempDir()
+	writePrivate := func(name string, contents []byte) string {
+		t.Helper()
+		path := filepath.Join(credentials, name)
+		if err := os.WriteFile(path, contents, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	private := writePrivate("onboarding.key", []byte(rand.Text()+rand.Text()))
+	compat, err := (identity.Config{Authority: issuer.URL, Provider: issuer.URL,
+		ProviderCAFile: writePrivate("issuer.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate().Raw})),
+		Cloud:          &identity.CloudEndpoints{ResourceManager: armOrigin, MicrosoftGraph: "https://graph.ocean.test"}}).OpenCompatibility()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compat.EnableSubscriptions(r.name, r.lookupSubscription)
+	if err := compat.EnableOnboarding(identity.OnboardingConfig{OperatorTenant: operatorRealm, OperatorClient: operatorClient,
+		AdminEndpoints: []string{"https://admin.ocean.test"}, AdminClient: "fixture", AdminSecretFile: private, RegionalKeyFile: private}, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := compat.EnablePlacementPolicies(r); err != nil {
+		t.Fatal(err)
+	}
+	if r.deletionLedger != nil {
+		if err := compat.EnableHostedOffboarding(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api.Config.Handler = (arm.Server{Origin: armOrigin, Authenticate: compat.AuthenticateARM, Groups: r, Roles: r}).Handler(compat.Handler())
+	api.StartTLS()
+	apiCA := writePrivate("api.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: api.Certificate().Raw}))
+	return api, regionalWorkerCLI(t, ctx, armOrigin, apiCA, cli)
 }
 
 func hostedOperatorIssuer(t *testing.T, realms ...string) (*httptest.Server, func(string, string, string, string) string) {

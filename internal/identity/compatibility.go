@@ -37,6 +37,7 @@ type Compatibility struct {
 	subscriptions  *subscriptionReader
 	onboarding     *onboarding
 	placement      PlacementPolicyStore
+	offboarding    HostedOffboardingStore
 	directories    ManagedDirectoryStore
 }
 
@@ -146,6 +147,10 @@ func (c *Compatibility) Handler() http.Handler {
 		mux.HandleFunc("GET /ocean/tenants/{tenant}/placementPolicy", c.tenantPlacementPolicy)
 		mux.HandleFunc("PUT /ocean/tenants/{tenant}/placementPolicy", c.tenantPlacementPolicy)
 	}
+	if c.offboarding != nil {
+		mux.HandleFunc("GET /ocean/tenants/{tenant}/offboarding", c.hostedOffboarding)
+		mux.HandleFunc("PUT /ocean/tenants/{tenant}/offboarding", c.hostedOffboarding)
+	}
 	return mux
 }
 
@@ -153,6 +158,9 @@ func (c *Compatibility) discover(w http.ResponseWriter, r *http.Request) {
 	tenant := r.PathValue("tenant")
 	if !tenantID.MatchString(tenant) {
 		http.NotFound(w, r)
+		return
+	}
+	if !c.admitHostedOAuth(w, r, tenant) {
 		return
 	}
 	issuer := c.provider + "/realms/" + tenant
@@ -182,6 +190,9 @@ func (c *Compatibility) device(w http.ResponseWriter, r *http.Request) {
 	tenant := r.PathValue("tenant")
 	if !tenantID.MatchString(tenant) {
 		http.NotFound(w, r)
+		return
+	}
+	if !c.admitHostedOAuth(w, r, tenant) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxOIDCBody)

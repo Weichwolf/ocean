@@ -9,6 +9,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	"github.com/Weichwolf/ocean/internal/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -54,6 +55,12 @@ func (r *Region) HostVirtualMachineTasks(ctx context.Context, host string, certi
 		key := string(item.Value)
 		if !validScope(scope) || !strings.HasPrefix(key, r.armPrefix(scope)+"virtual-machines/") {
 			return page, errors.New("invalid host VM task scope")
+		}
+		if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
+			if errors.Is(err, identity.ErrTenantSuspended) {
+				continue
+			}
+			return workload.VMTaskPage{}, err
 		}
 		task, err := r.vmTask(ctx, scope, host, parts[2], key, read.Header.Revision)
 		if err != nil {

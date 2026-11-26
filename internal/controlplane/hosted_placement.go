@@ -8,6 +8,7 @@ import (
 
 	"github.com/Weichwolf/ocean/internal/arm"
 	"github.com/Weichwolf/ocean/internal/enrollment"
+	"github.com/Weichwolf/ocean/internal/identity"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -20,6 +21,7 @@ type hostedRegionPolicy struct {
 	RecoveryTargets        map[string]hostedRecoveryTarget `json:"recoveryTargets,omitempty"`
 	BackupStagingDirectory string                          `json:"backupStagingDirectory,omitempty"`
 	BackupTargets          map[string]hostedBackupTarget   `json:"backupTargets,omitempty"`
+	DeletionLedger         *hostedLedgerPolicy             `json:"deletionLedger,omitempty"`
 }
 
 func euCountry(country string) bool {
@@ -40,6 +42,9 @@ func (p *hostedRegionPolicy) validate() error {
 		}
 	}
 	if err := p.validateRecoveryTargets(); err != nil {
+		return err
+	}
+	if err := p.validateDeletionLedger(); err != nil {
 		return err
 	}
 	return p.validateBackupTargets()
@@ -120,6 +125,16 @@ func (r *Region) hostedHostGuards(ctx context.Context, scope arm.SubscriptionSco
 }
 
 func (r *Region) hostedPoolGuard(ctx context.Context, scope arm.SubscriptionScope, pool string, revision int64) (clientv3.Cmp, error) {
+	if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return clientv3.Cmp{}, ErrPlacementPolicy
+		}
+		return clientv3.Cmp{}, err
+	}
+	return r.hostedPlacementAt(ctx, scope, pool, revision)
+}
+
+func (r *Region) hostedPlacementAt(ctx context.Context, scope arm.SubscriptionScope, pool string, revision int64) (clientv3.Cmp, error) {
 	key := r.armPrefix(scope) + "placement-policy"
 	policy, version, err := r.placementPolicy(ctx, key, true, clientv3.WithRev(revision))
 	if err != nil {

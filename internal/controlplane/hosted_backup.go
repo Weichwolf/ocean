@@ -75,7 +75,7 @@ func loadHostedBackup(path, targetName string) (regionConfig, hostedBackupTarget
 	if err != nil {
 		return regionConfig{}, hostedBackupTarget{}, err
 	}
-	if settings.Region == nil || settings.Region.HostedWorkplace == nil || !identifier.MatchString(settings.Region.Name) ||
+	if settings.Region == nil || settings.Region.HostedWorkplace == nil || settings.Region.HostedWorkplace.DeletionLedger == nil || !identifier.MatchString(settings.Region.Name) ||
 		!identifier.MatchString(settings.Region.InitialCell) {
 		return regionConfig{}, hostedBackupTarget{}, errors.New("backup requires a configured hosted region")
 	}
@@ -133,10 +133,20 @@ func openBackupSource(ctx context.Context, cfg regionConfig, snapshot bool) (*Re
 	}
 	root := "/ocean/v1/regions/" + cfg.Name
 	keys, values := initialRecords(root, cfg.Name, cfg.InitialCell, cfg.HostedWorkplace)
-	return &Region{client: client, root: root, name: cfg.Name, keys: keys, values: values, hosted: cfg.HostedWorkplace}, nil
+	ledger, err := cfg.openDeletionLedger(root)
+	if err != nil {
+		return nil, errors.Join(err, client.Close())
+	}
+	return &Region{client: client, root: root, name: cfg.Name, keys: keys, values: values, hosted: cfg.HostedWorkplace, deletionLedger: ledger}, nil
 }
 
-func (r *Region) backupPolicyBarrier(ctx context.Context, dedicated bool) (revision, epoch int64, err error) {
+type hostedBackupEpoch struct {
+	placement   int64
+	offboarding int64
+}
+
+func (r *Region) backupPolicyBarrier(ctx context.Context, dedicated bool) (int64, hostedBackupEpoch, error) {
+	var epoch hostedBackupEpoch
 	reads := []clientv3.Op{clientv3.OpGet(r.keys[0]), clientv3.OpGet(r.keys[1]), clientv3.OpGet(r.backupPolicyKey())}
 	if dedicated {
 		prefix := r.root + "/"
@@ -145,21 +155,22 @@ func (r *Region) backupPolicyBarrier(ctx context.Context, dedicated bool) (revis
 	}
 	result, err := r.client.Txn(ctx).Then(reads...).Commit()
 	if err != nil {
-		return 0, 0, err
+		return 0, epoch, err
 	}
 	for i, expected := range r.values {
 		rows := result.Responses[i].GetResponseRange().Kvs
 		if len(rows) != 1 || string(rows[0].Value) != expected {
-			return 0, 0, errors.New("backup configuration differs from the persisted hosted region")
+			return 0, epoch, errors.New("backup configuration differs from the persisted hosted region")
 		}
 	}
 	if dedicated && (result.Responses[3].GetResponseRange().Count != 0 || result.Responses[4].GetResponseRange().Count != 0) {
-		return 0, 0, errors.New("regional snapshots require a dedicated etcd cluster")
+		return 0, epoch, errors.New("regional snapshots require a dedicated etcd cluster")
 	}
 	if row := result.Responses[2].GetResponseRange().Kvs; len(row) != 0 {
-		epoch = row[0].ModRevision
+		epoch.placement = row[0].ModRevision
 	}
-	return result.Header.Revision, epoch, nil
+	epoch.offboarding, err = r.deletionLedger.revision(ctx, result.Header.ClusterId)
+	return result.Header.Revision, epoch, err
 }
 
 func (r *Region) backupTenantAllowed(ctx context.Context, scope arm.SubscriptionScope, pool string, revision int64) error {
@@ -216,7 +227,7 @@ func (r *Region) authorizeBackup(ctx context.Context, scope arm.SubscriptionScop
 			if len(entry.Kvs) != 1 || json.Unmarshal(entry.Kvs[0].Value, &sub) != nil || !sub.Valid(tenant) {
 				return errors.New("invalid subscription in regional backup scope")
 			}
-			if _, err := r.hostedPoolGuard(ctx, arm.SubscriptionScope{TenantID: tenant, SubscriptionID: sub.SubscriptionID}, pool, revision); err != nil {
+			if _, err := r.hostedPlacementAt(ctx, arm.SubscriptionScope{TenantID: tenant, SubscriptionID: sub.SubscriptionID}, pool, revision); err != nil {
 				return errors.Join(errors.New("a tenant policy does not authorize this regional snapshot target"), err)
 			}
 		}
@@ -258,7 +269,7 @@ func SaveHostedBackup(ctx context.Context, configuration string, request HostedB
 	return writeHostedBackup(ctx, r, cfg, target, request, epoch, wantDigest)
 }
 
-func writeHostedBackup(ctx context.Context, r *Region, cfg regionConfig, target hostedBackupTarget, request HostedBackupRequest, epoch int64, wantDigest []byte) (HostedBackupResult, error) {
+func writeHostedBackup(ctx context.Context, r *Region, cfg regionConfig, target hostedBackupTarget, request HostedBackupRequest, epoch hostedBackupEpoch, wantDigest []byte) (HostedBackupResult, error) {
 	snapshot := request.Kind == "etcd"
 	staging, err := openPrivateHostedDirectory(cfg.HostedWorkplace.BackupStagingDirectory, "backup staging")
 	if err != nil {

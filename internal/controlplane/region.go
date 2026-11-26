@@ -47,6 +47,7 @@ type regionConfig struct {
 	DesktopLaunch       *desktopLaunchConfig      `json:"desktopLaunch,omitempty"`
 	Telemetry           *telemetryConfig          `json:"telemetry"`
 	HostedWorkplace     *hostedRegionPolicy       `json:"hostedWorkplace,omitempty"`
+	DeletionLedgerEtcd  *etcdConfig               `json:"deletionLedgerEtcd,omitempty"`
 	AuditRetention      int64                     `json:"auditRetentionSeconds,omitempty"`
 	FunctionPlans       bool                      `json:"functionPlans"`
 	FunctionDomain      string                    `json:"functionDomain,omitempty"`
@@ -81,6 +82,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 	}
 	if cfg.Region != nil && cfg.Region.HostedWorkplace != nil && (cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil) {
 		return config.Server{}, service.Hooks{}, errors.New("hosted workplace requires operator and tenant onboarding identity")
+	}
+	if cfg.Region != nil && cfg.Region.HostedWorkplace != nil && cfg.Region.HostedWorkplace.DeletionLedger == nil {
+		return config.Server{}, service.Hooks{}, errors.New("hosted workplace requires a separate deletion ledger")
 	}
 	if cfg.Region != nil && cfg.Region.ManagedDirectories != nil &&
 		(cfg.Identity == nil || cfg.Identity.Onboarding == nil || cfg.Identity.Cloud == nil ||
@@ -137,6 +141,9 @@ func Load(path string) (config.Server, service.Hooks, error) {
 		}
 		if cfg.Region.OperationController == nil || *cfg.Region.OperationController {
 			hooks.Reconcile = func(ctx context.Context, logger *slog.Logger) {
+				if region.deletionLedger != nil {
+					go region.reconcileHostedOffboarding(ctx, logger)
+				}
 				if region.auditRetention != 0 {
 					go region.reconcileAuditRetention(ctx, logger)
 				}
@@ -162,6 +169,12 @@ func Load(path string) (config.Server, service.Hooks, error) {
 			}
 			if region.hosted != nil {
 				if err := compatibility.EnablePlacementPolicies(region); err != nil {
+					_ = region.close()
+					return config.Server{}, service.Hooks{}, err
+				}
+			}
+			if region.deletionLedger != nil {
+				if err := compatibility.EnableHostedOffboarding(region); err != nil {
 					_ = region.close()
 					return config.Server{}, service.Hooks{}, err
 				}
@@ -242,6 +255,7 @@ type Region struct {
 	desktopLaunch     *desktopLaunchControl
 	telemetry         *telemetryControl
 	hosted            *hostedRegionPolicy
+	deletionLedger    *hostedLedger
 	auditRetention    time.Duration
 	cell              string
 }
@@ -317,6 +331,11 @@ func openRegion(cfg regionConfig) (*Region, error) {
 	region := &Region{name: cfg.Name, client: client, telemetry: telemetry, root: root, keys: keys, values: values, publicIPv4: publicIPv4,
 		gatewayControl: gatewayControl, wireGuard: wireGuard, workloads: workloads, storage: storage, cell: cfg.InitialCell,
 		directoryFencer: directoryFencer, vms: vms, desktopLaunch: desktopLaunch, smb: smbMembers, auditRetention: auditRetention, hosted: cfg.HostedWorkplace}
+	region.deletionLedger, err = cfg.openDeletionLedger(root)
+	if err != nil {
+		_ = region.close()
+		return nil, err
+	}
 	if cfg.ManagedDirectories != nil {
 		region.directoryCapacity = *cfg.ManagedDirectories
 	}
@@ -348,6 +367,11 @@ func (region *Region) bootstrap(ctx context.Context) error {
 	}
 	if !result.Succeeded {
 		if err := region.verify(result); err != nil {
+			return err
+		}
+	}
+	if region.deletionLedger != nil {
+		if err := region.replayHostedOffboarding(ctx, result.Header.ClusterId); err != nil {
 			return err
 		}
 	}
@@ -392,7 +416,13 @@ func (region *Region) ready(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return region.verify(result)
+	if err := region.verify(result); err != nil {
+		return err
+	}
+	if region.deletionLedger != nil {
+		return region.deletionLedger.check(ctx, result.Header.ClusterId)
+	}
+	return nil
 }
 
 func (region *Region) verify(result *clientv3.TxnResponse) error {

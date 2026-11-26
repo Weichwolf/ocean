@@ -2361,6 +2361,37 @@ Verify the physical sites, network ACLs, Ceph clients, service endpoints,
 repositories and administrative access paths as part of the hosted deployment
 review. [Hosted workplace deployment review](HOSTED-WORKPLACE.md)
 
+Provision a separate mutual TLS etcd quorum for hosted offboarding decisions.
+Pin its lowercase hexadecimal etcd cluster ID, approved operator pool and
+endpoint list in `hostedWorkplace.deletionLedger`. Supply its client credentials
+and the same endpoints in `region.deletionLedgerEtcd` using the regional etcd
+configuration schema. Keep the ledger independent of the regional and telemetry
+clusters and retain it across regional restores. The regional API checks its
+identity and replays the recorded suspensions with their original actor and time
+before opening its listener. Access that depends on the ledger fails closed
+while the ledger is unavailable.
+
+```json
+{
+  "operatorPool": "primary",
+  "clusterId": "17e04bf5456f1a6b",
+  "endpoints": ["https://ledger1.ocean.test:2379", "https://ledger2.ocean.test:2379", "https://ledger3.ocean.test:2379"]
+}
+```
+
+Use the configured operator service principal to record a suspension after
+the authorized export or retention decision. Submit the exact subscription ID.
+A retry preserves the original decision. Suspension denies further access
+through regional ARM, the OAuth compatibility endpoints and managed key and
+host task grants. Existing workloads, direct application sessions and stored
+tenant data require separate teardown and removal before completing offboarding.
+
+```sh
+offboarding="$OCEAN_ARM/ocean/tenants/$OCEAN_CUSTOMER_TENANT/offboarding?api-version=2026-11-01"
+az rest --method put --url "$offboarding" --body "$OCEAN_OFFBOARDING_REQUEST"
+az rest --method get --url "$offboarding"
+```
+
 Register independent key recovery sites under `hostedWorkplace.recoveryTargets`
 before bootstrapping the hosted region. Each target names an `operatorPool`,
 the exact HTTPS `metadataOrigins` of its restored etcd cluster, and an absolute
@@ -2371,8 +2402,8 @@ recovery account. When exporting a key, the restore target must still be allowed
 by the tenant policy recorded in the restored metadata. Ocean refuses to open
 the key if the target is missing or disallowed, the endpoint set differs, or the
 output is outside the target directory. The output must be a new direct child
-of that directory. An offline key export verifies the snapshot's policy. Apply
-subsequent deletion decisions before making recovered services available.
+of that directory. The command also checks the current independent ledger
+before releasing a key, including when the snapshot predates a suspension.
 
 ```json
 {
@@ -2414,7 +2445,7 @@ recovery custody. Use directories owned by the backup account with mode `0700`.
 Use a dedicated regional etcd cluster for native snapshots. The selected pool
 must be allowed for the regional default and every active subscription. An
 ordinary write to etcd can continue during capture. Changes to the set of
-subscriptions or their pool policies cause the capture to abort. Ocean checks
+subscriptions, their pool policies or the deletion ledger cause capture to abort. Ocean checks
 the native snapshot checksum and stages and publishes encrypted bytes only.
 The standard age binary can decrypt the archived snapshot in the approved
 isolated recovery directory for `etcdutl snapshot restore`.
@@ -2461,8 +2492,8 @@ Run `WORKPLACE-42` through `WORKPLACE-44` against a disposable loopback etcd
 instance with the pinned Azure CLI. The probes use synthetic tenant and host
 identities and test the ARM responses, etcd keys, volume key assignment,
 SMB writer generation and signed operator authorization. `WORKPLACE-45`
-and `WORKPLACE-46` start disposable mutual TLS etcd clusters from the
-pinned archive and exercise the backup, retention and recovery commands.
+through `WORKPLACE-47` start disposable mutual TLS etcd clusters from the
+pinned archive and exercise backup, retention, recovery and offboarding replay.
 The harness writes Markdown and TSV reports and logs.
 
 ```sh

@@ -180,6 +180,16 @@ func (r *Region) SetPlacementPolicy(ctx context.Context, scope arm.SubscriptionS
 }
 
 func (r *Region) readPlacementSubscription(ctx context.Context, scope arm.SubscriptionScope) (int64, error) {
+	if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return 0, identity.ErrPlacementTenantGone
+		}
+		return 0, err
+	}
+	return r.readPlacementSubscriptionRecord(ctx, scope)
+}
+
+func (r *Region) readPlacementSubscriptionRecord(ctx context.Context, scope arm.SubscriptionScope) (int64, error) {
 	if !validScope(scope) {
 		return 0, identity.ErrPlacementTenantGone
 	}
@@ -347,6 +357,9 @@ func (r *Region) reservePlacement(ctx context.Context, scope arm.SubscriptionSco
 	if !validScope(scope) || !identifier.MatchString(wanted.ID) || !identifier.MatchString(wanted.Cell) ||
 		!slices.Contains([]string{"compute", "storage", "gateway"}, wanted.Role) || !validCapacity(wanted.Resources) {
 		return Reservation{}, ErrReservationChanged
+	}
+	if err := r.requireActiveHostedTenant(ctx, scope.TenantID); err != nil {
+		return Reservation{}, err
 	}
 	if wanted.SpreadSet != "" && (!identifier.MatchString(wanted.SpreadSet) || wanted.Role != "compute" || wanted.NeedsStorage) {
 		return Reservation{}, ErrReservationChanged

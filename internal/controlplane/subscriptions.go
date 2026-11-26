@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/Weichwolf/ocean/internal/identity"
@@ -15,6 +16,12 @@ func (r *Region) tenantKeys(tenant string) (registration, subscription string) {
 }
 
 func (r *Region) lookupSubscription(ctx context.Context, tenant string) (*identity.Subscription, error) {
+	if err := r.requireActiveHostedTenant(ctx, tenant); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	_, key := r.tenantKeys(tenant)
 	result, err := r.client.Get(ctx, key)
 	if err != nil {
@@ -31,6 +38,12 @@ func (r *Region) lookupSubscription(ctx context.Context, tenant string) (*identi
 }
 
 func (r *Region) ReserveTenant(ctx context.Context, reservation identity.TenantReservation) (identity.TenantReservation, error) {
+	if err := r.requireActiveHostedTenant(ctx, reservation.TenantID); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return identity.TenantReservation{}, identity.ErrTenantConflict
+		}
+		return identity.TenantReservation{}, err
+	}
 	key, subscription := r.tenantKeys(reservation.TenantID)
 	data, _ := json.Marshal(reservation)
 	result, err := r.client.Txn(ctx).
@@ -58,6 +71,12 @@ func (r *Region) ReserveTenant(ctx context.Context, reservation identity.TenantR
 }
 
 func (r *Region) LookupTenant(ctx context.Context, tenant string) (*identity.TenantReservation, error) {
+	if err := r.requireActiveHostedTenant(ctx, tenant); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	key, _ := r.tenantKeys(tenant)
 	result, err := r.client.Get(ctx, key)
 	if err != nil || len(result.Kvs) == 0 {
@@ -71,6 +90,12 @@ func (r *Region) LookupTenant(ctx context.Context, tenant string) (*identity.Ten
 }
 
 func (r *Region) PublishSubscription(ctx context.Context, reservation identity.TenantReservation, sub identity.Subscription) (bool, error) {
+	if err := r.requireActiveHostedTenant(ctx, reservation.TenantID); err != nil {
+		if errors.Is(err, identity.ErrTenantSuspended) {
+			return false, identity.ErrTenantConflict
+		}
+		return false, err
+	}
 	registration, key := r.tenantKeys(reservation.TenantID)
 	lock, _ := json.Marshal(reservation)
 	data, _ := json.Marshal(sub)

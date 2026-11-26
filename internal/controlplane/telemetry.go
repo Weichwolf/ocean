@@ -181,8 +181,12 @@ func (r *Region) TelemetrySamples(ctx context.Context, scope arm.SubscriptionSco
 }
 
 func (r *Region) close() error {
-	if r.telemetry == nil {
-		return r.client.Close()
+	err := r.client.Close()
+	if r.telemetry != nil {
+		err = errors.Join(err, r.telemetry.client.Close())
 	}
-	return errors.Join(r.client.Close(), r.telemetry.client.Close())
+	if r.deletionLedger != nil {
+		err = errors.Join(err, r.deletionLedger.client.Close())
+	}
+	return err
 }
