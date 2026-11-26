@@ -44,8 +44,8 @@ func hostedWorkplaceSteps() []harness.Step {
 		volume.BlockedReason = "Provide the running Ceph lab directory in OCEAN_E2E_HOSTED_CEPH_STATE."
 	}
 	smb := recovery
-	smb.Name, smb.Cases = "hosted-smb-offboarding", []string{"WORKPLACE-53", "WORKPLACE-54"}
-	smb.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedSMBOffboarding$", "./internal/controlplane"}
+	smb.Name, smb.Cases = "hosted-smb-offboarding", []string{"WORKPLACE-53", "WORKPLACE-54", "WORKPLACE-60"}
+	smb.Command = []string{"go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-run", "^TestHostedSMBOffboarding$", "./internal/controlplane"}
 	smb.Timeout = 4 * time.Minute
 	if smb.BlockedReason == "" && os.Getenv("OCEAN_E2E_HOSTED_CEPH_STATE") == "" {
 		smb.BlockedReason = "Provide the running AD and Ceph lab in OCEAN_E2E_HOSTED_CEPH_STATE."
@@ -63,6 +63,8 @@ func hostedWorkplaceSteps() []harness.Step {
 	ha = requireFile(ha, os.Getenv("OCEAN_E2E_SMB_FAILOVER_PROFILE"), "the SMB HA lab profile in OCEAN_E2E_SMB_FAILOVER_PROFILE")
 	ha = requireFile(ha, filepath.Join(fixture, "failover-state-id"), "the encrypted Samba membership image ID")
 	ha = requireFile(ha, filepath.Join(fixture, "failover-state.key"), "the private Samba membership image key")
+	smb = requireFile(smb, filepath.Join(fixture, "smbreader"), "the disposable SMB reader credential")
+	smb = requireFile(smb, filepath.Join(fixture, "smbdenied"), "the disposable ungrouped SMB credential")
 	vm := recovery
 	vm.Name, vm.Cases = "hosted-vm-offboarding", []string{"WORKPLACE-57"}
 	vm.Command = []string{"go", "test", "-tags=e2e", "-run", "^TestHostedVMOffboarding$", "./internal/controlplane"}

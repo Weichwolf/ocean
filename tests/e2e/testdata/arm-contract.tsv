@@ -256,3 +256,6 @@ WORKPLACE-58	hosted-directory-suspend	2.93.0	none	2026-11-01	rest --method put -
 WORKPLACE-58	hosted-directory-suspended-read	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/directory?api-version=2026-11-01 -o json
 WORKPLACE-59	hosted-keycloak-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json
 WORKPLACE-59	hosted-keycloak-confirmation	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 -o json
+WORKPLACE-60	hosted-export-share-create	2.93.0	none	2026-11-01	rest --method put --url {arm}{smb_share_id}?api-version=2026-11-01 --body @{smb_share_request} -o json
+WORKPLACE-60	hosted-export-regional-metadata	2.93.0	none	2026-11-01	rest --method get --url {arm}/ocean/tenants/{tenant}/dataExport?api-version=2026-11-01 -o json
+WORKPLACE-60	hosted-export-suspend	2.93.0	none	2026-11-01	rest --method put --url {arm}/ocean/tenants/{tenant}/offboarding?api-version=2026-11-01 --body @{scoped_suspension_request} -o json

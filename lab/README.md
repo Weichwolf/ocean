@@ -2517,6 +2517,31 @@ keep pages from different runs in separate files. Save completed pages on
 approved storage with restricted permissions. An authorized backup operator
 can then archive them using `ocean-backup create -kind export`.
 
+For an approved file export, obtain a Kerberos ticket for a tenant account
+with a read grant on the share. Require SMB encryption when retrieving the
+authorized files. In the example, `EXPORT_STAGE` is a private directory on
+approved encrypted storage. The example packages one completed regional
+page and one authorized file. Include each completed page and the exact
+files listed in the approval for the actual request.
+
+```sh
+umask 077
+cd "$EXPORT_STAGE"
+smbclient "//$SMB_HOST/$SMB_SHARE" --use-kerberos=required \
+  --client-protection=encrypt -c 'get authorized-file.bin authorized-file.bin'
+tar -cf tenant-export.tar regional-page-001.json authorized-file.bin
+EXPORT_SHA256="$(sha256sum tenant-export.tar | cut -d ' ' -f 1)"
+ocean-backup create -config "$HOSTED_REGION_CONFIG" -target archive-a -kind export \
+  -tenant "$OCEAN_CUSTOMER_TENANT" -subscription "$OCEAN_SUBSCRIPTION" \
+  -sha256 "$EXPORT_SHA256" < tenant-export.tar
+```
+
+Record the scope and checksum alongside the regional read and Samba audit
+references and the archive receipt. The archive command trusts the operator's
+selection of files, checks current tenant placement and encrypts to the
+target's configured recipient. Verify decryption in the approved recovery
+environment and remove the working copies under the export's retention rules.
+
 Register independent key recovery sites under `hostedWorkplace.recoveryTargets`
 before bootstrapping the hosted region. Each target names an `operatorPool`,
 the exact HTTPS `metadataOrigins` of its restored etcd cluster, and an absolute
@@ -2685,6 +2710,15 @@ leaves the neighboring realm available, and is reapplied after restoring an
 earlier regional snapshot and deliberately re-enabling the target realm. A
 second admin outage verifies that confirmation expires without duplicating the
 audit entry when connectivity returns.
+
+`WORKPLACE-60` runs in the same Samba and Ceph fixture as `WORKPLACE-53` and
+`WORKPLACE-54`. A Debian domain member retrieves a real checkpoint using
+an encrypted Kerberos SMB session as the granted reader. The probe checks the
+Samba audit entry, fetches regional metadata with the original tenant
+administrator and tests access denial for an ungrouped domain user and a
+foreign ARM tenant. It sends both records to `ocean-backup`, exercises pool
+and subscription checks, verifies recipient-only recovery and prunes the
+approved archive at its configured expiry. A prune before expiry preserves it.
 
 ```sh
 OCEAN_E2E_PROFILE=hosted-workplace \

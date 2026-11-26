@@ -56,7 +56,7 @@ func TestHostedRecoveryTarget(t *testing.T) {
 		Workloads: &workloadConfig{SecretsKeyFile: wrapping, DefaultPlacement: PlacementPolicy{Pools: []string{"primary", "partner"}, Quota: quota}},
 		Storage:   &storageConfig{KeyFile: wrapping, Workers: []string{"worker-a", "worker-b"}},
 	}
-	backupIdentity := configureHostedBackupLab(t, cfg.HostedWorkplace)
+	backupIdentity := configureHostedBackupLab(t, cfg.HostedWorkplace, 5)
 	region, err := openRegion(cfg)
 	if err != nil {
 		t.Fatal(err)

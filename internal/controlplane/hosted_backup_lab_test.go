@@ -22,7 +22,7 @@ import (
 	"github.com/Weichwolf/ocean/internal/enrollment"
 )
 
-func configureHostedBackupLab(t *testing.T, policy *hostedRegionPolicy) *age.X25519Identity {
+func configureHostedBackupLab(t *testing.T, policy *hostedRegionPolicy, shortRetentionSeconds int64) *age.X25519Identity {
 	t.Helper()
 	privateDir := func() string {
 		path := t.TempDir()
@@ -39,7 +39,7 @@ func configureHostedBackupLab(t *testing.T, policy *hostedRegionPolicy) *age.X25
 	policy.BackupTargets = map[string]hostedBackupTarget{
 		"approved": {OperatorPool: "primary", ArchiveDirectory: privateDir(), Recipient: key.Recipient().String(), RetentionSeconds: 120},
 		"partner":  {OperatorPool: "partner", ArchiveDirectory: privateDir(), Recipient: key.Recipient().String(), RetentionSeconds: 120},
-		"short":    {OperatorPool: "primary", ArchiveDirectory: privateDir(), Recipient: key.Recipient().String(), RetentionSeconds: 5},
+		"short":    {OperatorPool: "primary", ArchiveDirectory: privateDir(), Recipient: key.Recipient().String(), RetentionSeconds: shortRetentionSeconds},
 	}
 	return key
 }
@@ -60,19 +60,7 @@ func verifyHostedBackup(t *testing.T, ctx context.Context, cfg regionConfig, r *
 		}
 	}
 	writeConfig(cfg)
-	binary := filepath.Join("..", "..", "bin", "ocean-backup")
-	run := func(op, target, want string, input []byte, args ...string) []byte {
-		t.Helper()
-		command := exec.CommandContext(ctx, binary, append([]string{op, "-config", configPath, "-target", target}, args...)...)
-		command.Stdin = bytes.NewReader(input)
-		var diagnostics bytes.Buffer
-		command.Stderr = &diagnostics
-		output, err := command.Output()
-		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(diagnostics.String(), want)) {
-			t.Fatalf("backup %s of %s expected %q: %v: %s", op, target, want, err, diagnostics.String())
-		}
-		return output
-	}
+	run := hostedBackupLabCLI(t, ctx, configPath)
 	result := func(raw []byte) HostedBackupResult {
 		t.Helper()
 		var out HostedBackupResult
@@ -189,6 +177,23 @@ func verifyHostedBackup(t *testing.T, ctx context.Context, cfg regionConfig, r *
 	entries("approved", 1)
 	t.Logf("ocean-backup encrypted and verified a native etcd snapshot and a tenant export, withheld unapproved, incomplete and concurrent captures, and expired one archive with the source offline. Verification took %d ms.", time.Since(started).Milliseconds())
 	return snapshot
+}
+
+func hostedBackupLabCLI(t *testing.T, ctx context.Context, configPath string) func(string, string, string, []byte, ...string) []byte {
+	t.Helper()
+	binary := filepath.Join("..", "..", "bin", "ocean-backup")
+	return func(op, target, want string, input []byte, args ...string) []byte {
+		t.Helper()
+		command := exec.CommandContext(ctx, binary, append([]string{op, "-config", configPath, "-target", target}, args...)...)
+		command.Stdin = bytes.NewReader(input)
+		var diagnostics bytes.Buffer
+		command.Stderr = &diagnostics
+		output, err := command.Output()
+		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(diagnostics.String(), want)) {
+			t.Fatalf("backup %s of %s expected %q: %v: %s", op, target, want, err, diagnostics.String())
+		}
+		return output
+	}
 }
 
 type backupPolicyChangingReader struct {

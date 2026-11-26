@@ -75,16 +75,20 @@ func TestHostedSMBOffboarding(t *testing.T) {
 	})
 	stageHostedWorkerExecutable(t, ctx, root, remote, run)
 	tenant := identity.TenantReservation{TenantID: operationID(), SubscriptionID: operationID(), Administrator: operationID(), Fingerprint: operationID()}
+	neighbor := identity.TenantReservation{TenantID: operationID(), SubscriptionID: operationID(), Administrator: operationID(), Fingerprint: operationID()}
 	scope := arm.SubscriptionScope{TenantID: tenant.TenantID, SubscriptionID: tenant.SubscriptionID}
 	binding := smbBinding{TenantID: scope.TenantID, SubscriptionID: scope.SubscriptionID, HostID: hostedSuspensionHost, Member: member}
 	cfg := hostedOffboardingLabConfig(t, ctx, archive, "hosted-smb")
+	cfg.HostedWorkplace.OperatorPools["partner"] = "DE"
+	exportRecipient := configureHostedBackupLab(t, cfg.HostedWorkplace, 10)
 	cfg.ManagedDirectories = &enrollment.Capacity{CPUMillis: 500, MemoryMiB: 256}
 	cfg.SMBMembers = []smbBinding{binding}
 	r := openHostedLabRegion(t, ctx, cfg)
 	seedHostedLabTenant(t, ctx, r, tenant)
+	seedHostedLabTenant(t, ctx, r, neighbor)
 	seedHostedSMBDomain(t, ctx, r, binding)
 	operatorRealm, operatorClient, operator := operationID(), operationID(), operationID()
-	issuer, sign := hostedOperatorIssuer(t, operatorRealm, tenant.TenantID)
+	issuer, sign := hostedOperatorIssuer(t, operatorRealm, tenant.TenantID, neighbor.TenantID)
 	workers := hostedLabInventory(cfg)
 	origin, _, az, identityFor := startHostedRestoreAPI(t, ctx, cfg, cli, operatorRealm, operatorClient, issuer.URL, issuer.Certificate(), workers...)
 	localConfig, hostCert := identityFor(hostedSuspensionHost)
@@ -148,6 +152,27 @@ func TestHostedSMBOffboarding(t *testing.T) {
 			t.Fatalf("write the SMB checkpoint over Kerberos: %v: %s", err, out)
 		}
 	}
+	exportStarted := time.Now()
+	exportPath := "/ocean/tenants/" + tenant.TenantID + "/dataExport?api-version=2026-11-01"
+	ownerToken := sign(tenant.TenantID, operatorClient, tenant.Administrator, origin)
+	az("get", exportPath, "", sign(neighbor.TenantID, operatorClient, neighbor.Administrator, origin), "AuthorizationFailed")
+	metadata := az("get", exportPath, "", ownerToken, "")
+	denied := exec.CommandContext(ctx, "python3", "-B", filepath.Join(root, "lab/verify_smb_member.py"),
+		"--state", state, "--fixture", fixtures, "--share", deleted.Name, "--ungrouped-denied")
+	if err := denied.Run(); err != nil {
+		t.Fatalf("verify the SMB export share rejects an account without a grant: %v", err)
+	}
+	probe := exec.CommandContext(ctx, "python3", "-B", filepath.Join(root, "lab/verify_smb_member.py"),
+		"--state", state, "--fixture", fixtures, "--share", deleted.Name, "--checkpoint", "export")
+	payload, err := probe.Output()
+	if err != nil {
+		t.Fatalf("export the SMB checkpoint over encrypted Kerberos as the reader: %v", err)
+	}
+	defer clear(payload)
+	run("set -euo pipefail\nsudo journalctl --no-pager -t smbd_audit -o cat -n 150 | "+
+		"grep -F 'OCEANLAB|smbreader|10.232.1.12|"+deleted.Name+"|create_file|ok|' | grep -F '/ocean-managed-checkpoint.bin' >/dev/null", nil)
+	verifyHostedSMBArchive(t, ctx, cfg, scope, neighbor.TenantID, deleted.Address, exportRecipient, metadata, payload)
+	t.Logf("The authorized regional metadata and Kerberos SMB reader export reached only the approved archive, round-tripped with its recipient and expired in %d ms.", time.Since(exportStarted).Milliseconds())
 	retainedKey, err := r.smbShareEncryptionKey(binding, preserved)
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +186,7 @@ func TestHostedSMBOffboarding(t *testing.T) {
 	az("put", request.path, request.body, operatorToken, "FileShareDeletionUnavailable")
 	offboard := "/ocean/tenants/" + tenant.TenantID + "/offboarding?api-version=2026-11-01"
 	az("put", offboard, fmt.Sprintf("{\"subscriptionId\":%q}", tenant.SubscriptionID), operatorToken, "")
+	az("get", exportPath, "", ownerToken, "InvalidAuthenticationToken")
 	checkHostedPurgeView(t, az("put", request.path, request.body, operatorToken, ""), request.id, deleted.Volume.ID, "Pending")
 	verifyHostedSMBReceiptGate(t, ctx, r, host, localConfig, deleted, preserved)
 	run("sudo findmnt -rn --mountpoint "+smb.MountRoot+"/"+deleted.Volume.ID+"\nsudo systemctl kill --signal=CONT --kill-whom=main "+unit, nil)

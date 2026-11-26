@@ -367,9 +367,11 @@ func seedHostedSMBDomain(t *testing.T, ctx context.Context, r *Region, binding s
 	t.Helper()
 	member := binding.Member
 	now := time.Now().UTC()
+	subnet := "/subscriptions/" + binding.SubscriptionID + "/resourcegroups/retained-fixture/providers/" +
+		"microsoft.network/virtualnetworks/directory-lab/subnets/domain"
 	domain := identity.ManagedDirectory{TenantID: binding.TenantID, SubscriptionID: binding.SubscriptionID, ID: operationID(),
 		RequestedAt: now, ProvisionedAt: now, DomainSID: member.DomainSID,
-		Spec: identity.DirectorySpec{DNSName: member.DNSDomain, NetBIOSName: member.NetBIOSDomain}}
+		Spec: identity.DirectorySpec{DNSName: member.DNSDomain, NetBIOSName: member.NetBIOSDomain, SubnetID: subnet}}
 	if _, err := r.client.Txn(ctx).Then(putJSON(r.managedDirectoryKey(binding.TenantID), domain),
 		putJSON(r.managedDirectoryPlacementKey(binding.TenantID), directoryPlacement{DirectoryID: domain.ID,
 			Controllers: [directoryControllerCount]Reservation{{PrivateIPv4: netip.MustParseAddr("10.232.1.11")}}})).Commit(); err != nil {

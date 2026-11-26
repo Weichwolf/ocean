@@ -7,6 +7,7 @@ from ipaddress import IPv4Address
 import re
 import secrets
 import shlex
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +47,11 @@ printf '%s\n' '[libdefaults]' 'default_realm = AD.OCEAN.TEST' \
     'dns_lookup_kdc = false' 'dns_uri_lookup = false' '[realms]' \
     'AD.OCEAN.TEST = {' 'kdc = 10.232.1.11' '}' > "$KRB5_CONFIG"
 printf '%s\n' "$password" | kinit "$account@AD.OCEAN.TEST" >/dev/null
-kvno cifs/files04.ad.ocean.test
+if [[ $mode == export ]]; then
+    kvno cifs/files04.ad.ocean.test >/dev/null
+else
+    kvno cifs/files04.ad.ocean.test
+fi
 if ! grep -Eq ' (dgram|stream) 10\.232\.1\.11:88' "$KRB5_TRACE" ||
     grep -Eq ' (dgram|stream) 10\.232\.1\.13:88' "$KRB5_TRACE"; then
     echo 'The ticket probe must use the writable controller' >&2
@@ -91,6 +96,10 @@ case "$mode" in
         ;;
     checkpoint)
         "${smb[@]}" -c "put $private/payload $file"
+        ;;
+    export)
+        "${smb[@]}" -c "get $file $private/downloaded" >/dev/null
+        cat "$private/downloaded"
         ;;
     windows-read|windows-reader)
         "${smb[@]}" -c "get $file $private/downloaded"
@@ -287,7 +296,8 @@ def main():
     variants = parser.add_mutually_exclusive_group()
     variants.add_argument("--rbd-quota", action="store_true")
     variants.add_argument("--reader-denied", action="store_true")
-    variants.add_argument("--checkpoint", choices=("write", "verify"))
+    variants.add_argument("--ungrouped-denied", action="store_true")
+    variants.add_argument("--checkpoint", choices=("write", "verify", "export"))
     variants.add_argument("--windows-run-id", type=UUID)
     variants.add_argument("--restored-debian-run-id", type=UUID)
     variants.add_argument("--restored-windows-run-id", type=UUID)
@@ -302,9 +312,15 @@ def main():
             parser.error("--rbd-quota requires the dedicated company-files fixture")
         write_evidence(args.state, "kerberos-smb-quota.json", verify_quota(args.state, args.fixture))
         print("Verified concurrent SMB writes, the RBD volume quota, and byte-range lock conflicts.")
-    elif args.reader_denied:
-        probe_client(args.state, args.share, "smbreader", "denied", "unused", private_password(args.fixture / "smbreader"))
-        print("Verified that the SMB member denied the previous reader.")
+    elif args.reader_denied or args.ungrouped_denied:
+        user = "smbreader" if args.reader_denied else "smbdenied"
+        probe_client(args.state, args.share, user, "denied", "unused", private_password(args.fixture / user))
+        print("Verified that the SMB member denied an account without a share grant.")
+    elif args.checkpoint == "export":
+        command = shlex.join(["bash", "-c", CLIENT_PROBE, "--", "smbreader", "export",
+                              "ocean-managed-checkpoint.bin", args.share, str(args.server_ip or "")])
+        payload = ssh(args.state, CLIENT, command, private_password(args.fixture / "smbreader"), timeout=10)
+        sys.stdout.buffer.write(payload)
     elif args.checkpoint:
         mode = "checkpoint" if args.checkpoint == "write" else "cleanup"
         probe_client(args.state, args.share, "smbwriter", mode, "ocean-managed-checkpoint.bin",
