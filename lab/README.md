@@ -2034,6 +2034,56 @@ Preview and validation read a single regional revision without writing resource 
 
 Install Bicep CLI 0.49.2 and Debian's `libicu76` in the operator guest. Run `python3 lab/verify_deployment.py --state "$OCEAN_LAB_STATE"` with the empty two-address lab pool configured above. Pass `--bicep` if the compiler is installed outside `/home/ocean/.local/bin`. The verifier runs what-if on a populated group, checks for resource mutations, rejects an invalid deployment, deploys the template, verifies rollback when the pool is exhausted, and reconciles a changed subnet. Find the results in `evidence/network-deployment-arm.json`. [Network fixture](../tests/e2e/testdata/bicep/network.bicep) · [Bicep release](https://github.com/Azure/bicep/releases/tag/v0.49.2)
 
+## Routed IPsec gateway probe
+
+`IPSEC-01` starts two strongSwan IKEv2 peers and two client namespaces inside
+one disposable Debian 13 KVM guest. The peer uses a preshared key,
+AES-256/SHA-256, MODP 2048 with PFS, and a dedicated XFRM interface. The
+verifier checks installed CHILD SAs, bidirectional packets between the
+approved IPv4 prefixes, blocked traffic with an incorrect key or unauthorized
+addresses, forwarding lease expiry and renewal, and repeatable teardown.
+The forwarding deadline is eight seconds. Each peer stages its credential
+under an owner-only tmpfs directory and removes the file after submitting
+it through the private VICI socket. [strongSwan route-based IPsec](https://docs.strongswan.org/docs/latest/features/routeBasedVpn.html)
+
+Start a dedicated guest from the `single-farm-3` profile. The probe installs
+no host packages. Prepare the test guest and allow its confined daemons to
+access only the fixture paths below. Leave AppArmor profiles loaded.
+
+```sh
+make build
+OCEAN_IPSEC_STATE=$(mktemp -d /tmp/ocean-ipsec.XXXXXXXX)
+./bin/ocean-lab up -state "$OCEAN_IPSEC_STATE" -profile lab/profiles/single-farm-3.yaml \
+  -image "$OCEAN_LAB_IMAGE" -only farm-1-node-01
+./bin/ocean-lab ssh -state "$OCEAN_IPSEC_STATE" farm-1-node-01 -- 'cloud-init status --wait'
+./bin/ocean-lab ssh -state "$OCEAN_IPSEC_STATE" farm-1-node-01 -- 'sudo -n sh -eu' <<'GUEST'
+apt-get update
+apt-get install -y apparmor strongswan-charon strongswan-swanctl \
+  libstrongswan-standard-plugins nftables iputils-ping
+systemctl disable --now strongswan-starter.service
+cat > /etc/apparmor.d/local/usr.lib.ipsec.charon <<'CHARON'
+  /dev/shm/ocean-ipsec-lab-*/strongswan.conf r,
+  /dev/shm/ocean-ipsec-lab-*/vici.sock rw,
+CHARON
+cat > /etc/apparmor.d/local/usr.sbin.swanctl <<'SWANCTL'
+  /dev/shm/ocean-ipsec-lab-*/vici.sock rw,
+  /dev/shm/ocean-ipsec-lab-*/swanctl-*/ r,
+  /dev/shm/ocean-ipsec-lab-*/swanctl-*/** r,
+SWANCTL
+apparmor_parser -r /etc/apparmor.d/usr.lib.ipsec.charon
+apparmor_parser -r /etc/apparmor.d/usr.sbin.swanctl
+GUEST
+
+OCEAN_E2E_PROFILE=ipsec-gateway OCEAN_E2E_IPSEC_LAB_STATE="$OCEAN_IPSEC_STATE" \
+  go test -tags=e2e -count=1 -run '^TestAcceptance$' -v ./tests/e2e
+```
+
+The runner writes `results.tsv`, `report.md`, and
+`evidence/routed-ipsec-gateway.log` to the run directory. The log records
+package versions and time to working IKE and CHILD SAs. `PROFILE-01`
+requires an additional run through the stock Azure CLI against ocean's
+management endpoint with the real tunnel and cleanup as evidence.
+
 ## Routed WireGuard gateway
 
 The `ocean-gateway` command accepts one `wireguard` configuration for a dedicated routing namespace. Attach an underlay link with a route to the peer's IPv4 endpoint and an inside link for its approved local networks. Supply a private /31 for the tunnel, one peer public key, and a root-owned private key file with owner-only permissions. The tunnel addresses and approved local, remote, and protected networks must be disjoint. Each peer needs its own private key. [WireGuard quick start](https://www.wireguard.com/quickstart/)

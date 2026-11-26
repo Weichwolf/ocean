@@ -16,5 +16,7 @@ func networkSteps(options labOptions) []harness.Step {
 		regional(options, "bicep-deployment", "verify_deployment.py", []string{"NETWORK-04"},
 			[]string{"network-deployment-arm.json"}),
 		wireguard,
+		probe("routed-ipsec-gateway", options.ipsec, "OCEAN_E2E_IPSEC_LAB_STATE", "verify_ipsec_gateway.py",
+			[]string{"IPSEC-01"}, nil),
 	}
 }

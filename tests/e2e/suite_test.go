@@ -25,6 +25,7 @@ type labOptions struct {
 	scale       string
 	domain      string
 	domainImage string
+	ipsec       string
 	sambaImage  string
 	adcliImage  string
 	packageDeb  string
@@ -106,7 +107,8 @@ func TestAcceptance(t *testing.T) {
 			"Acceptance matrix SHA-256": digest(filepath.Join(root, "acceptance.tsv")), "CLI contract SHA-256": digest(contractFile),
 			"Image lock SHA-256": digest(filepath.Join(root, "tests", "e2e", "testdata", "images.lock.yaml")),
 		}}
-	for name, location := range map[string]string{"Regional lab state": options.regional, "Small lab state": options.small, "Scale lab state": options.scale, "Domain join lab state": options.domain} {
+	for name, location := range map[string]string{"Regional lab state": options.regional, "Small lab state": options.small,
+		"Scale lab state": options.scale, "Domain join lab state": options.domain, "IPsec lab state": options.ipsec} {
 		if location != "" {
 			meta.Inputs[name] = location
 		}
@@ -255,6 +257,7 @@ func configureLab(root, profile string) labOptions {
 		small:    localPath(root, os.Getenv("OCEAN_E2E_SMALL_STATE")), scale: localPath(root, os.Getenv("OCEAN_E2E_SCALE_STATE")),
 		packageDeb: localPath(root, os.Getenv("OCEAN_E2E_PACKAGE")), backup: localPath(root, os.Getenv("OCEAN_E2E_ETCD_ARCHIVE")),
 		domain: localPath(root, os.Getenv("OCEAN_E2E_DOMAIN_STATE")), domainImage: localPath(root, os.Getenv("OCEAN_E2E_DEBIAN_IMAGE")),
+		ipsec:      localPath(root, os.Getenv("OCEAN_E2E_IPSEC_LAB_STATE")),
 		sambaImage: os.Getenv("OCEAN_E2E_SAMBA_IMAGE"),
 		adcliImage: os.Getenv("OCEAN_E2E_ADCLI_IMAGE"),
 		phaseOne:   profile == "phase-one",
@@ -289,6 +292,8 @@ func selectCases(t *testing.T, profile string, catalog []harness.Case, explicit 
 		available = func(c harness.Case) bool { return c.ID == "LAB-02" }
 	case "geo-4x3", "geo-4x4":
 		available = func(c harness.Case) bool { return c.ID == "PROFILE-04" || c.ID == "PROFILE-06" }
+	case "ipsec-gateway":
+		available = func(c harness.Case) bool { return c.ID == "IPSEC-01" }
 	case "domain-join":
 		available = func(c harness.Case) bool {
 			return slices.Contains([]string{"WORKPLACE-01", "WORKPLACE-02", "WORKPLACE-03"}, c.ID)
@@ -389,7 +394,7 @@ func probe(name, state, variable, script string, cases, proof []string, args ...
 		return step
 	}
 	profiles := map[string]string{"OCEAN_E2E_STATE": "storage-ha", "OCEAN_E2E_SMALL_STATE": "single-farm-3", "OCEAN_E2E_SCALE_STATE": "scale-16",
-		"OCEAN_E2E_DOMAIN_STATE": "domain-join"}
+		"OCEAN_E2E_DOMAIN_STATE": "domain-join", "OCEAN_E2E_IPSEC_LAB_STATE": "single-farm-3"}
 	step.LabState, step.LabProfile = state, profiles[variable]
 	step.Command = append([]string{"python3", "-B", filepath.Join("lab", script), "--state", state}, args...)
 	for _, filename := range proof {
